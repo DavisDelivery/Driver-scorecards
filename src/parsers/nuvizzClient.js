@@ -85,6 +85,7 @@ export async function fetchStopData(pro, { company = "ULINE" } = {}) {
           side: side === "from" ? "pickup" : "delivery",
           guid: doc.documentGuid,
           name: doc.documentName,
+          path: doc.documentPath,
           extension: doc.extension,
           createdTime: doc.createdTime,
         });
@@ -106,7 +107,12 @@ export async function fetchStopData(pro, { company = "ULINE" } = {}) {
       const results = await Promise.all(
         batch.map(async (doc) => ({
           doc,
-          dataUri: await fetchDocDataUri(doc.guid, doc.extension || "jpg", company),
+          dataUri: await fetchDocDataUri(
+            doc.guid,
+            doc.extension || "jpg",
+            company,
+            doc.path,
+          ),
         })),
       );
       for (const { doc, dataUri } of results) {
@@ -191,7 +197,7 @@ export async function fetchStopData(pro, { company = "ULINE" } = {}) {
  * @param {number} [retries=2]
  * @returns {Promise<string|null>} data URI string, or null on failure
  */
-export async function fetchDocDataUri(guid, ext, company, retries = 2) {
+export async function fetchDocDataUri(guid, ext, company, path, retries = 2) {
   // Try primary company first, then fallback
   const order = company === "DAVIS" ? ["DAVIS", "ULINE"] : ["ULINE", "DAVIS"];
 
@@ -201,7 +207,7 @@ export async function fetchDocDataUri(guid, ext, company, retries = 2) {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 15000);
         const res = await fetch(
-          `${DOC_URL}?guid=${encodeURIComponent(guid)}&ext=${encodeURIComponent(ext)}&company=${encodeURIComponent(co)}`,
+          `${DOC_URL}?guid=${encodeURIComponent(guid)}&ext=${encodeURIComponent(ext)}&company=${encodeURIComponent(co)}${path ? `&path=${encodeURIComponent(path)}` : ""}`,
           { signal: controller.signal },
         );
         clearTimeout(timer);
