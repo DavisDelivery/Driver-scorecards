@@ -1,21 +1,27 @@
 // doc — NuVizz POD image download proxy → returns { dataUri }.
 //
-// The client (nuvizzClient.fetchDocDataUri) calls
-//   GET /doc?path=<documentPath>&guid=<documentGuid>&ext=<ext>&company=<co>
-// and expects { dataUri } (base64) or 404.
+// Recovered from davis-nuvizz's nuvizz.js (the authoritative working integration).
+// The document is fetched by documentGuid from the NuVizz "documentapi" service with
+// direct HTTP Basic auth (the JWT/Bearer flow is deprecated — see track.js):
 //
-// In the current NuVizz API, a podDoc's `documentPath` is a QUERY STRING, e.g.
-//   cc=ULINE&objType=stop&docGuid=<guid>&ext
-// (the trailing `ext` takes the real extension). We download with direct HTTP
-// Basic auth (the same scheme the live data endpoints now require) and re-serve
-// the bytes as a data URI. Older file-path style documentPaths are also handled.
+//   GET {DOC_BASE}/doc/getdocument/{companyCode}?documentGuid=<guid>&objectType=02&extension=<ext>
+//        Authorization: Basic base64(user:pass)
+//   → { documentData: "<base64>" }
 //
-// Credentials from env NUVIZZ_USER / NUVIZZ_PASS / NUVIZZ_COMPANY.
+//   DOC_BASE = https://portal.nuvizz.com/deliverit/openapi/documentapi
+//
+// Uline stop docs may live under either company code, so we try ULINE then DAVIS.
+// Fallback: chain to the sibling tracking site's /doc (same creds), as nuvizz.js does.
+//
+// The client (nuvizzClient.fetchDocDataUri) calls /doc?guid=X&ext=jpg&company=ULINE
+// and expects { dataUri } (base64) or 404. Creds from env NUVIZZ_USER / NUVIZZ_PASS.
 
-const NUVIZZ_HOSTS = [
-  "https://portal.nuvizz.com/deliverit/openapi/v7",
-  "https://contact-support.nuvizz.com/deliverit/openapi/v7",
+const DOC_BASES = [
+  process.env.NUVIZZ_DOC_BASE ||
+    "https://portal.nuvizz.com/deliverit/openapi/documentapi",
+  "https://contact-support.nuvizz.com/deliverit/openapi/documentapi",
 ];
+const TRACKING_DOC_URL = "https://tracking.davisdelivery.com/.netlify/functions/doc";
 
 const cors = {
   "Content-Type": "application/json",
@@ -36,71 +42,63 @@ const MIME = {
   pdf: "application/pdf",
 };
 
-const deliveritRoot = (host) => host.replace(/\/openapi\/v7\/?$/, ""); // …/deliverit
-const portalRoot = (host) => host.replace(/\/deliverit\/openapi\/v7\/?$/, "");
-
-// Build candidate download URLs for a documentPath (query-string or file-path form).
-function candidateUrls(host, path, guid, ext) {
-  const urls = [];
-  const isQuery = /[?&=]/.test(path || "") || /docGuid=|cc=/.test(path || "");
-  if (path && isQuery) {
-    // normalize trailing bare `&ext` → `&ext=<ext>`
-    let qs = path.replace(/&ext$/i, `&ext=${ext}`);
-    if (!/[?&]ext=/.test(qs)) qs += `&ext=${ext}`;
-    urls.push(`${deliveritRoot(host)}/document/download?${qs}`);
-    urls.push(`${deliveritRoot(host)}/document?${qs}`);
-  } else if (path) {
-    // older file-path form
-    const root = portalRoot(host);
-    urls.push(
-      /^https?:\/\//i.test(path) ? path : `${root}${path.startsWith("/") ? "" : "/"}${path}`,
-    );
-  }
-  return urls;
-}
-
 export default async (req) => {
   if (req.method === "OPTIONS") return json({}, 200);
 
   const url = new URL(req.url);
-  const path = url.searchParams.get("path");
-  const guid = url.searchParams.get("guid");
+  const guid = url.searchParams.get("guid") || url.searchParams.get("documentGuid");
   const ext = (url.searchParams.get("ext") || "jpg").toLowerCase();
-  const company =
-    url.searchParams.get("company") || process.env.NUVIZZ_COMPANY || "ULINE";
-
-  if (!path && !guid) return json({ error: "path or guid required" }, 400);
-  if (!path) return json({ error: "not_found", guid }, 404);
+  const primary =
+    (url.searchParams.get("company") || process.env.NUVIZZ_COMPANY || "ULINE").toUpperCase();
+  if (!guid) return json({ error: "guid required" }, 400);
 
   const user = process.env.NUVIZZ_USER;
   const pass = process.env.NUVIZZ_PASS;
   if (!user || !pass) return json({ error: "NuVizz creds not configured" }, 500);
-  const basic = Buffer.from(`${user}:${pass}`).toString("base64");
+  const basic = "Basic " + Buffer.from(`${user}:${pass}`).toString("base64");
+  const mime = MIME[ext] || "image/jpeg";
 
-  const errors = [];
-  for (const host of NUVIZZ_HOSTS) {
-    for (const docUrl of candidateUrls(host, path, guid, ext)) {
+  // Most Uline stop docs are stored under ULINE; try the requested company then the other.
+  const companies = primary === "DAVIS" ? ["DAVIS", "ULINE"] : ["ULINE", "DAVIS"];
+  const attempts = [];
+
+  // Strategy 1 — direct NuVizz documentapi (preferred).
+  for (const base of DOC_BASES) {
+    for (const cc of companies) {
+      const docUrl = `${base}/doc/getdocument/${encodeURIComponent(cc)}?documentGuid=${encodeURIComponent(guid)}&objectType=02&extension=${encodeURIComponent(ext)}`;
       try {
-        const res = await fetch(docUrl, {
-          headers: { Authorization: `Basic ${basic}`, Accept: "image/*,application/octet-stream,*/*" },
-          redirect: "follow",
-        });
-        const ct = res.headers.get("content-type") || "";
-        if (!res.ok || /text\/html|application\/json/.test(ct)) {
-          errors.push({ url: docUrl, status: res.status, ct });
+        const res = await fetch(docUrl, { headers: { Authorization: basic, Accept: "application/json" } });
+        if (!res.ok) {
+          attempts.push({ via: "direct", cc, base, status: res.status });
           continue;
         }
-        const buf = Buffer.from(await res.arrayBuffer());
-        if (buf.length < 64) {
-          errors.push({ url: docUrl, status: res.status, ct, tooSmall: buf.length });
-          continue;
+        const data = await res.json();
+        if (data && data.documentData) {
+          return json({ dataUri: `data:${mime};base64,${data.documentData}`, guid, via: "direct", company: cc });
         }
-        const mime = MIME[ext] || ct || "image/jpeg";
-        return json({ dataUri: `data:${mime};base64,${buf.toString("base64")}`, guid, sourceHost: host });
+        attempts.push({ via: "direct", cc, base, reason: data?.reasons?.[0]?.description || data?.message || "no documentData" });
       } catch (err) {
-        errors.push({ url: docUrl, message: err.message });
+        attempts.push({ via: "direct", cc, base, error: err.message });
       }
     }
   }
-  return json({ error: "document fetch failed", attempts: errors }, 404);
+
+  // Strategy 2 — chain to the sibling tracking site's working /doc (same creds).
+  try {
+    const res = await fetch(
+      `${TRACKING_DOC_URL}?guid=${encodeURIComponent(guid)}&ext=${encodeURIComponent(ext)}&company=${encodeURIComponent(primary)}`,
+      { headers: { Accept: "application/json" } },
+    );
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.dataUri) {
+        return json({ dataUri: data.dataUri, guid, via: "tracking-chain" });
+      }
+    }
+    attempts.push({ via: "tracking-chain", status: res.status });
+  } catch (err) {
+    attempts.push({ via: "tracking-chain", error: err.message });
+  }
+
+  return json({ error: "document not found", guid, attempts }, 404);
 };
