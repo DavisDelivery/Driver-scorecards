@@ -26,33 +26,34 @@ Recovery is being performed from two surviving sources:
 | 1 | GitHub repo (this repo) under version control | ✅ done |
 | 1 | Reconstruct React client (`src/*`) from minified bundle | ✅ done — `vite build` clean, all 10 views render, output matches prod artifact |
 | 1 | Recover the 4 data functions (`data-incidents/drivers/reports/history`) | ✅ done — reconstructed to the **exact** Netlify Blobs schema; verified byte-identical to prod on a draft deploy |
-| 1 | Recover NuVizz proxy functions (`track`, `doc`) | ⚠️ **NOT recoverable** — proprietary upstream API, not in client bundle/artifact/API. Shipped as documented placeholders. |
+| 1 | Recover NuVizz proxy functions (`track`, `doc`) | ✅ **recovered & verified** — see below |
 | 1 | `recovered-build` branch + `prod-artifact-recovery` tag from deploy zip | ⏭️ skipped — the "download deploy" zip is published-files only (no functions); no editable artifact to immortalize beyond what's recovered here |
-| 1 | Connect repo to Netlify for continuous deploy | ⏳ **blocked on NuVizz** (see below) — would otherwise replace the working photo proxies with placeholders |
+| 1 | Connect repo to Netlify for continuous deploy | ⏳ ready — all functions verified; pending owner go-ahead + GitHub App authorization |
 | 3 | Fix 1 — no horizontal page scroll (768/1024/1440) | ✅ done & verified on draft |
 | 3 | Fix 2 — widen Fault column | ✅ done & verified (150px) |
 | 3 | Fix 3 — inline row-expand drawer (lazy photos, notes, custom fault) | ✅ done & verified on draft |
 
-## ⚠️ NuVizz functions — deployment caveat (READ BEFORE CONNECTING GIT DEPLOY)
+## NuVizz functions — RECOVERED & verified
 
-The live site has 10 functions. The 4 **data** functions are fully recovered and
-verified storage-compatible. The **photo** path (`/track` + `/doc`) proxies a
-**proprietary external NuVizz API** authenticated with the site env vars
-`NUVIZZ_USER` / `NUVIZZ_PASS` / `NUVIZZ_COMPANY`. That upstream API shape exists
-only inside the original (lost) function source — it is **not** in the client
-bundle, the deploy artifact, or any Netlify API, so it could not be recovered.
+The photo path (`/track` + `/doc`) talks to NuVizz DeliverIt v7, authenticated
+with site env vars `NUVIZZ_USER` / `NUVIZZ_PASS` / `NUVIZZ_COMPANY` (ULINE).
+Recovered from the gold-copy functions + the `davis-nuvizz` reference, with one
+key correction confirmed by live testing:
 
-`netlify/functions/track.js` and `doc.js` are therefore **documented placeholders**
-that make the client degrade gracefully to "No photos available". They do NOT
-perform real NuVizz lookups.
+- **Auth changed.** NuVizz deprecated the auth-token/Bearer flow (the minted JWT
+  is now rejected with "invalid signature"). The working scheme is **direct HTTP
+  Basic on every call** (the live `track` reports `sourceVia: "direct-basic"`).
+- **`track`** → `GET {host}/stop/info/{pro}/{companyCode}` (Basic) → `{ stop, exe, load }`
+  with `exe.{from,to}.podDoc[]` (documentGuid/Name/Path/extension), exceptions, driver.
+- **`doc`** → `GET {host}/deliverit/openapi/documentapi/doc/getdocument/{companyCode}`
+  `?documentGuid=<guid>&objectType=02&extension=<ext>` (Basic) → `{ documentData: <base64> }`,
+  re-served as a data URI. Tries ULINE then DAVIS; portal→contact-support failover;
+  sibling `tracking.davisdelivery.com/.netlify/functions/doc` as a last-resort chain.
 
-Consequence: connecting continuous Git deploy (or any CLI deploy from this repo)
-will **replace the currently-working `track`/`doc` with these placeholders**,
-disabling "Pull Missing Photos" / NuVizz enrichment. Before switching the deploy
-source, restore the real NuVizz integration in `track.js`/`doc.js` (re-implement
-against the NuVizz API using the existing env-var credentials, or supply the
-original source if it turns up). The other ~6 `nuvizz-*` functions on the live
-site are orphaned (the current client only calls `/track` and `/doc`).
+Verified end-to-end on a draft: `track` returns the real stop for PRO 007103079
+(driver Vincent Bonzo, 1 podDoc) and `doc?guid=` returns the real ~109 KB JPEG
+(`via: direct`). The other ~6 `nuvizz-*` functions on the live site are orphaned
+(the current client only calls `/track` and `/doc`).
 
 ## Verified on draft deploys (production untouched)
 - Reconstructed data functions returned **byte-identical** responses to production
