@@ -177,6 +177,9 @@ body {
   max-width: 1600px;
   width: 100%;
   margin: 0 auto;
+  /* Allow the content grid/flex track to shrink so wide tables scroll
+     within their own container instead of widening the whole page. */
+  min-width: 0;
 }
 @media (max-width: 640px) {
   .content {
@@ -1131,4 +1134,118 @@ hr.div {
   .kpi-grid {
     grid-template-columns: repeat(6, 1fr);
   }
+}
+
+/* ============================================================
+   Phase 3 — Report Detail incident table fixes
+   ============================================================ */
+
+/* Fix 1 — never let the wide table force horizontal PAGE scroll.
+   The detail pane is a flex child; without min-width:0 it refuses to
+   shrink below its content, pushing the whole page sideways. With it,
+   the .table-wrap (overflow-x:auto) scrolls internally instead. */
+.split-view-detail {
+  min-width: 0;
+}
+.table-wrap {
+  max-width: 100%;
+}
+
+/* Truncated cells; full text is revealed in the row drawer (Fix 3).
+   Must be a block with its own max-width — in an auto-layout table,
+   max-width on a <td> is ignored, so the cap goes on a nested element. */
+.cell-ellipsis {
+  display: block;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Fix 2 — fault column wide enough for the longest FAULT_CODES label
+   ("Vendor (Uline)") plus the select chevron. */
+table.data select.fault-select {
+  min-width: 150px;
+}
+
+/* Fix 3 — inline expandable row drawer (accordion). */
+.incident-row {
+  cursor: pointer;
+}
+.incident-row.expanded > td {
+  background: var(--davis-blue-bg);
+}
+.row-caret {
+  display: inline-block;
+  width: 14px;
+  color: var(--text-2);
+  font-size: 10px;
+}
+.incident-drawer-row > td {
+  padding: 0 !important;
+  background: var(--bg-2);
+  border-bottom: 2px solid var(--border);
+}
+.incident-drawer {
+  padding: 16px 18px;
+}
+.incident-drawer-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .incident-drawer-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.drawer-section {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.drawer-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-2);
+  margin-bottom: 6px;
+}
+.drawer-muted {
+  color: var(--text-2);
+  font-size: 12px;
+  padding: 8px 0;
+}
+.drawer-photos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.drawer-photo {
+  max-height: 320px;
+  max-width: 100%;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  cursor: zoom-in;
+  object-fit: contain;
+}
+.drawer-fault-select {
+  max-width: 240px;
+}
+.drawer-custom-fault {
+  margin-top: 8px;
+  max-width: 240px;
+}
+.drawer-notes {
+  width: 100%;
+  resize: vertical;
+  font-family: var(--sans);
+  font-size: 13px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-0);
+  background: var(--bg-1);
 }

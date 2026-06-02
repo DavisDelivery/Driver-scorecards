@@ -4,6 +4,7 @@ import {
   saveIncident,
   deleteIncident,
   deleteIncidentsBatch,
+  getIncidentPhotos,
 } from "../data/firebase.js";
 import IncidentEditor from "./IncidentEditor.jsx";
 
@@ -22,6 +23,107 @@ const CATEGORY_ORDER = [
 const CATEGORY_LABELS = Object.fromEntries(
   INCIDENT_CATEGORIES.map((c) => [c.id, c.label]),
 );
+const FAULT_IDS = new Set(FAULT_CODES.map((f) => f.id));
+const CUSTOM = "__custom__";
+
+// Inline row drawer (Phase 3, Fix 3). Reuses the lazy-photo load + saveIncident
+// logic from IncidentEditor, rendered inline under a row instead of as a modal.
+function IncidentDrawer({ incident, photos, photosLoading, onSave }) {
+  const [notes, setNotes] = useState(incident.notes || "");
+  const startCustom = !!incident.fault && !FAULT_IDS.has(incident.fault);
+  const [faultSel, setFaultSel] = useState(startCustom ? CUSTOM : incident.fault || "unknown");
+  const [customFault, setCustomFault] = useState(startCustom ? incident.fault : "");
+
+  const persistNotes = () => {
+    if ((notes || "") !== (incident.notes || "")) onSave({ notes });
+  };
+  const onFaultSelect = (val) => {
+    setFaultSel(val);
+    if (val === CUSTOM) {
+      // wait for free-text input; persist when they type/blur
+      if (customFault.trim()) onSave({ fault: customFault.trim() });
+    } else {
+      onSave({ fault: val });
+    }
+  };
+  const persistCustomFault = () => {
+    if (customFault.trim() && customFault.trim() !== incident.fault) {
+      onSave({ fault: customFault.trim() });
+    }
+  };
+
+  const urls = photos?.photo_urls || [];
+
+  return (
+    <div className="incident-drawer">
+      <div className="incident-drawer-grid">
+        <div className="drawer-section drawer-photos-section">
+          <div className="drawer-label">Delivery Photo(s)</div>
+          {photosLoading ? (
+            <div className="drawer-muted">Loading photos…</div>
+          ) : urls.length > 0 ? (
+            <div className="drawer-photos">
+              {urls.map((src, i) => (
+                <a key={i} href={src} target="_blank" rel="noreferrer">
+                  <img className="drawer-photo" src={src} alt={`Photo ${i + 1}`} />
+                </a>
+              ))}
+            </div>
+          ) : (
+            <div className="drawer-muted">No photos available</div>
+          )}
+        </div>
+
+        <div className="drawer-section">
+          <div className="drawer-label">Fault</div>
+          <select
+            className="drawer-fault-select"
+            value={faultSel}
+            onChange={(e) => onFaultSelect(e.target.value)}
+          >
+            {FAULT_CODES.map((f) => (
+              <option key={f.id} value={f.id}>
+                {f.label}
+              </option>
+            ))}
+            <option value={CUSTOM}>Custom…</option>
+          </select>
+          {faultSel === CUSTOM && (
+            <input
+              type="text"
+              className="drawer-custom-fault"
+              placeholder="Enter custom fault…"
+              value={customFault}
+              autoFocus
+              onChange={(e) => setCustomFault(e.target.value)}
+              onBlur={persistCustomFault}
+              onKeyDown={(e) => e.key === "Enter" && persistCustomFault()}
+            />
+          )}
+
+          <div className="drawer-label" style={{ marginTop: 12 }}>
+            Notes
+          </div>
+          <textarea
+            className="drawer-notes"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            onBlur={persistNotes}
+            rows={4}
+            placeholder="Add notes…"
+          />
+          <button
+            className="btn ghost sm"
+            style={{ marginTop: 6, alignSelf: "flex-start" }}
+            onClick={persistNotes}
+          >
+            Save Notes
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function IncidentTable({
   incidents,
@@ -39,8 +141,42 @@ export default function IncidentTable({
   const [collapsed, setCollapsed] = useState(new Set());
   const [selected, setSelected] = useState(new Set());
   const [editing, setEditing] = useState(null);
+  // Phase 3: inline row expansion + lazy photo cache.
+  const [expandedId, setExpandedId] = useState(null);
+  const [photosById, setPhotosById] = useState({});
+  const [loadingPhotos, setLoadingPhotos] = useState(new Set());
 
   const driverName = (id) => drivers.find((d) => d.id === id)?.name || "";
+
+  // Toggle a row drawer; lazy-load its photos on first expand only.
+  const toggleExpand = (inc) => {
+    const id = inc.id;
+    if (expandedId === id) {
+      setExpandedId(null);
+      return;
+    }
+    setExpandedId(id);
+    const hasPhotos =
+      inc.has_photos || (inc.photo_urls && inc.photo_urls.length > 0);
+    if (hasPhotos && photosById[id] === undefined && !loadingPhotos.has(id)) {
+      setLoadingPhotos((s) => new Set(s).add(id));
+      getIncidentPhotos(id)
+        .then((p) => setPhotosById((m) => ({ ...m, [id]: p })))
+        .catch((err) => {
+          console.error("drawer photo load failed", err);
+          setPhotosById((m) => ({ ...m, [id]: { photo_urls: [], photo_meta: [] } }));
+        })
+        .finally(() =>
+          setLoadingPhotos((s) => {
+            const n = new Set(s);
+            n.delete(id);
+            return n;
+          }),
+        );
+    } else if (!hasPhotos && photosById[id] === undefined) {
+      setPhotosById((m) => ({ ...m, [id]: { photo_urls: [], photo_meta: [] } }));
+    }
+  };
 
   const filtered = useMemo(
     () =>
@@ -164,12 +300,22 @@ export default function IncidentTable({
     });
     onUpdate?.();
   }
+  // Persist an edit from the inline drawer (optimistic; errors logged).
+  async function saveFromDrawer(inc, patch) {
+    try {
+      await saveIncident({ ...inc, ...patch });
+      onUpdate?.();
+    } catch (err) {
+      console.error("drawer save failed", err);
+    }
+  }
   async function removeIncident(id) {
     if (!confirm("Delete this incident? This cannot be undone.")) return;
     await deleteIncident(id);
     const next = new Set(selected);
     next.delete(id);
     setSelected(next);
+    if (expandedId === id) setExpandedId(null);
     onUpdate?.();
   }
   async function deleteSelected() {
@@ -198,6 +344,7 @@ export default function IncidentTable({
   };
 
   const colCount = showBulkActions ? 10 : 9;
+  const stop = (e) => e.stopPropagation();
 
   return (
     <>
@@ -274,7 +421,7 @@ export default function IncidentTable({
             <div className="empty-state">No incidents match filters</div>
           ) : (
             <div className="table-wrap">
-              <table className="data">
+              <table className="data incident-data">
                 <thead>
                   <tr>
                     {showBulkActions && (
@@ -295,7 +442,11 @@ export default function IncidentTable({
                     )}
                     <SortableTh col="driver" label="Driver" />
                     {grouping !== "fault" && (
-                      <SortableTh col="fault" label="Fault" />
+                      <SortableTh
+                        col="fault"
+                        label="Fault"
+                        style={{ minWidth: 160 }}
+                      />
                     )}
                     <SortableTh col="reason" label="Reason" />
                     <th>Notes</th>
@@ -336,113 +487,148 @@ export default function IncidentTable({
                       )}
                       {!collapsed.has(group.key) &&
                         group.items.map((inc) => (
-                          <tr key={inc.id}>
-                            {showBulkActions && (
-                              <td>
-                                <input
-                                  type="checkbox"
-                                  checked={selected.has(inc.id)}
-                                  onChange={() => toggleSelect(inc.id)}
-                                />
-                              </td>
-                            )}
-                            <td className="pro-num">{inc.pro_number}</td>
-                            <td>{inc.ship_date || inc.return_date || "—"}</td>
-                            {grouping !== "category" && (
-                              <td>
-                                <span className={`chip ${inc.category}`}>
-                                  {inc.category}
+                          <Fragment key={inc.id}>
+                            <tr
+                              className={`incident-row ${expandedId === inc.id ? "expanded" : ""}`}
+                              onClick={() => toggleExpand(inc)}
+                              title="Click to expand details"
+                            >
+                              {showBulkActions && (
+                                <td onClick={stop}>
+                                  <input
+                                    type="checkbox"
+                                    checked={selected.has(inc.id)}
+                                    onChange={() => toggleSelect(inc.id)}
+                                  />
+                                </td>
+                              )}
+                              <td className="pro-num">
+                                <span className="row-caret">
+                                  {expandedId === inc.id ? "▾" : "▸"}
                                 </span>
+                                {inc.pro_number}
                               </td>
-                            )}
-                            <td>
-                              <select
-                                value={inc.driver_id || ""}
-                                onChange={(e) =>
-                                  changeDriver(inc, e.target.value)
-                                }
-                                style={{ minWidth: 140 }}
-                              >
-                                <option value="">{inc.driver_raw || "—"}</option>
-                                {drivers
-                                  .slice()
-                                  .sort((a, b) =>
-                                    (a.name || "").localeCompare(b.name || ""),
-                                  )
-                                  .map((d) => (
-                                    <option key={d.id} value={d.id}>
-                                      {d.name}
-                                    </option>
-                                  ))}
-                              </select>
-                            </td>
-                            {grouping !== "fault" && (
-                              <td>
+                              <td>{inc.ship_date || inc.return_date || "—"}</td>
+                              {grouping !== "category" && (
+                                <td>
+                                  <span className={`chip ${inc.category}`}>
+                                    {inc.category}
+                                  </span>
+                                </td>
+                              )}
+                              <td onClick={stop}>
                                 <select
-                                  value={inc.fault || "unknown"}
+                                  value={inc.driver_id || ""}
                                   onChange={(e) =>
-                                    changeFault(inc, e.target.value)
+                                    changeDriver(inc, e.target.value)
                                   }
+                                  style={{ minWidth: 140 }}
                                 >
-                                  {FAULT_CODES.map((f) => (
-                                    <option key={f.id} value={f.id}>
-                                      {f.label}
-                                    </option>
-                                  ))}
+                                  <option value="">
+                                    {inc.driver_raw || "—"}
+                                  </option>
+                                  {drivers
+                                    .slice()
+                                    .sort((a, b) =>
+                                      (a.name || "").localeCompare(b.name || ""),
+                                    )
+                                    .map((d) => (
+                                      <option key={d.id} value={d.id}>
+                                        {d.name}
+                                      </option>
+                                    ))}
                                 </select>
                               </td>
-                            )}
-                            <td
-                              style={{
-                                maxWidth: 180,
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap",
-                              }}
-                            >
-                              <span title={inc.reason}>{inc.reason || "—"}</span>
-                            </td>
-                            <td
-                              style={{
-                                maxWidth: 260,
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap",
-                              }}
-                            >
-                              <span title={inc.your_note || inc.notes}>
-                                {inc.your_note || inc.notes}
-                              </span>
-                            </td>
-                            <td>
-                              {inc.has_photos ||
-                              (inc.photo_urls && inc.photo_urls.length > 0) ? (
-                                <span style={{ color: "var(--accent-green)" }}>
-                                  ✓ {inc.photo_count || inc.photo_urls?.length || 0}
-                                </span>
-                              ) : (
-                                <span style={{ color: "var(--text-2)" }}>—</span>
+                              {grouping !== "fault" && (
+                                <td onClick={stop}>
+                                  <select
+                                    className="fault-select"
+                                    value={
+                                      FAULT_IDS.has(inc.fault)
+                                        ? inc.fault
+                                        : inc.fault
+                                          ? CUSTOM
+                                          : "unknown"
+                                    }
+                                    onChange={(e) =>
+                                      e.target.value !== CUSTOM &&
+                                      changeFault(inc, e.target.value)
+                                    }
+                                  >
+                                    {FAULT_CODES.map((f) => (
+                                      <option key={f.id} value={f.id}>
+                                        {f.label}
+                                      </option>
+                                    ))}
+                                    {!FAULT_IDS.has(inc.fault) && inc.fault && (
+                                      <option value={CUSTOM}>
+                                        {inc.fault} (custom)
+                                      </option>
+                                    )}
+                                  </select>
+                                </td>
                               )}
-                            </td>
-                            <td>
-                              <button
-                                className="btn ghost sm"
-                                onClick={() => setEditing(inc)}
-                                title="Edit all fields"
-                                style={{ marginRight: 4 }}
-                              >
-                                ✎
-                              </button>
-                              <button
-                                className="btn ghost sm"
-                                onClick={() => removeIncident(inc.id)}
-                                title="Delete"
-                                style={{ color: "var(--accent-red)" }}
-                              >
-                                ×
-                              </button>
-                            </td>
-                          </tr>
+                              <td>
+                                <div className="cell-ellipsis" title={inc.reason}>
+                                  {inc.reason || "—"}
+                                </div>
+                              </td>
+                              <td>
+                                <div
+                                  className="cell-ellipsis"
+                                  title={inc.your_note || inc.notes}
+                                >
+                                  {inc.your_note || inc.notes}
+                                </div>
+                              </td>
+                              <td>
+                                {inc.has_photos ||
+                                (inc.photo_urls &&
+                                  inc.photo_urls.length > 0) ? (
+                                  <span style={{ color: "var(--accent-green)" }}>
+                                    ✓{" "}
+                                    {inc.photo_count ||
+                                      inc.photo_urls?.length ||
+                                      0}
+                                  </span>
+                                ) : (
+                                  <span style={{ color: "var(--text-2)" }}>
+                                    —
+                                  </span>
+                                )}
+                              </td>
+                              <td onClick={stop}>
+                                <button
+                                  className="btn ghost sm"
+                                  onClick={() => setEditing(inc)}
+                                  title="Edit all fields"
+                                  style={{ marginRight: 4 }}
+                                >
+                                  ✎
+                                </button>
+                                <button
+                                  className="btn ghost sm"
+                                  onClick={() => removeIncident(inc.id)}
+                                  title="Delete"
+                                  style={{ color: "var(--accent-red)" }}
+                                >
+                                  ×
+                                </button>
+                              </td>
+                            </tr>
+                            {expandedId === inc.id && (
+                              <tr className="incident-drawer-row">
+                                <td colSpan={colCount}>
+                                  <IncidentDrawer
+                                    incident={inc}
+                                    photos={photosById[inc.id]}
+                                    photosLoading={loadingPhotos.has(inc.id)}
+                                    onSave={(patch) => saveFromDrawer(inc, patch)}
+                                  />
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
                         ))}
                     </Fragment>
                   ))}
