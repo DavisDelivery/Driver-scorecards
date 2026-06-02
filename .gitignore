@@ -1,0 +1,20 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+.netlify/
+
+# local recovery scratch (downloaded production artifacts, not source)
+_recovery/
+
+# secrets — never commit
+*.pat
+.netlify_pat
+.env
+.env.*
+!.env.example
+
+# misc
+.DS_Store
+*.log
