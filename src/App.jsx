@@ -13,8 +13,9 @@ import Incidents from "./views/Incidents.jsx";
 import Drivers from "./views/Drivers.jsx";
 import Trends from "./views/Trends.jsx";
 import History from "./views/History.jsx";
+import Reviews from "./views/Reviews.jsx";
 
-export const APP_VERSION = "0.5.0";
+export const APP_VERSION = "0.6.0";
 
 const TABS = [
   { id: "dashboard", label: "Scorecard", icon: "◫", shortcut: "d" },
@@ -23,6 +24,7 @@ const TABS = [
   { id: "incidents", label: "All Incidents", icon: "⚠", shortcut: "i" },
   { id: "trends", label: "Trends", icon: "◭", shortcut: "t" },
   { id: "drivers", label: "Drivers", icon: "◉", shortcut: "v" },
+  { id: "reviews", label: "Reviews", icon: "★", shortcut: "e" },
   { id: "history", label: "History Import", icon: "↥", shortcut: "h" },
 ];
 
@@ -225,6 +227,7 @@ export default function App() {
               />
             )}
             {tab === "trends" && <Trends drivers={drivers} />}
+            {tab === "reviews" && <Reviews />}
             {tab === "history" && (
               <History
                 drivers={drivers}
