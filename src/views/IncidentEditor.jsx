@@ -414,7 +414,7 @@ export default function IncidentEditor({ incident, drivers, onClose, onSaved }) 
           </label>
 
           <label className="field">
-            <span>Notes (shown on PDF)</span>
+            <span>Uline Notes (scanned from report)</span>
             <textarea
               value={local.notes || ""}
               onChange={(e) => patch({ notes: e.target.value })}
@@ -423,12 +423,12 @@ export default function IncidentEditor({ incident, drivers, onClose, onSaved }) 
           </label>
 
           <label className="field">
-            <span>Your Note (overrides notes on PDF if set)</span>
+            <span>Davis Notes (shown on PDF; overrides Uline notes)</span>
             <textarea
               value={local.your_note || ""}
               onChange={(e) => patch({ your_note: e.target.value })}
               rows={2}
-              placeholder="Optional override that shows on the PDF instead of Notes"
+              placeholder="Davis' own note — appears on the PDF instead of the Uline note"
             />
           </label>
 

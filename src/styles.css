@@ -1252,3 +1252,15 @@ table.data select.fault-select {
   color: var(--text-0);
   background: var(--bg-1);
 }
+/* Read-only Uline-scanned note (not editable). */
+.drawer-uline-notes {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-1);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
