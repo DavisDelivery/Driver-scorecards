@@ -2,6 +2,7 @@ import React, { useState, useRef } from "react";
 import { saveReport, saveIncidentsBatch, rollupReportToHistory } from "../data/firebase.js";
 import { parseExcelFiles, buildIncidents, dedupeIncidents, resolveDriverId } from "../parsers/excelParser.js";
 import { fetchPhotosForProsBatch } from "../parsers/nuvizzClient.js";
+import { reportDateBounds, suggestReportName, reportSpanLabel } from "../reports/reportNaming.js";
 
 /** Return the coming Friday (or today if today is Friday) in YYYY-MM-DD. */
 function nextFriday() {
@@ -90,15 +91,22 @@ export default function Ingest({ drivers, onReportCreated, onNavigateToReport })
         finalDupes = built._duplicatesRemoved || 0;
       }
 
-      const name =
-        pendingReport?.name ||
-        reportName.trim() ||
-        formatWeekLabel(weekEnding);
+      // Derive the true date span from the incidents themselves (Phase 5).
+      const { starts_at, ends_at } = reportDateBounds(finalIncidents);
+      const suggestion =
+        suggestReportName(starts_at, ends_at) || formatWeekLabel(weekEnding);
+
+      // Seed the editable name with the suggestion only while it's still empty,
+      // so re-dropping / re-enriching never clobbers a user edit.
+      setReportName((prev) => (prev.trim() ? prev : suggestion));
 
       const report = {
         ...(pendingReport || {}),
-        name,
-        range_label: `Week ending ${weekEnding}`,
+        name: pendingReport?.name || suggestion,
+        suggested_name: suggestion,
+        range_label: reportSpanLabel({ starts_at, ends_at, week_ending: weekEnding }),
+        starts_at,
+        ends_at,
         week_ending: weekEnding,
         scope: "week",
         incident_count: finalIncidents.length,
@@ -128,7 +136,17 @@ export default function Ingest({ drivers, onReportCreated, onNavigateToReport })
     setSaveProgress({ done: 0, total: incidents.length });
 
     try {
-      const report = await saveReport({ ...pendingReport, incident_count: incidents.length });
+      const { starts_at, ends_at } = reportDateBounds(incidents);
+      const finalName =
+        reportName.trim() || pendingReport.suggested_name || pendingReport.name;
+      const report = await saveReport({
+        ...pendingReport,
+        name: finalName,
+        starts_at,
+        ends_at,
+        range_label: reportSpanLabel({ starts_at, ends_at, week_ending: weekEnding }),
+        incident_count: incidents.length,
+      });
       const tagged = incidents.map((inc) => ({ ...inc, report_id: report.id }));
 
       await saveIncidentsBatch(tagged, (progress) => setSaveProgress(progress));
@@ -259,8 +277,10 @@ export default function Ingest({ drivers, onReportCreated, onNavigateToReport })
       <div>
         <div className="page-title">New Weekly Report · Preview</div>
         <h1 className="page-heading">
-          {pendingReport.name}
-          <span className="meta">· {incidents.length} incidents parsed</span>
+          {reportName.trim() || pendingReport.name}
+          <span className="meta">
+            · {pendingReport.range_label} · {incidents.length} incidents parsed
+          </span>
         </h1>
 
         {pendingReport.duplicates_removed > 0 && (
@@ -385,6 +405,33 @@ export default function Ingest({ drivers, onReportCreated, onNavigateToReport })
                 {enrichSummary.errors > 0 && `, ${enrichSummary.errors} errors`}
               </div>
             )}
+          </div>
+        </div>
+
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="card-body">
+            <label className="field" style={{ marginBottom: 0, maxWidth: 460 }}>
+              <span>Report Name</span>
+              <input
+                type="text"
+                value={reportName}
+                onChange={(e) => setReportName(e.target.value)}
+                placeholder={pendingReport.suggested_name || pendingReport.name}
+              />
+            </label>
+            <div
+              style={{
+                fontFamily: "var(--mono)",
+                fontSize: 10,
+                color: "var(--text-2)",
+                marginTop: 6,
+              }}
+            >
+              Auto-suggested from the incident date range ·{" "}
+              {pendingReport.starts_at && pendingReport.ends_at
+                ? `${pendingReport.starts_at} → ${pendingReport.ends_at}`
+                : "no dated incidents"}
+            </div>
           </div>
         </div>
 

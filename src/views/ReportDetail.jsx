@@ -10,6 +10,7 @@ import {
 } from "../data/firebase.js";
 import { fetchPhotosForProsBatch } from "../parsers/nuvizzClient.js";
 import { generatePhotoReport, downloadPdf } from "../reports/pdfGenerator.js";
+import { reportSpanLabel } from "../reports/reportNaming.js";
 import IncidentTable from "./IncidentTable.jsx";
 
 export default function ReportDetail({
@@ -71,6 +72,21 @@ export default function ReportDetail({
     await saveReport({ ...report, name: name.trim() });
     setRenaming(false);
     onReportUpdated?.();
+  }
+
+  // Blur/Enter commit: save when changed + non-blank; silently revert if blank.
+  async function commitRename() {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      setName(report.name || "");
+      setRenaming(false);
+      return;
+    }
+    if (trimmed !== report.name) {
+      await saveReport({ ...report, name: trimmed });
+      onReportUpdated?.();
+    }
+    setRenaming(false);
   }
 
   async function downloadLastPdf() {
@@ -235,7 +251,14 @@ export default function ReportDetail({
               onChange={(e) => setName(e.target.value)}
               style={{ fontSize: 20, fontWeight: 700, maxWidth: 400 }}
               autoFocus
-              onKeyDown={(e) => e.key === "Enter" && handleRename()}
+              onBlur={commitRename}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commitRename();
+                if (e.key === "Escape") {
+                  setName(report.name || "");
+                  setRenaming(false);
+                }
+              }}
             />
             <button className="btn sm" onClick={handleRename} style={{ marginLeft: 8 }}>
               Save
@@ -262,7 +285,7 @@ export default function ReportDetail({
             >
               ✎
             </button>
-            <span className="meta">· {report.range_label}</span>
+            <span className="meta">· {reportSpanLabel(report)}</span>
           </>
         )}
       </div>
