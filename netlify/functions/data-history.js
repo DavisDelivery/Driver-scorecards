@@ -83,7 +83,7 @@ function incidentYearMonth(inc) {
 }
 
 export default async (req) => {
-  const store = getStore(STORE);
+  const store = getStore({ name: STORE, consistency: "strong" });
   const url = new URL(req.url);
   const path = url.pathname;
 
