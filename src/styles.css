@@ -1249,3 +1249,163 @@ table.data select.fault-select {
   color: var(--text-0);
   background: var(--bg-1);
 }
+
+/* ============================================================
+   Phase 6 — Reports & Analytics redesign
+   ============================================================ */
+
+.chart-band {
+  margin-bottom: 16px;
+}
+.chart-legend-note {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+/* Dense, scannable analytics table. Numeric columns right-aligned + mono.
+   Header stays sticky (inherits table.data th sticky); hairline rows. */
+table.data.analytics-table th.num,
+table.data.analytics-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+table.data.analytics-table td {
+  white-space: nowrap;
+}
+th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+th.sortable:hover {
+  color: var(--davis-blue);
+}
+table.data tr.kb-active > td {
+  background: var(--davis-blue-bg);
+  box-shadow: inset 3px 0 0 var(--davis-blue);
+}
+
+.sparkline {
+  vertical-align: middle;
+}
+.spark-empty {
+  color: var(--text-2);
+}
+.delta {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+}
+.delta.up {
+  color: var(--accent-red);
+} /* more incidents = bad */
+.delta.down {
+  color: var(--accent-green);
+} /* fewer incidents = good */
+.delta.flat {
+  color: var(--text-2);
+}
+
+.src-badge {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+.src-badge.live {
+  background: #dcfce7;
+  color: #15803d;
+  border-color: #bbf7d0;
+}
+.src-badge.history {
+  background: var(--bg-2);
+  color: var(--text-2);
+}
+.src-badge.none {
+  background: transparent;
+  color: var(--border-hot);
+}
+
+.expander-row > td {
+  background: var(--bg-2);
+  padding: 10px 14px !important;
+  border-bottom: 2px solid var(--border);
+}
+.mini-week-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.mini-week {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s ease;
+}
+.mini-week:hover {
+  border-color: var(--davis-blue);
+  background: var(--davis-blue-bg);
+}
+.mini-week-name {
+  font-weight: 700;
+  font-size: 12px;
+  color: var(--davis-blue);
+}
+.mini-week-meta {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-2);
+}
+table.data.analytics-subtable {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+table.data.analytics-subtable th {
+  position: static;
+}
+
+/* Loading skeletons (not spinners). */
+.skeleton {
+  display: block;
+  border-radius: 4px;
+  background: linear-gradient(
+    90deg,
+    var(--bg-2) 25%,
+    var(--bg-3) 37%,
+    var(--bg-2) 63%
+  );
+  background-size: 400% 100%;
+  animation: skeleton-shimmer 1.4s ease infinite;
+}
+.skeleton-row {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  padding: 12px 4px;
+  border-bottom: 1px solid var(--border);
+}
+.skeleton-row:last-child {
+  border-bottom: none;
+}
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0 50%;
+  }
+}

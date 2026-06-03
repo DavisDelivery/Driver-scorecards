@@ -32,6 +32,36 @@ Recovery is being performed from two surviving sources:
 | 3 | Fix 1 — no horizontal page scroll (768/1024/1440) | ✅ done & verified on draft |
 | 3 | Fix 2 — widen Fault column | ✅ done & verified (150px) |
 | 3 | Fix 3 — inline row-expand drawer (lazy photos, notes, custom fault) | ✅ done & verified on draft |
+| 5 | Report naming — date-range default + editable; starts_at/ends_at stored | ✅ done (build clean; logic unit-checked) |
+| 6 | Reports & analytics redesign — full-width nav, Weekly/Monthly/Yearly + charts | ✅ done (build clean; reconciliation unit-checked) |
+
+> NOTE on brief phase numbering: this table uses the **master-brief** numbering
+> (Phase 4 = the three Report-Detail UI fixes, listed here under "3" from the
+> earlier draft). Brief Phases 5 (report naming) and 6 (analytics redesign) are
+> the latest additions.
+
+### Phase 5 — Report naming
+Default name is derived from the **true min/max incident date** ("Week of Jun 1–5",
+"Week of Apr 28 – May 2"). `starts_at`/`ends_at` are stored separately so analytics
+group by real dates, not the editable label. The name is seeded only while blank
+(re-drop/re-enrich won't clobber edits) and is inline-editable in both Ingest and
+ReportDetail.
+
+### Phase 6 — Reports & analytics redesign
+Split-pane removed. The Reports list is full-width with a **Weekly | Monthly | Yearly**
+granularity switcher + year/month period controls; clicking a report opens its own
+full-width detail screen with a back button (state-based navigation — no react-router
+added, to avoid destabilising the tab-based SPA). A recharts chart band sits atop each
+view (weekly stacked-by-category + driver-fault line; monthly 12-month stacked + prior-
+year ghost line; yearly category totals). Loading **skeletons**, empty states, sticky
+headers, right-aligned mono numerics, sparklines + vs-prior deltas, and j/k/Enter + "/"
+keyboard nav are in.
+
+**Reconciliation:** monthly/yearly rollups use a shared `data/analytics.js` that mirrors
+the Dashboard blend exactly — live incidents where any exist for a month, else the
+history rollup — and counts live incidents with the same `driver_id` + tracked-category
+filter the server `/rollup-report` uses. So Reports' monthly/yearly numbers reconcile
+with the Trends tab and the Dashboard.
 
 ## NuVizz functions — RECOVERED & verified
 

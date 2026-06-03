@@ -204,6 +204,7 @@ export default function App() {
             {tab === "reports" && (
               <Reports
                 drivers={drivers}
+                incidents={incidents}
                 onNewReport={() => setTab("ingest")}
                 initialReportId={initialReportId}
                 onCleared={() => setInitialReportId(null)}
