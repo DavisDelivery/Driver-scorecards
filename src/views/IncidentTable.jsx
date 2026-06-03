@@ -29,13 +29,14 @@ const CUSTOM = "__custom__";
 // Inline row drawer (Phase 3, Fix 3). Reuses the lazy-photo load + saveIncident
 // logic from IncidentEditor, rendered inline under a row instead of as a modal.
 function IncidentDrawer({ incident, photos, photosLoading, onSave }) {
-  const [notes, setNotes] = useState(incident.notes || "");
+  // Davis's own note lives in `your_note`; `notes` holds the Uline-scanned note.
+  const [davisNote, setDavisNote] = useState(incident.your_note || "");
   const startCustom = !!incident.fault && !FAULT_IDS.has(incident.fault);
   const [faultSel, setFaultSel] = useState(startCustom ? CUSTOM : incident.fault || "unknown");
   const [customFault, setCustomFault] = useState(startCustom ? incident.fault : "");
 
-  const persistNotes = () => {
-    if ((notes || "") !== (incident.notes || "")) onSave({ notes });
+  const persistDavisNote = () => {
+    if ((davisNote || "") !== (incident.your_note || "")) onSave({ your_note: davisNote });
   };
   const onFaultSelect = (val) => {
     setFaultSel(val);
@@ -102,22 +103,27 @@ function IncidentDrawer({ incident, photos, photosLoading, onSave }) {
           )}
 
           <div className="drawer-label" style={{ marginTop: 12 }}>
-            Notes
+            Uline Notes
+          </div>
+          <div className="drawer-uline-notes">{incident.notes || "—"}</div>
+
+          <div className="drawer-label" style={{ marginTop: 12 }}>
+            Davis Notes
           </div>
           <textarea
             className="drawer-notes"
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            onBlur={persistNotes}
+            value={davisNote}
+            onChange={(e) => setDavisNote(e.target.value)}
+            onBlur={persistDavisNote}
             rows={4}
-            placeholder="Add notes…"
+            placeholder="Add Davis notes…"
           />
           <button
             className="btn ghost sm"
             style={{ marginTop: 6, alignSelf: "flex-start" }}
-            onClick={persistNotes}
+            onClick={persistDavisNote}
           >
-            Save Notes
+            Save Davis Notes
           </button>
         </div>
       </div>
