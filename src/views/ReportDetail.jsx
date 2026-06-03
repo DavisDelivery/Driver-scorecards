@@ -33,12 +33,14 @@ export default function ReportDetail({
     setName(report?.name || "");
   }, [report?.id]);
 
-  const load = async () => {
+  // quiet=true refreshes the data without flipping the loading state, so inline
+  // edits (fault/driver/notes) don't flash the table away behind "Loading…".
+  const load = async (quiet = false) => {
     if (!report?.id) return;
-    setLoading(true);
+    if (!quiet) setLoading(true);
     const list = await getIncidentsForReport(report.id);
     setIncidents(list);
-    setLoading(false);
+    if (!quiet) setLoading(false);
   };
 
   useEffect(() => {
@@ -332,7 +334,7 @@ export default function ReportDetail({
         <IncidentTable
           incidents={incidents}
           drivers={drivers}
-          onUpdate={load}
+          onUpdate={() => load(true)}
           groupBy="category"
           showBulkActions
           showFilters

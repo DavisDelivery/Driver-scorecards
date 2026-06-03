@@ -13,7 +13,7 @@ const json = (body, status = 200) =>
   });
 
 export default async (req) => {
-  const store = getStore(STORE);
+  const store = getStore({ name: STORE, consistency: "strong" });
   try {
     if (req.method === "GET") {
       const drivers = (await store.get(KEY, { type: "json" })) || [];

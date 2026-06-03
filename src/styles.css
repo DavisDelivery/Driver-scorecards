@@ -1168,11 +1168,14 @@ table.data select.fault-select {
   min-width: 150px;
 }
 
-/* Fix 3 — inline expandable row drawer (accordion). */
-.incident-row {
+/* Fix 3 — inline expandable row drawer (accordion).
+   NOTE: use a table-specific class (.inc-row) — the recovered stylesheet already
+   defines .incident-row as `display:grid` for the Drivers modal history rows, and
+   reusing that name would turn these <tr>s into grid containers (broken layout). */
+.inc-row {
   cursor: pointer;
 }
-.incident-row.expanded > td {
+.inc-row.expanded > td {
   background: var(--davis-blue-bg);
 }
 .row-caret {
@@ -1408,4 +1411,17 @@ table.data.analytics-subtable th {
   100% {
     background-position: 0 50%;
   }
+}
+
+/* Read-only Uline-scanned note (not editable). */
+.drawer-uline-notes {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-1);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }

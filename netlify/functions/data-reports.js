@@ -20,7 +20,7 @@ const newId = () =>
   `r_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
 export default async (req) => {
-  const store = getStore(STORE);
+  const store = getStore({ name: STORE, consistency: "strong" });
   const url = new URL(req.url);
   const id = url.searchParams.get("id");
 

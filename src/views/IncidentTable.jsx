@@ -1,4 +1,4 @@
-import { Fragment, useState, useMemo } from "react";
+import { Fragment, useState, useMemo, useEffect } from "react";
 import { INCIDENT_CATEGORIES, FAULT_CODES } from "../data/drivers.js";
 import {
   saveIncident,
@@ -29,13 +29,14 @@ const CUSTOM = "__custom__";
 // Inline row drawer (Phase 3, Fix 3). Reuses the lazy-photo load + saveIncident
 // logic from IncidentEditor, rendered inline under a row instead of as a modal.
 function IncidentDrawer({ incident, photos, photosLoading, onSave }) {
-  const [notes, setNotes] = useState(incident.notes || "");
+  // Davis's own note lives in `your_note`; `notes` holds the Uline-scanned note.
+  const [davisNote, setDavisNote] = useState(incident.your_note || "");
   const startCustom = !!incident.fault && !FAULT_IDS.has(incident.fault);
   const [faultSel, setFaultSel] = useState(startCustom ? CUSTOM : incident.fault || "unknown");
   const [customFault, setCustomFault] = useState(startCustom ? incident.fault : "");
 
-  const persistNotes = () => {
-    if ((notes || "") !== (incident.notes || "")) onSave({ notes });
+  const persistDavisNote = () => {
+    if ((davisNote || "") !== (incident.your_note || "")) onSave({ your_note: davisNote });
   };
   const onFaultSelect = (val) => {
     setFaultSel(val);
@@ -102,22 +103,27 @@ function IncidentDrawer({ incident, photos, photosLoading, onSave }) {
           )}
 
           <div className="drawer-label" style={{ marginTop: 12 }}>
-            Notes
+            Uline Notes
+          </div>
+          <div className="drawer-uline-notes">{incident.notes || "—"}</div>
+
+          <div className="drawer-label" style={{ marginTop: 12 }}>
+            Davis Notes
           </div>
           <textarea
             className="drawer-notes"
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            onBlur={persistNotes}
+            value={davisNote}
+            onChange={(e) => setDavisNote(e.target.value)}
+            onBlur={persistDavisNote}
             rows={4}
-            placeholder="Add notes…"
+            placeholder="Add Davis notes…"
           />
           <button
             className="btn ghost sm"
             style={{ marginTop: 6, alignSelf: "flex-start" }}
-            onClick={persistNotes}
+            onClick={persistDavisNote}
           >
-            Save Notes
+            Save Davis Notes
           </button>
         </div>
       </div>
@@ -145,6 +151,12 @@ export default function IncidentTable({
   const [expandedId, setExpandedId] = useState(null);
   const [photosById, setPhotosById] = useState({});
   const [loadingPhotos, setLoadingPhotos] = useState(new Set());
+  // Local working copy so inline edits (fault/driver/notes) apply optimistically
+  // and instantly — no flash, no dependence on the refetch round-trip.
+  const [rows, setRows] = useState(incidents);
+  useEffect(() => {
+    setRows(incidents);
+  }, [incidents]);
 
   const driverName = (id) => drivers.find((d) => d.id === id)?.name || "";
 
@@ -180,7 +192,7 @@ export default function IncidentTable({
 
   const filtered = useMemo(
     () =>
-      incidents
+      rows
         .filter((x) => faultFilter === "all" || x.fault === faultFilter)
         .filter((x) => {
           if (!search) return true;
@@ -194,7 +206,7 @@ export default function IncidentTable({
             (x.reason || "").toLowerCase().includes(q)
           );
         }),
-    [incidents, faultFilter, search, drivers],
+    [rows, faultFilter, search, drivers],
   );
 
   const sorted = useMemo(() => {
@@ -287,21 +299,33 @@ export default function IncidentTable({
     </th>
   );
 
+  // Patch one row in local state immediately (optimistic), then persist.
+  const patchRow = (id, patch) =>
+    setRows((prev) => prev.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+
   async function changeFault(inc, fault) {
-    await saveIncident({ ...inc, fault });
+    patchRow(inc.id, { fault });
+    try {
+      await saveIncident({ ...inc, fault });
+    } catch (err) {
+      console.error("save fault failed", err);
+    }
     onUpdate?.();
   }
   async function changeDriver(inc, driverId) {
     const d = drivers.find((x) => x.id === driverId);
-    await saveIncident({
-      ...inc,
-      driver_id: driverId || null,
-      driver_name: d?.name || "",
-    });
+    const patch = { driver_id: driverId || null, driver_name: d?.name || "" };
+    patchRow(inc.id, patch);
+    try {
+      await saveIncident({ ...inc, ...patch });
+    } catch (err) {
+      console.error("save driver failed", err);
+    }
     onUpdate?.();
   }
   // Persist an edit from the inline drawer (optimistic; errors logged).
   async function saveFromDrawer(inc, patch) {
+    patchRow(inc.id, patch);
     try {
       await saveIncident({ ...inc, ...patch });
       onUpdate?.();
@@ -311,11 +335,16 @@ export default function IncidentTable({
   }
   async function removeIncident(id) {
     if (!confirm("Delete this incident? This cannot be undone.")) return;
-    await deleteIncident(id);
+    setRows((prev) => prev.filter((x) => x.id !== id)); // optimistic
     const next = new Set(selected);
     next.delete(id);
     setSelected(next);
     if (expandedId === id) setExpandedId(null);
+    try {
+      await deleteIncident(id);
+    } catch (err) {
+      console.error("delete failed", err);
+    }
     onUpdate?.();
   }
   async function deleteSelected() {
@@ -326,8 +355,14 @@ export default function IncidentTable({
         `Delete ${ids.length} incident${ids.length === 1 ? "" : "s"}? This cannot be undone.`,
       )
     ) {
-      await deleteIncidentsBatch(ids);
+      const set = new Set(ids);
+      setRows((prev) => prev.filter((x) => !set.has(x.id))); // optimistic
       setSelected(new Set());
+      try {
+        await deleteIncidentsBatch(ids);
+      } catch (err) {
+        console.error("bulk delete failed", err);
+      }
       onUpdate?.();
     }
   }
@@ -489,7 +524,7 @@ export default function IncidentTable({
                         group.items.map((inc) => (
                           <Fragment key={inc.id}>
                             <tr
-                              className={`incident-row ${expandedId === inc.id ? "expanded" : ""}`}
+                              className={`inc-row ${expandedId === inc.id ? "expanded" : ""}`}
                               onClick={() => toggleExpand(inc)}
                               title="Click to expand details"
                             >
