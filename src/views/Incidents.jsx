@@ -1,4 +1,4 @@
-import { useState, useMemo, Fragment } from "react";
+import { useState, useMemo, useEffect, Fragment } from "react";
 import { saveIncident, deleteIncident, deleteIncidentsBatch } from "../data/firebase.js";
 import { FAULT_CODES, INCIDENT_CATEGORIES } from "../data/drivers.js";
 import IncidentEditor from "./IncidentEditor.jsx";
@@ -69,14 +69,22 @@ function IncidentList({
   const [collapsed, setCollapsed] = useState(new Set());
   const [selected, setSelected] = useState(new Set());
   const [editingIncident, setEditingIncident] = useState(null);
+  // Local working copy for optimistic inline edits (no flash / no stale revert).
+  const [rows, setRows] = useState(incidents);
+  useEffect(() => {
+    setRows(incidents);
+  }, [incidents]);
 
   const driverName = (driverId) =>
     drivers.find((d) => d.id === driverId)?.name || "";
 
+  const patchRow = (id, patch) =>
+    setRows((prev) => prev.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+
   // -- filter
   const filtered = useMemo(
     () =>
-      incidents
+      rows
         .filter((inc) => faultFilter === "all" || inc.fault === faultFilter)
         .filter((inc) => {
           if (!search) return true;
@@ -91,7 +99,7 @@ function IncidentList({
           );
         }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [incidents, faultFilter, search, drivers]
+    [rows, faultFilter, search, drivers]
   );
 
   // -- sort
@@ -173,26 +181,38 @@ function IncidentList({
   }
 
   async function handleInlineFault(inc, fault) {
-    await saveIncident({ ...inc, fault });
+    patchRow(inc.id, { fault }); // optimistic
+    try {
+      await saveIncident({ ...inc, fault });
+    } catch (err) {
+      console.error("save fault failed", err);
+    }
     onUpdate?.();
   }
 
   async function handleInlineDriver(inc, driverId) {
     const driver = drivers.find((d) => d.id === driverId);
-    await saveIncident({
-      ...inc,
-      driver_id: driverId || null,
-      driver_name: driver?.name || "",
-    });
+    const patch = { driver_id: driverId || null, driver_name: driver?.name || "" };
+    patchRow(inc.id, patch); // optimistic
+    try {
+      await saveIncident({ ...inc, ...patch });
+    } catch (err) {
+      console.error("save driver failed", err);
+    }
     onUpdate?.();
   }
 
   async function handleDelete(id) {
     if (!confirm("Delete this incident? This cannot be undone.")) return;
-    await deleteIncident(id);
+    setRows((prev) => prev.filter((x) => x.id !== id)); // optimistic
     const next = new Set(selected);
     next.delete(id);
     setSelected(next);
+    try {
+      await deleteIncident(id);
+    } catch (err) {
+      console.error("delete failed", err);
+    }
     onUpdate?.();
   }
 
@@ -205,8 +225,14 @@ function IncidentList({
       )
     )
       return;
-    await deleteIncidentsBatch(ids);
+    const set = new Set(ids);
+    setRows((prev) => prev.filter((x) => !set.has(x.id))); // optimistic
     setSelected(new Set());
+    try {
+      await deleteIncidentsBatch(ids);
+    } catch (err) {
+      console.error("bulk delete failed", err);
+    }
     onUpdate?.();
   }
 
