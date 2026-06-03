@@ -1168,11 +1168,14 @@ table.data select.fault-select {
   min-width: 150px;
 }
 
-/* Fix 3 — inline expandable row drawer (accordion). */
-.incident-row {
+/* Fix 3 — inline expandable row drawer (accordion).
+   NOTE: use a table-specific class (.inc-row) — the recovered stylesheet already
+   defines .incident-row as `display:grid` for the Drivers modal history rows, and
+   reusing that name would turn these <tr>s into grid containers (broken layout). */
+.inc-row {
   cursor: pointer;
 }
-.incident-row.expanded > td {
+.inc-row.expanded > td {
   background: var(--davis-blue-bg);
 }
 .row-caret {

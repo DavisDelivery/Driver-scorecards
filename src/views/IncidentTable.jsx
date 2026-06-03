@@ -489,7 +489,7 @@ export default function IncidentTable({
                         group.items.map((inc) => (
                           <Fragment key={inc.id}>
                             <tr
-                              className={`incident-row ${expandedId === inc.id ? "expanded" : ""}`}
+                              className={`inc-row ${expandedId === inc.id ? "expanded" : ""}`}
                               onClick={() => toggleExpand(inc)}
                               title="Click to expand details"
                             >
