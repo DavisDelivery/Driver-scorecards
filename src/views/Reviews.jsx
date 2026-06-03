@@ -175,6 +175,10 @@ export default function Reviews() {
           <div style={{ fontSize: "11px", color: "#97a3b3", textTransform: "uppercase", letterSpacing: ".04em" }}>4★+ (→ Google)</div>
           <div style={{ fontSize: "28px", fontWeight: 800, color: GREEN }}>{kpis.google}</div>
         </div>
+        <div style={card}>
+          <div style={{ fontSize: "11px", color: "#97a3b3", textTransform: "uppercase", letterSpacing: ".04em" }}>≤3★</div>
+          <div style={{ fontSize: "28px", fontWeight: 800, color: RED }}>{kpis.internal}</div>
+        </div>
       </div>
 
       {/* Rating distribution */}
