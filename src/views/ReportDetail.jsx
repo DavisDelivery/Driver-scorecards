@@ -5,7 +5,6 @@ import {
   deleteReport,
   saveReport,
   getReportWithPdf,
-  getIncidentPhotosBatch,
   saveIncident,
 } from "../data/firebase.js";
 import { fetchPhotosForProsBatch } from "../parsers/nuvizzClient.js";
@@ -153,26 +152,14 @@ export default function ReportDetail({
     }
     setGenerating(true);
     try {
-      const withPhotoIds = incidents
-        .filter((i) => i.has_photos || (i.photo_urls && i.photo_urls.length > 0))
-        .map((i) => i.id);
-      const photoMap =
-        withPhotoIds.length > 0
-          ? await getIncidentPhotosBatch(withPhotoIds, ({ done, total }) =>
-              setProgress({ done, total, pro: "photos" }),
-            )
-          : new Map();
+      // Photos are hydrated inside generatePhotoReport (one batched fetch from the
+      // photos:{id} blobs), so here we only enrich driver name / notes and order.
       const nameFor = (id) => drivers.find((d) => d.id === id)?.name || "";
-      const enriched = incidents.map((i) => {
-        const photos = photoMap.get(i.id);
-        return {
-          ...i,
-          driver_name: nameFor(i.driver_id) || i.driver_raw || "",
-          your_note: i.your_note || i.notes || "",
-          photo_urls: photos?.photo_urls || i.photo_urls || [],
-          photo_meta: photos?.photo_meta || i.photo_meta || [],
-        };
-      });
+      const enriched = incidents.map((i) => ({
+        ...i,
+        driver_name: nameFor(i.driver_id) || i.driver_raw || "",
+        your_note: i.your_note || i.notes || "",
+      }));
       const order = [
         "damage",
         "missing",
@@ -194,6 +181,8 @@ export default function ReportDetail({
       const doc = await generatePhotoReport(enriched, {
         title: report.name,
         dateRange: report.range_label,
+        onProgress: ({ done, total }) =>
+          setProgress({ done, total, pro: "photos" }),
       });
       const dataUri = doc.output("datauristring");
       const filename = `${(report.name || "report").replace(/[^a-z0-9-_ ]/gi, "_")}.pdf`;
