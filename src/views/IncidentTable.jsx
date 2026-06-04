@@ -5,6 +5,7 @@ import {
   deleteIncident,
   deleteIncidentsBatch,
   getIncidentPhotos,
+  getIncidentPhotosBatch,
 } from "../data/firebase.js";
 import IncidentEditor from "./IncidentEditor.jsx";
 
@@ -147,8 +148,9 @@ export default function IncidentTable({
   const [collapsed, setCollapsed] = useState(new Set());
   const [selected, setSelected] = useState(new Set());
   const [editing, setEditing] = useState(null);
-  // Phase 3: inline row expansion + lazy photo cache.
-  const [expandedId, setExpandedId] = useState(null);
+  // Phase 3/4: inline row expansion + lazy photo cache. expandedIds is the single
+  // source of truth shared by individual row toggles and Expand/Collapse all.
+  const [expandedIds, setExpandedIds] = useState(() => new Set());
   const [photosById, setPhotosById] = useState({});
   const [loadingPhotos, setLoadingPhotos] = useState(new Set());
   // Local working copy so inline edits (fault/driver/notes) apply optimistically
@@ -160,34 +162,44 @@ export default function IncidentTable({
 
   const driverName = (id) => drivers.find((d) => d.id === id)?.name || "";
 
-  // Toggle a row drawer; lazy-load its photos on first expand only.
-  const toggleExpand = (inc) => {
+  const incidentHasPhotos = (inc) =>
+    inc.has_photos || (inc.photo_urls && inc.photo_urls.length > 0);
+
+  // Lazy-load one incident's photos (single fetch). No-op once cached/loading.
+  const loadPhotosFor = (inc) => {
     const id = inc.id;
-    if (expandedId === id) {
-      setExpandedId(null);
+    if (photosById[id] !== undefined || loadingPhotos.has(id)) return;
+    if (!incidentHasPhotos(inc)) {
+      setPhotosById((m) => ({ ...m, [id]: { photo_urls: [], photo_meta: [] } }));
       return;
     }
-    setExpandedId(id);
-    const hasPhotos =
-      inc.has_photos || (inc.photo_urls && inc.photo_urls.length > 0);
-    if (hasPhotos && photosById[id] === undefined && !loadingPhotos.has(id)) {
-      setLoadingPhotos((s) => new Set(s).add(id));
-      getIncidentPhotos(id)
-        .then((p) => setPhotosById((m) => ({ ...m, [id]: p })))
-        .catch((err) => {
-          console.error("drawer photo load failed", err);
-          setPhotosById((m) => ({ ...m, [id]: { photo_urls: [], photo_meta: [] } }));
-        })
-        .finally(() =>
-          setLoadingPhotos((s) => {
-            const n = new Set(s);
-            n.delete(id);
-            return n;
-          }),
-        );
-    } else if (!hasPhotos && photosById[id] === undefined) {
-      setPhotosById((m) => ({ ...m, [id]: { photo_urls: [], photo_meta: [] } }));
-    }
+    setLoadingPhotos((s) => new Set(s).add(id));
+    getIncidentPhotos(id)
+      .then((p) => setPhotosById((m) => ({ ...m, [id]: p })))
+      .catch((err) => {
+        console.error("drawer photo load failed", err);
+        setPhotosById((m) => ({ ...m, [id]: { photo_urls: [], photo_meta: [] } }));
+      })
+      .finally(() =>
+        setLoadingPhotos((s) => {
+          const n = new Set(s);
+          n.delete(id);
+          return n;
+        }),
+      );
+  };
+
+  // Toggle a single row drawer; lazy-load its photos on first expand only.
+  const toggleExpand = (inc) => {
+    const id = inc.id;
+    const opening = !expandedIds.has(id);
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+    if (opening) loadPhotosFor(inc);
   };
 
   const filtered = useMemo(
@@ -276,6 +288,70 @@ export default function IncidentTable({
     setCollapsed(next);
   };
 
+  // Expand/Collapse all operate on the currently visible (filtered + sorted) rows
+  // across every group. The button label reflects whether they're all open.
+  const allExpanded =
+    sorted.length > 0 && sorted.every((inc) => expandedIds.has(inc.id));
+
+  async function expandAll() {
+    // Open every visible row immediately so the drawers (and their loading state)
+    // render right away rather than blocking on the network.
+    setExpandedIds(new Set(sorted.map((inc) => inc.id)));
+
+    // Incidents without photos resolve instantly to an empty result.
+    setPhotosById((m) => {
+      const next = { ...m };
+      for (const inc of sorted) {
+        if (!incidentHasPhotos(inc) && next[inc.id] === undefined) {
+          next[inc.id] = { photo_urls: [], photo_meta: [] };
+        }
+      }
+      return next;
+    });
+
+    // Hydrate the rest with ONE batched call — never N parallel single fetches.
+    const needIds = sorted
+      .filter(
+        (inc) =>
+          incidentHasPhotos(inc) &&
+          photosById[inc.id] === undefined &&
+          !loadingPhotos.has(inc.id),
+      )
+      .map((inc) => inc.id);
+    if (needIds.length === 0) return;
+
+    setLoadingPhotos((s) => {
+      const n = new Set(s);
+      needIds.forEach((id) => n.add(id));
+      return n;
+    });
+    try {
+      const map = await getIncidentPhotosBatch(needIds);
+      setPhotosById((m) => {
+        const next = { ...m };
+        for (const [id, photos] of map) next[id] = photos;
+        return next;
+      });
+    } catch (err) {
+      console.error("batch drawer photo load failed", err);
+      setPhotosById((m) => {
+        const next = { ...m };
+        for (const id of needIds)
+          if (next[id] === undefined) next[id] = { photo_urls: [], photo_meta: [] };
+        return next;
+      });
+    } finally {
+      setLoadingPhotos((s) => {
+        const n = new Set(s);
+        needIds.forEach((id) => n.delete(id));
+        return n;
+      });
+    }
+  }
+
+  const collapseAll = () => setExpandedIds(new Set());
+  const toggleExpandAll = () => (allExpanded ? collapseAll() : expandAll());
+
   const onSort = (col) => {
     if (sortCol === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     else {
@@ -339,7 +415,12 @@ export default function IncidentTable({
     const next = new Set(selected);
     next.delete(id);
     setSelected(next);
-    if (expandedId === id) setExpandedId(null);
+    setExpandedIds((prev) => {
+      if (!prev.has(id)) return prev;
+      const n = new Set(prev);
+      n.delete(id);
+      return n;
+    });
     try {
       await deleteIncident(id);
     } catch (err) {
@@ -443,6 +524,14 @@ export default function IncidentTable({
             </button>
           </div>
           <div className="toolbar-spacer" />
+          <button
+            className="btn ghost sm"
+            onClick={toggleExpandAll}
+            disabled={sorted.length === 0}
+            title="Expand or collapse every visible row's drawer"
+          >
+            {allExpanded ? "Collapse all" : "Expand all"}
+          </button>
           {showBulkActions && selected.size > 0 && (
             <button className="btn danger" onClick={deleteSelected}>
               Delete {selected.size} Selected
@@ -524,7 +613,7 @@ export default function IncidentTable({
                         group.items.map((inc) => (
                           <Fragment key={inc.id}>
                             <tr
-                              className={`inc-row ${expandedId === inc.id ? "expanded" : ""}`}
+                              className={`inc-row ${expandedIds.has(inc.id) ? "expanded" : ""}`}
                               onClick={() => toggleExpand(inc)}
                               title="Click to expand details"
                             >
@@ -539,7 +628,7 @@ export default function IncidentTable({
                               )}
                               <td className="pro-num">
                                 <span className="row-caret">
-                                  {expandedId === inc.id ? "▾" : "▸"}
+                                  {expandedIds.has(inc.id) ? "▾" : "▸"}
                                 </span>
                                 {inc.pro_number}
                               </td>
@@ -651,7 +740,7 @@ export default function IncidentTable({
                                 </button>
                               </td>
                             </tr>
-                            {expandedId === inc.id && (
+                            {expandedIds.has(inc.id) && (
                               <tr className="incident-drawer-row">
                                 <td colSpan={colCount}>
                                   <IncidentDrawer
