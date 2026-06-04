@@ -117,9 +117,14 @@ function loadImage(src) {
 }
 
 // Render up to 2 photos into a cell, fit-within with aspect ratio preserved and
-// no gray letterbox. 1 photo fills the cell; 2 photos split it into equal halves
-// with no gap between them. Empty list draws the "No photo available" notice.
-async function drawPhotos(doc, photos, px, py, pw, ph) {
+// no gray letterbox. Empty list draws the "No photo available" notice.
+//   opts.cells : how many equal columns to divide the area into (default = #photos).
+//                Pass 2 on continuation cards so a single leftover photo is the
+//                same size as the top-2, not blown up to full width.
+//   opts.align : "left" (default) fills columns left→right; "right" fills the
+//                rightmost columns first so continuation photos line up under the
+//                incident card's photos.
+async function drawPhotos(doc, photos, px, py, pw, ph, opts = {}) {
   const urls = (photos || []).slice(0, 2);
   if (urls.length === 0) {
     doc.setFont("helvetica", "italic");
@@ -128,9 +133,11 @@ async function drawPhotos(doc, photos, px, py, pw, ph) {
     doc.text("No photo available", px + pw / 2, py + ph / 2, { align: "center" });
     return;
   }
-  const cellW = pw / urls.length;
+  const cols = opts.cells || urls.length;
+  const cellW = pw / cols;
   for (let i = 0; i < urls.length; i++) {
-    const cellX = px + i * cellW;
+    const slot = opts.align === "right" ? cols - urls.length + i : i;
+    const cellX = px + slot * cellW;
     try {
       const loaded = await loadImage(urls[i]);
       const { w: iw, h: ih } = fitDims(loaded.width, loaded.height, cellW, ph);
@@ -431,11 +438,19 @@ async function drawContinuationCard(doc, inc, x, y, w, h, photos) {
   setColor(doc, TEXT_MUTED, "text");
   doc.text("ADDITIONAL PHOTOS (CONT.)", x + 10 + proWidth + 14, headY);
 
-  const photoX = x + 10;
-  const photoY = y + 28;
-  const photoW = w - 20;
-  const photoH = h - 28 - 12;
-  await drawPhotos(doc, photos, photoX, photoY, photoW, photoH);
+  // Use the SAME right-side photo column geometry as the incident card so the
+  // continued photos match the top-2 in size and position, and fill right→left
+  // (a single leftover photo lands in the rightmost slot, not centered).
+  const innerH = h - 50;
+  const photoW = Math.min(h * 0.9, w * 0.5);
+  const notesW = w - photoW - 10 * 3;
+  const photoX = x + 10 + notesW + 10;
+  const photoY = y + 42;
+  const photoH = innerH - 5;
+  await drawPhotos(doc, photos, photoX, photoY, photoW, photoH, {
+    cells: 2,
+    align: "right",
+  });
 }
 
 function drawPageHeader(doc, meta, page, total) {

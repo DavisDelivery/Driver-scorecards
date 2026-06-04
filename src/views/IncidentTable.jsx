@@ -465,7 +465,7 @@ export default function IncidentTable({
   return (
     <>
       {showFilters && (
-        <div className="toolbar" style={{ flexWrap: "wrap" }}>
+        <div className="toolbar incidents-toolbar" style={{ flexWrap: "wrap" }}>
           <input
             type="text"
             placeholder="Search PRO#, notes, driver, reason..."
