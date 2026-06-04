@@ -64,19 +64,12 @@ function drawBadge(doc, text, x, y, color, opts = {}) {
   return w;
 }
 
-// jsPDF understands PNG/JPEG natively; detect the encoding from a data URI so we
-// can hand the original bytes straight to addImage (re-encoding a transparent PNG
-// to JPEG is what turned dock photos into solid black rectangles).
-function detectFormat(src) {
-  if (/^data:image\/png/i.test(src)) return "PNG";
-  if (/^data:image\/jpe?g/i.test(src)) return "JPEG";
-  return null;
-}
-
-// Load an image and return { dataUrl, format, width, height }, awaited so the
-// bytes are fully decoded before addImage runs. Data-URI PNG/JPEG bytes are
-// passed through untouched; anything else (remote URL, webp, gif) is rasterized
-// onto a white background and re-encoded as JPEG so it still draws.
+// Load an image and ALWAYS re-encode it through a white canvas to a baseline
+// JPEG before handing it to jsPDF. We don't pass the original PNG/JPEG bytes
+// through: jsPDF's built-in PNG decoder chokes on some encodings (interlaced /
+// 16-bit / unusual color types) and renders a solid black rectangle. The browser
+// decodes anything reliably, and the white fill flattens transparency so nothing
+// comes out black. Awaited so the bytes are fully decoded before addImage runs.
 function loadImage(src) {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -84,29 +77,25 @@ function loadImage(src) {
     const timer = setTimeout(() => reject(new Error("image load timeout")), 15000);
     img.onload = () => {
       clearTimeout(timer);
-      const passthrough = detectFormat(src);
-      if (passthrough) {
+      try {
+        const w = img.naturalWidth || 1;
+        const h = img.naturalHeight || 1;
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0);
         resolve({
-          dataUrl: src,
-          format: passthrough,
-          width: img.naturalWidth,
-          height: img.naturalHeight,
+          dataUrl: canvas.toDataURL("image/jpeg", 0.85),
+          format: "JPEG",
+          width: w,
+          height: h,
         });
-        return;
+      } catch (err) {
+        reject(err);
       }
-      const canvas = document.createElement("canvas");
-      canvas.width = img.naturalWidth;
-      canvas.height = img.naturalHeight;
-      const ctx = canvas.getContext("2d");
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(img, 0, 0);
-      resolve({
-        dataUrl: canvas.toDataURL("image/jpeg", 0.85),
-        format: "JPEG",
-        width: img.naturalWidth,
-        height: img.naturalHeight,
-      });
     };
     img.onerror = () => {
       clearTimeout(timer);
@@ -456,17 +445,20 @@ async function drawContinuationCard(doc, inc, x, y, w, h, photos) {
 function drawPageHeader(doc, meta, page, total) {
   const pageW = doc.internal.pageSize.getWidth();
   const margin = 40;
+  // Taller bar with the text pushed down to ~y=30, clear of a printer's ~0.25"
+  // unprintable top margin so the header text isn't clipped on physical prints.
   setColor(doc, DAVIS_BLUE, "fill");
-  doc.rect(0, 0, pageW, 28, "F");
+  doc.rect(0, 0, pageW, 40, "F");
+  const textY = 30;
   doc.setTextColor(255, 255, 255);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(9);
-  doc.text("DAVIS DRIVER SCORECARD", margin, 18);
+  doc.text("DAVIS DRIVER SCORECARD", margin, textY);
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8);
   doc.setTextColor(200, 215, 235);
-  doc.text(meta.title || "Photo Report", pageW / 2, 18, { align: "center" });
-  doc.text(`Page ${page} of ${total}`, pageW - margin, 18, { align: "right" });
+  doc.text(meta.title || "Photo Report", pageW / 2, textY, { align: "center" });
+  doc.text(`Page ${page} of ${total}`, pageW - margin, textY, { align: "right" });
 }
 
 // Build the full photo report (cover + 3 cards/page).
@@ -512,7 +504,7 @@ export async function generatePhotoReport(incidents, meta = {}) {
   const pageW = doc.internal.pageSize.getWidth();
   const pageH = doc.internal.pageSize.getHeight();
   const margin = 40;
-  const topOffset = 45;
+  const topOffset = 54; // clear the taller, print-safe page header
   const bottomOffset = 30;
   const perPage = 3;
   const gap = 12;
