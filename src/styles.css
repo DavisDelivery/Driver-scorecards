@@ -1425,3 +1425,35 @@ table.data.analytics-subtable th {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* --- Uline source badges + do-not-fault toggle (v0.6.0) --- */
+.src-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  vertical-align: middle;
+  color: #fff;
+  font-family: "JetBrains Mono", monospace;
+}
+.src-badge.src-traces { background: #64748b; }
+.src-badge.src-returns { background: #3b82f6; }
+.src-badge.src-laters { background: #b8860b; }
+.src-badge.nofault {
+  background: #fff;
+  color: #b91c1c;
+  border: 1px solid #b91c1c;
+}
+.drawer-nofault {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  color: #b91c1c;
+  cursor: pointer;
+  user-select: none;
+}
+.drawer-nofault input { width: 16px; height: 16px; cursor: pointer; }

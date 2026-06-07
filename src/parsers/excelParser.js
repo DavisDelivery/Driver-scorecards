@@ -25,6 +25,13 @@ const CATEGORY_PRECEDENCE = {
   other: 10,
 };
 
+// Map internal per-sheet source tags → normalized Uline report ids.
+const SOURCE_MAP = {
+  excel_laters: "laters",
+  excel_returns: "returns",
+  excel_traces: "traces",
+};
+
 // ---------------------------------------------------------------------------
 // Low-level helpers
 // ---------------------------------------------------------------------------
@@ -562,6 +569,11 @@ export function dedupeIncidents(incidents) {
     if (inc.merged_count > 1) {
       inc.merged_note = `Consolidated from ${inc.merged_count} line items`;
     }
+    // Normalize the set of Uline reports this PRO came in on (overlap kept:
+    // a PRO on both Traces and Returns keeps both). One row per PRO.
+    inc.sources = [
+      ...new Set((inc.merged_sources || []).map((s) => SOURCE_MAP[s]).filter(Boolean)),
+    ];
     delete inc.items;
     delete inc.item_descriptions;
     delete inc.merged_sources;

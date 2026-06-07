@@ -119,6 +119,31 @@ export const FAULT_CODES = [
   { id: "unknown", label: "Unknown", color: "#6b7891" },
 ];
 
+// Uline source reports an incident physically came in on (distinct from the
+// derived fault category). One incident can carry more than one of these.
+export const ULINE_SOURCES = [
+  { id: "laters", label: "Late", color: "#facc15" },
+  { id: "returns", label: "Return", color: "#3b82f6" },
+  { id: "traces", label: "Trace", color: "#64748b" },
+];
+export const SOURCE_LABELS = Object.fromEntries(
+  ULINE_SOURCES.map((s) => [s.id, s.label]),
+);
+
+// Controlled late-reason options. On Late-source rows this REPLACES the fault
+// dropdown; everywhere else the fault dropdown is unchanged.
+export const LATE_REASONS = [
+  { id: "attempted", label: "Attempted" },
+  { id: "unable_to_locate", label: "Unable to Locate" },
+  { id: "forgotten_freight", label: "Forgotten Freight" },
+  { id: "closed_mondays", label: "Closed Mondays" },
+  { id: "closed_fridays", label: "Closed Fridays" },
+  { id: "forgot_close_out", label: "Forgot Close Out" },
+];
+export const LATE_REASON_LABELS = Object.fromEntries(
+  LATE_REASONS.map((r) => [r.id, r.label]),
+);
+
 // Collapse duplicate driver names (case-insensitive), keeping the longest spelling,
 // then sort alphabetically by name.
 export function dedupeDrivers(list) {

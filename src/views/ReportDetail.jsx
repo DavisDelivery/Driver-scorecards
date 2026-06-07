@@ -230,7 +230,15 @@ export default function ReportDetail({
   const withPhotos = incidents.filter(
     (i) => i.has_photos || (i.photo_urls && i.photo_urls.length > 0),
   ).length;
-  const driverFault = incidents.filter((i) => i.fault === "driver").length;
+  const driverFault = incidents.filter(
+    (i) => i.fault === "driver" && !i.no_fault,
+  ).length;
+  const srcVol = { traces: 0, returns: 0, laters: 0 };
+  for (const i of incidents) {
+    for (const s of Array.isArray(i.sources) ? i.sources : []) {
+      if (s in srcVol) srcVol[s] += 1;
+    }
+  }
 
   return (
     <div>
@@ -305,6 +313,25 @@ export default function ReportDetail({
           <div className="kpi-label">With Photos</div>
           <div className="kpi-value">{withPhotos}</div>
         </div>
+      </div>
+
+      <div className="kpi-grid" style={{ marginTop: 8 }}>
+        <div className="kpi">
+          <div className="kpi-label">Traces (Uline vol.)</div>
+          <div className="kpi-value">{srcVol.traces}</div>
+        </div>
+        <div className="kpi">
+          <div className="kpi-label">Returns (Uline vol.)</div>
+          <div className="kpi-value">{srcVol.returns}</div>
+        </div>
+        <div className="kpi">
+          <div className="kpi-label">Lates (Uline vol.)</div>
+          <div className="kpi-value">{srcVol.laters}</div>
+        </div>
+      </div>
+      <div className="meta" style={{ marginTop: 4 }}>
+        Uline source volumes count each report a PRO came in on, so they can sum
+        to more than total incidents.
       </div>
 
       <div className="toolbar">

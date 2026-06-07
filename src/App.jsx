@@ -14,7 +14,7 @@ import Drivers from "./views/Drivers.jsx";
 import Trends from "./views/Trends.jsx";
 import History from "./views/History.jsx";
 
-export const APP_VERSION = "0.5.0";
+export const APP_VERSION = "0.6.1";
 
 const TABS = [
   { id: "dashboard", label: "Scorecard", icon: "◫", shortcut: "d" },

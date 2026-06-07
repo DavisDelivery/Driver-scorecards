@@ -1,5 +1,10 @@
 import { Fragment, useState, useMemo, useEffect } from "react";
-import { INCIDENT_CATEGORIES, FAULT_CODES } from "../data/drivers.js";
+import {
+  INCIDENT_CATEGORIES,
+  FAULT_CODES,
+  LATE_REASONS,
+  SOURCE_LABELS,
+} from "../data/drivers.js";
 import {
   saveIncident,
   deleteIncident,
@@ -54,6 +59,9 @@ function IncidentDrawer({ incident, photos, photosLoading, onSave }) {
   };
 
   const urls = photos?.photo_urls || [];
+  const isLate =
+    (Array.isArray(incident.sources) && incident.sources.includes("laters")) ||
+    incident.category === "late";
 
   return (
     <div className="incident-drawer">
@@ -76,30 +84,62 @@ function IncidentDrawer({ incident, photos, photosLoading, onSave }) {
         </div>
 
         <div className="drawer-section">
-          <div className="drawer-label">Fault</div>
-          <select
-            className="drawer-fault-select"
-            value={faultSel}
-            onChange={(e) => onFaultSelect(e.target.value)}
-          >
-            {FAULT_CODES.map((f) => (
-              <option key={f.id} value={f.id}>
-                {f.label}
-              </option>
-            ))}
-            <option value={CUSTOM}>Custom…</option>
-          </select>
-          {faultSel === CUSTOM && (
+          <label className="drawer-nofault">
             <input
-              type="text"
-              className="drawer-custom-fault"
-              placeholder="Enter custom fault…"
-              value={customFault}
-              autoFocus
-              onChange={(e) => setCustomFault(e.target.value)}
-              onBlur={persistCustomFault}
-              onKeyDown={(e) => e.key === "Enter" && persistCustomFault()}
+              type="checkbox"
+              checked={!!incident.no_fault}
+              onChange={(e) => onSave({ no_fault: e.target.checked })}
             />
+            <span>Do not fault driver</span>
+          </label>
+          <div className="drawer-muted" style={{ fontSize: 11, marginBottom: 12 }}>
+            When on, this incident is excluded from the driver's history and fault counts.
+          </div>
+
+          {isLate ? (
+            <>
+              <div className="drawer-label">Late Reason</div>
+              <select
+                className="drawer-fault-select"
+                value={incident.late_reason || ""}
+                onChange={(e) => onSave({ late_reason: e.target.value })}
+              >
+                <option value="">— Select reason —</option>
+                {LATE_REASONS.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.label}
+                  </option>
+                ))}
+              </select>
+            </>
+          ) : (
+            <>
+              <div className="drawer-label">Fault</div>
+              <select
+                className="drawer-fault-select"
+                value={faultSel}
+                onChange={(e) => onFaultSelect(e.target.value)}
+              >
+                {FAULT_CODES.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.label}
+                  </option>
+                ))}
+                <option value={CUSTOM}>Custom…</option>
+              </select>
+              {faultSel === CUSTOM && (
+                <input
+                  type="text"
+                  className="drawer-custom-fault"
+                  placeholder="Enter custom fault…"
+                  value={customFault}
+                  autoFocus
+                  onChange={(e) => setCustomFault(e.target.value)}
+                  onBlur={persistCustomFault}
+                  onKeyDown={(e) => e.key === "Enter" && persistCustomFault()}
+                />
+              )}
+            </>
           )}
 
           <div className="drawer-label" style={{ marginTop: 12 }}>
@@ -302,6 +342,19 @@ export default function IncidentTable({
   // Patch one row in local state immediately (optimistic), then persist.
   const patchRow = (id, patch) =>
     setRows((prev) => prev.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+
+  const isLateRow = (inc) =>
+    (Array.isArray(inc.sources) && inc.sources.includes("laters")) ||
+    inc.category === "late";
+
+  async function changeLateReason(inc, late_reason) {
+    patchRow(inc.id, { late_reason });
+    try {
+      await saveIncident({ ...inc, late_reason });
+    } catch (err) {
+      console.error("late reason save failed", err);
+    }
+  }
 
   async function changeFault(inc, fault) {
     patchRow(inc.id, { fault });
@@ -542,6 +595,15 @@ export default function IncidentTable({
                                   {expandedId === inc.id ? "▾" : "▸"}
                                 </span>
                                 {inc.pro_number}
+                                {Array.isArray(inc.sources) &&
+                                  inc.sources.map((s) => (
+                                    <span key={s} className={`src-badge src-${s}`}>
+                                      {SOURCE_LABELS[s] || s}
+                                    </span>
+                                  ))}
+                                {inc.no_fault && (
+                                  <span className="src-badge nofault">No Fault</span>
+                                )}
                               </td>
                               <td>{inc.ship_date || inc.return_date || "—"}</td>
                               {grouping !== "category" && (
@@ -576,31 +638,48 @@ export default function IncidentTable({
                               </td>
                               {grouping !== "fault" && (
                                 <td onClick={stop}>
-                                  <select
-                                    className="fault-select"
-                                    value={
-                                      FAULT_IDS.has(inc.fault)
-                                        ? inc.fault
-                                        : inc.fault
-                                          ? CUSTOM
-                                          : "unknown"
-                                    }
-                                    onChange={(e) =>
-                                      e.target.value !== CUSTOM &&
-                                      changeFault(inc, e.target.value)
-                                    }
-                                  >
-                                    {FAULT_CODES.map((f) => (
-                                      <option key={f.id} value={f.id}>
-                                        {f.label}
-                                      </option>
-                                    ))}
-                                    {!FAULT_IDS.has(inc.fault) && inc.fault && (
-                                      <option value={CUSTOM}>
-                                        {inc.fault} (custom)
-                                      </option>
-                                    )}
-                                  </select>
+                                  {isLateRow(inc) ? (
+                                    <select
+                                      className="fault-select"
+                                      value={inc.late_reason || ""}
+                                      onChange={(e) =>
+                                        changeLateReason(inc, e.target.value)
+                                      }
+                                    >
+                                      <option value="">— Reason —</option>
+                                      {LATE_REASONS.map((r) => (
+                                        <option key={r.id} value={r.id}>
+                                          {r.label}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  ) : (
+                                    <select
+                                      className="fault-select"
+                                      value={
+                                        FAULT_IDS.has(inc.fault)
+                                          ? inc.fault
+                                          : inc.fault
+                                            ? CUSTOM
+                                            : "unknown"
+                                      }
+                                      onChange={(e) =>
+                                        e.target.value !== CUSTOM &&
+                                        changeFault(inc, e.target.value)
+                                      }
+                                    >
+                                      {FAULT_CODES.map((f) => (
+                                        <option key={f.id} value={f.id}>
+                                          {f.label}
+                                        </option>
+                                      ))}
+                                      {!FAULT_IDS.has(inc.fault) && inc.fault && (
+                                        <option value={CUSTOM}>
+                                          {inc.fault} (custom)
+                                        </option>
+                                      )}
+                                    </select>
+                                  )}
                                 </td>
                               )}
                               <td>

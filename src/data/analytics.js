@@ -55,9 +55,10 @@ export function incidentYearMonth(inc) {
   return { year: Number(d.slice(0, 4)), month: Number(d.slice(5, 7)) };
 }
 
-// Does a live incident count toward the tracked rollup? (matches /rollup-report)
+// Does a live incident count toward the tracked rollup? (matches /rollup-report:
+// has a driver, a tracked category, and is NOT flagged "do not fault driver")
 function counts(inc) {
-  return !!inc.driver_id && TRACKED.has(inc.category);
+  return !!inc.driver_id && !inc.no_fault && TRACKED.has(inc.category);
 }
 
 const blankByCat = () => Object.fromEntries(ANALYTICS_CATEGORY_IDS.map((id) => [id, 0]));
@@ -139,14 +140,19 @@ export function buildYearlyTotals(incidents, history) {
 export function aggregateReport(reportId, incidents) {
   const list = incidents.filter((i) => i.report_id === reportId);
   const byCat = {};
+  // Overlapping Uline-report volumes: one PRO can be on more than one report,
+  // so these can sum to more than the row count. True per-report volume.
+  const bySource = { traces: 0, returns: 0, laters: 0 };
   let driverFault = 0;
   let withPhotos = 0;
   for (const inc of list) {
     byCat[inc.category] = (byCat[inc.category] || 0) + 1;
-    if (inc.fault === "driver") driverFault += 1;
+    if (inc.fault === "driver" && !inc.no_fault) driverFault += 1;
     if (inc.has_photos || (inc.photo_urls && inc.photo_urls.length > 0)) withPhotos += 1;
+    const sources = Array.isArray(inc.sources) ? inc.sources : [];
+    for (const s of sources) if (s in bySource) bySource[s] += 1;
   }
-  return { count: list.length, byCat, driverFault, withPhotos };
+  return { count: list.length, byCat, bySource, driverFault, withPhotos };
 }
 
 // Relative "x ago" string for a timestamp.
