@@ -1,7 +1,9 @@
 // PDF accountability report generator.
-// Builds a cover summary page + incident cards (3 per page, one photo each)
-// using jsPDF. Mirrors the production report layout.
+// Builds a cover summary page + incident cards (3 cards per page) using jsPDF.
+// Photos live in the split photos:{id} blob, so the generator hydrates them for
+// ALL incidents up front (same source as the row drawer) before rendering.
 import { jsPDF } from "jspdf";
+import { getIncidentPhotosBatch } from "../data/firebase.js";
 
 // Palette (RGB triples) matching the app theme.
 const DAVIS_BLUE = [30, 91, 146];
@@ -62,23 +64,38 @@ function drawBadge(doc, text, x, y, color, opts = {}) {
   return w;
 }
 
-// Load an image URL/dataURI into a JPEG dataURL + natural dimensions.
+// Load an image and ALWAYS re-encode it through a white canvas to a baseline
+// JPEG before handing it to jsPDF. We don't pass the original PNG/JPEG bytes
+// through: jsPDF's built-in PNG decoder chokes on some encodings (interlaced /
+// 16-bit / unusual color types) and renders a solid black rectangle. The browser
+// decodes anything reliably, and the white fill flattens transparency so nothing
+// comes out black. Awaited so the bytes are fully decoded before addImage runs.
 function loadImage(src) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = "anonymous";
-    const timer = setTimeout(() => reject(new Error("image load timeout")), 10000);
+    const timer = setTimeout(() => reject(new Error("image load timeout")), 15000);
     img.onload = () => {
       clearTimeout(timer);
-      const canvas = document.createElement("canvas");
-      canvas.width = img.naturalWidth;
-      canvas.height = img.naturalHeight;
-      canvas.getContext("2d").drawImage(img, 0, 0);
-      resolve({
-        dataUrl: canvas.toDataURL("image/jpeg", 0.82),
-        width: img.naturalWidth,
-        height: img.naturalHeight,
-      });
+      try {
+        const w = img.naturalWidth || 1;
+        const h = img.naturalHeight || 1;
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0);
+        resolve({
+          dataUrl: canvas.toDataURL("image/jpeg", 0.85),
+          format: "JPEG",
+          width: w,
+          height: h,
+        });
+      } catch (err) {
+        reject(err);
+      }
     };
     img.onerror = () => {
       clearTimeout(timer);
@@ -86,6 +103,50 @@ function loadImage(src) {
     };
     img.src = src;
   });
+}
+
+// Render up to 2 photos into a cell, fit-within with aspect ratio preserved and
+// no gray letterbox. Empty list draws the "No photo available" notice.
+//   opts.cells : how many equal columns to divide the area into (default = #photos).
+//                Pass 2 on continuation cards so a single leftover photo is the
+//                same size as the top-2, not blown up to full width.
+//   opts.align : "left" (default) fills columns left→right; "right" fills the
+//                rightmost columns first so continuation photos line up under the
+//                incident card's photos.
+async function drawPhotos(doc, photos, px, py, pw, ph, opts = {}) {
+  const urls = (photos || []).slice(0, 2);
+  if (urls.length === 0) {
+    doc.setFont("helvetica", "italic");
+    doc.setFontSize(8);
+    setColor(doc, TEXT_MUTED, "text");
+    doc.text("No photo available", px + pw / 2, py + ph / 2, { align: "center" });
+    return;
+  }
+  const cols = opts.cells || urls.length;
+  const cellW = pw / cols;
+  for (let i = 0; i < urls.length; i++) {
+    const slot = opts.align === "right" ? cols - urls.length + i : i;
+    const cellX = px + slot * cellW;
+    try {
+      const loaded = await loadImage(urls[i]);
+      const { w: iw, h: ih } = fitDims(loaded.width, loaded.height, cellW, ph);
+      doc.addImage(
+        loaded.dataUrl,
+        loaded.format,
+        cellX + (cellW - iw) / 2,
+        py + (ph - ih) / 2,
+        iw,
+        ih,
+      );
+    } catch {
+      doc.setFont("helvetica", "italic");
+      doc.setFontSize(8);
+      setColor(doc, TEXT_MUTED, "text");
+      doc.text("[Photo failed to load]", cellX + cellW / 2, py + ph / 2, {
+        align: "center",
+      });
+    }
+  }
 }
 
 // Fit (w,h) into (maxW,maxH) preserving aspect ratio.
@@ -241,7 +302,10 @@ function drawCover(doc, incidents, meta) {
   );
 }
 
-async function drawIncidentCard(doc, inc, x, y, w, h) {
+// Draw the card frame + header (PRO# left zone, driver name in a gutter after it,
+// category/fault badges pinned right). The fixed gutter keeps a long PRO# from
+// running into the driver name (Bug 2).
+function drawCardHeader(doc, inc, x, y, w, h) {
   setColor(doc, LINE, "draw");
   doc.setLineWidth(0.5);
   doc.roundedRect(x, y, w, h, 4, 4, "S");
@@ -249,24 +313,50 @@ async function drawIncidentCard(doc, inc, x, y, w, h) {
   setColor(doc, catColor, "fill");
   doc.rect(x, y, 3, h, "F");
 
+  const padX = 10;
   const headY = y + 18;
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(11);
-  setColor(doc, DAVIS_BLUE, "text");
-  doc.text(`PRO# ${inc.pro_number}`, x + 10, headY);
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(9);
-  setColor(doc, TEXT_DARK, "text");
-  const driver = (inc.driver_name || inc.driver_raw || "Unassigned").toUpperCase();
-  const proWidth = doc.getTextWidth(`PRO# ${inc.pro_number}`);
-  doc.text(driver, x + 10 + proWidth + 12, headY);
 
+  // Category + fault badges, right-aligned. Drawn first so we know their left edge.
   let badgeRight = x + w - 10;
   const faultW = doc.getTextWidth((inc.fault || "unknown").toUpperCase()) + 10;
   drawBadge(doc, inc.fault || "unknown", badgeRight - faultW, headY, faultColor(inc.fault));
   badgeRight -= faultW + 5;
   const catW = doc.getTextWidth(inc.category.toUpperCase()) + 10;
   drawBadge(doc, inc.category, badgeRight - catW, headY, catColor);
+  const badgeLeft = badgeRight - catW;
+
+  // PRO# in its own left zone. Measure at the SAME 11pt size it is drawn at —
+  // the old code measured at 9pt, undersizing the gutter and overlapping the name.
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(11);
+  setColor(doc, DAVIS_BLUE, "text");
+  const proText = `PRO# ${inc.pro_number}`;
+  doc.text(proText, x + padX, headY);
+  const proWidth = doc.getTextWidth(proText);
+
+  // Driver name starts at a fixed x AFTER the PRO# plus padding, and is truncated
+  // so a long PRO# (or long name) can never run into the badge block.
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(9);
+  setColor(doc, TEXT_DARK, "text");
+  const driverX = x + padX + proWidth + 14;
+  const driverMaxW = badgeLeft - 10 - driverX;
+  if (driverMaxW > 16) {
+    let driver = (inc.driver_name || inc.driver_raw || "Unassigned").toUpperCase();
+    while (driver.length > 1 && doc.getTextWidth(driver) > driverMaxW) {
+      driver = driver.slice(0, -2);
+    }
+    if (driver !== (inc.driver_name || inc.driver_raw || "Unassigned").toUpperCase()) {
+      driver = driver.slice(0, -1) + "…";
+    }
+    doc.text(driver, driverX, headY);
+  }
+
+  return catColor;
+}
+
+async function drawIncidentCard(doc, inc, x, y, w, h, photos) {
+  drawCardHeader(doc, inc, x, y, w, h);
 
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
@@ -308,82 +398,133 @@ async function drawIncidentCard(doc, inc, x, y, w, h) {
     .join("   ·   ");
   doc.text(metaParts, x + 10, metaY);
 
+  // Photo column: 1-up or 2-up, no gray letterbox. "No photo available" is decided
+  // purely from this incident's fetched photo list (see generatePhotoReport).
   const photoX = x + 10 + notesW + 10;
   const photoY = notesY;
   const photoH = innerH - 5;
-  setColor(doc, LINE, "fill");
-  doc.rect(photoX, photoY, photoW, photoH, "F");
-  if (inc.photo_urls && inc.photo_urls.length > 0) {
-    try {
-      const loaded = await loadImage(inc.photo_urls[0]);
-      const { w: iw, h: ih } = fitDims(loaded.width, loaded.height, photoW - 4, photoH - 4);
-      doc.addImage(
-        loaded.dataUrl,
-        "JPEG",
-        photoX + (photoW - iw) / 2,
-        photoY + (photoH - ih) / 2,
-        iw,
-        ih,
-      );
-    } catch {
-      doc.setFont("helvetica", "italic");
-      doc.setFontSize(8);
-      setColor(doc, TEXT_MUTED, "text");
-      doc.text("[Photo failed to load]", photoX + photoW / 2, photoY + photoH / 2, {
-        align: "center",
-      });
-    }
-  } else {
-    doc.setFont("helvetica", "italic");
-    doc.setFontSize(8);
-    setColor(doc, TEXT_MUTED, "text");
-    doc.text("No photo available", photoX + photoW / 2, photoY + photoH / 2, {
-      align: "center",
-    });
-  }
+  await drawPhotos(doc, photos, photoX, photoY, photoW, photoH);
+}
+
+// Continuation card for an incident's overflow photos (3rd onward), 2 per card,
+// captioned with the PRO# so the extra photos stay traceable to their incident.
+async function drawContinuationCard(doc, inc, x, y, w, h, photos) {
+  setColor(doc, LINE, "draw");
+  doc.setLineWidth(0.5);
+  doc.roundedRect(x, y, w, h, 4, 4, "S");
+  setColor(doc, categoryColor(inc.category), "fill");
+  doc.rect(x, y, 3, h, "F");
+
+  const headY = y + 18;
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(11);
+  setColor(doc, DAVIS_BLUE, "text");
+  const proText = `PRO# ${inc.pro_number}`;
+  doc.text(proText, x + 10, headY);
+  const proWidth = doc.getTextWidth(proText);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(9);
+  setColor(doc, TEXT_MUTED, "text");
+  doc.text("ADDITIONAL PHOTOS (CONT.)", x + 10 + proWidth + 14, headY);
+
+  // Use the SAME right-side photo column geometry as the incident card so the
+  // continued photos match the top-2 in size and position, and fill right→left
+  // (a single leftover photo lands in the rightmost slot, not centered).
+  const innerH = h - 50;
+  const photoW = Math.min(h * 0.9, w * 0.5);
+  const notesW = w - photoW - 10 * 3;
+  const photoX = x + 10 + notesW + 10;
+  const photoY = y + 42;
+  const photoH = innerH - 5;
+  await drawPhotos(doc, photos, photoX, photoY, photoW, photoH, {
+    cells: 2,
+    align: "right",
+  });
 }
 
 function drawPageHeader(doc, meta, page, total) {
   const pageW = doc.internal.pageSize.getWidth();
   const margin = 40;
+  // Taller bar with the text pushed down to ~y=30, clear of a printer's ~0.25"
+  // unprintable top margin so the header text isn't clipped on physical prints.
   setColor(doc, DAVIS_BLUE, "fill");
-  doc.rect(0, 0, pageW, 28, "F");
+  doc.rect(0, 0, pageW, 40, "F");
+  const textY = 30;
   doc.setTextColor(255, 255, 255);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(9);
-  doc.text("DAVIS DRIVER SCORECARD", margin, 18);
+  doc.text("DAVIS DRIVER SCORECARD", margin, textY);
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8);
   doc.setTextColor(200, 215, 235);
-  doc.text(meta.title || "Photo Report", pageW / 2, 18, { align: "center" });
-  doc.text(`Page ${page} of ${total}`, pageW - margin, 18, { align: "right" });
+  doc.text(meta.title || "Photo Report", pageW / 2, textY, { align: "center" });
+  doc.text(`Page ${page} of ${total}`, pageW - margin, textY, { align: "right" });
 }
 
-// Build the full photo report (cover + 3 incident cards/page).
+// Build the full photo report (cover + 3 cards/page).
 export async function generatePhotoReport(incidents, meta = {}) {
   const doc = new jsPDF({ orientation: "portrait", unit: "pt", format: "letter" });
-  drawCover(doc, incidents, meta);
+
+  // BUG 1: photos live in the separate photos:{id} blob, not on the light incident
+  // record. Hydrate them for ALL incidents up front via the same batch source the
+  // row drawer uses, and await it before any rendering so addImage has real bytes.
+  const ids = incidents.map((i) => i.id).filter(Boolean);
+  let photoMap = new Map();
+  if (ids.length) {
+    try {
+      photoMap = await getIncidentPhotosBatch(ids, meta.onProgress);
+    } catch (err) {
+      console.warn("PDF photo hydration failed:", err.message);
+    }
+  }
+  const hydrated = incidents.map((inc) => {
+    const fetched = photoMap.get(inc.id);
+    const urls =
+      fetched?.photo_urls && fetched.photo_urls.length > 0
+        ? fetched.photo_urls
+        : Array.isArray(inc.photo_urls)
+          ? inc.photo_urls
+          : [];
+    return { ...inc, photo_urls: urls };
+  });
+
+  drawCover(doc, hydrated, meta);
+
+  // Flatten into a list of cards: each incident -> one incident card (first up to
+  // 2 photos) plus continuation cards for any overflow photos (2 per card).
+  const cards = [];
+  for (const inc of hydrated) {
+    const urls = inc.photo_urls || [];
+    cards.push({ type: "incident", inc, photos: urls.slice(0, 2) });
+    for (let i = 2; i < urls.length; i += 2) {
+      cards.push({ type: "continuation", inc, photos: urls.slice(i, i + 2) });
+    }
+  }
 
   const pageW = doc.internal.pageSize.getWidth();
   const pageH = doc.internal.pageSize.getHeight();
   const margin = 40;
-  const topOffset = 45;
+  const topOffset = 54; // clear the taller, print-safe page header
   const bottomOffset = 30;
   const perPage = 3;
   const gap = 12;
   const cardH = (pageH - topOffset - bottomOffset - gap * (perPage - 1)) / perPage;
   const cardW = pageW - 2 * margin;
-  const pages = Math.ceil(incidents.length / perPage);
+  const pages = Math.ceil(cards.length / perPage);
 
   for (let p = 0; p < pages; p++) {
     doc.addPage();
     drawPageHeader(doc, meta, p + 2, pages + 1);
     for (let i = 0; i < perPage; i++) {
       const idx = p * perPage + i;
-      if (idx >= incidents.length) break;
-      const inc = incidents[idx];
+      if (idx >= cards.length) break;
+      const card = cards[idx];
       const cardY = topOffset + i * (cardH + gap);
-      await drawIncidentCard(doc, inc, margin, cardY, cardW, cardH);
+      if (card.type === "continuation") {
+        await drawContinuationCard(doc, card.inc, margin, cardY, cardW, cardH, card.photos);
+      } else {
+        await drawIncidentCard(doc, card.inc, margin, cardY, cardW, cardH, card.photos);
+      }
     }
   }
   return doc;
