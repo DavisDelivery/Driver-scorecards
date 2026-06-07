@@ -75,21 +75,31 @@ function findHeaderRow(aoa) {
 function parseDate(val) {
   if (val == null || val === "") return null;
 
+  let out = null;
   if (typeof val === "number") {
     const ms = Math.round((val - 25569) * 86400 * 1000);
     const d = new Date(ms);
     if (!isNaN(d)) {
-      return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+      out = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+    }
+  } else {
+    const m = String(val)
+      .trim()
+      .match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+    if (m) {
+      let [, month, day, year] = m;
+      if (year.length === 2) year = "20" + year;
+      out = `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
     }
   }
 
-  const m = String(val)
-    .trim()
-    .match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
-  if (!m) return null;
-  let [, month, day, year] = m;
-  if (year.length === 2) year = "20" + year;
-  return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+  // Reject implausible dates — a blank/zero Excel cell decodes to the 1900
+  // epoch, which otherwise poisons report-name date ranges and rollups.
+  if (out) {
+    const y = Number(out.slice(0, 4));
+    if (y < 2000 || y > 2100) return null;
+  }
+  return out;
 }
 
 /**
