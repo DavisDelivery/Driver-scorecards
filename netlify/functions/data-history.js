@@ -81,6 +81,7 @@ function applyContribution(data, contrib, sign, meta = {}) {
   for (const [k, n] of Object.entries(contrib.cat || {})) {
     const f = parseCatKey(k);
     const ex = data.records[k];
+    if (!ex && sign < 0) continue; // nothing to reverse — don't litter zero records
     const count = Math.max(0, (ex?.count || 0) + sign * n);
     data.records[k] = {
       driver_id: f.driver_id,
@@ -97,6 +98,7 @@ function applyContribution(data, contrib, sign, meta = {}) {
   for (const [k, n] of Object.entries(contrib.src || {})) {
     const f = parseSrcKey(k);
     const ex = data.source_records[k];
+    if (!ex && sign < 0) continue;
     const count = Math.max(0, (ex?.count || 0) + sign * n);
     data.source_records[k] = {
       driver_id: f.driver_id,

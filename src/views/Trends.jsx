@@ -1,408 +1,348 @@
 import React from "react";
 import {
-  ResponsiveContainer,
-  LineChart,
-  BarChart,
-  Line,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
+  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend,
 } from "recharts";
 import { getHistory } from "../data/firebase.js";
-import { INCIDENT_CATEGORIES } from "../data/drivers.js";
+import DriverModal from "./DriverModal.jsx";
+import { CategoryLeaderboard, LeaderRow } from "./leaderboard.jsx";
 
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-const CATEGORY_IDS = ["damage", "missing", "misdelivery", "forgotten_freight", "late", "attempts"];
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const CATS = [
+  { id: "forgotten_freight", title: "Forgotten Freight", color: "#fb923c" },
+  { id: "damage",            title: "Damages",           color: "#dc3545" },
+  { id: "missing",           title: "Lost / Missing",    color: "#a855f7" },
+  { id: "misdelivery",       title: "Misdeliveries",     color: "#f472b6" },
+  { id: "attempts",          title: "Attempts",          color: "#14b8a6" },
+  { id: "late",              title: "Lates",             color: "#facc15" },
+];
+const CAT_IDS = CATS.map((c) => c.id);
 
-function getCategoryMeta(id) {
-  return INCIDENT_CATEGORIES.find((c) => c.id === id) || { label: id, color: "#94a3b8" };
-}
+const incidentYm = (inc) =>
+  (inc.delivered_date || inc.actual_delivery || inc.return_date ||
+   inc.trace_date || inc.ship_date || inc.week_ending || inc.ingested_at || ""
+  ).slice(0, 7);
 
-export default function Trends({ drivers }) {
+const tooltipStyle = {
+  contentStyle: {
+    background: "#fff", border: "1px solid #dde3ec", borderRadius: 6,
+    fontFamily: "JetBrains Mono", fontSize: 11,
+    boxShadow: "0 2px 8px rgba(17,24,39,.1)",
+  },
+  cursor: { fill: "rgba(30,91,146,.06)" },
+};
+const axisTick = { fill: "#94a3b8", fontSize: 10, fontFamily: "JetBrains Mono" };
+const legendStyle = {
+  fontFamily: "JetBrains Mono", fontSize: 10,
+  textTransform: "uppercase", letterSpacing: ".08em",
+};
+
+export default function Trends({ drivers, incidents = [] }) {
   const [history, setHistory] = React.useState([]);
-  const [loading, setLoading] = React.useState(true);
-  const [mode, setMode] = React.useState("overview");
-  const [selectedDriver, setSelectedDriver] = React.useState(null);
-  const [selectedYear, setSelectedYear] = React.useState(null);
+  const [tab, setTab] = React.useState("overview");
+  const [year, setYear] = React.useState(new Date().getFullYear());
+  const [focusId, setFocusId] = React.useState(null);
+  const [driverQuery, setDriverQuery] = React.useState("");
 
   React.useEffect(() => {
-    (async () => {
-      setLoading(true);
-      const records = await getHistory();
-      setHistory(records);
-      const years = [...new Set(records.map((r) => r.year))].sort();
-      if (years.length > 0) setSelectedYear(years[years.length - 1]);
-      setLoading(false);
-    })();
-  }, []);
+    let alive = true;
+    getHistory().then((r) => alive && setHistory(Array.isArray(r) ? r : [])).catch(() => {});
+    return () => { alive = false; };
+  }, [incidents]);
 
-  const availableYears = React.useMemo(
-    () => [...new Set(history.map((r) => r.year))].sort(),
-    [history],
-  );
-
-  // Overview: monthly data for selected year
-  const overviewData = React.useMemo(() => {
-    if (!selectedYear) return [];
-    const monthly = {};
-    for (let m = 1; m <= 12; m++) {
-      monthly[m] = { month: MONTHS[m - 1] };
-      for (const cat of CATEGORY_IDS) monthly[m][cat] = 0;
+  // Blended cube: ym -> Map("driverId|cat" -> count). Live months win over
+  // history; live respects the "Do not fault driver" toggle.
+  const cube = React.useMemo(() => {
+    const liveByYm = {};
+    for (const inc of incidents) {
+      const ym = incidentYm(inc);
+      if (!ym || ym.length !== 7) continue;
+      (liveByYm[ym] = liveByYm[ym] || []).push(inc);
     }
-    for (const rec of history) {
-      if (rec.year === selectedYear && monthly[rec.month] && CATEGORY_IDS.includes(rec.category)) {
-        monthly[rec.month][rec.category] += rec.count;
+    const cells = {};
+    const names = new Map();
+    const ensure = (ym) => (cells[ym] = cells[ym] || new Map());
+    for (const [ym, list] of Object.entries(liveByYm)) {
+      const cell = ensure(ym);
+      for (const inc of list) {
+        if (!inc.driver_id || inc.no_fault || !CAT_IDS.includes(inc.category)) continue;
+        const k = `${inc.driver_id}|${inc.category}`;
+        cell.set(k, (cell.get(k) || 0) + 1);
+        if (!names.has(inc.driver_id)) names.set(inc.driver_id, inc.driver_name || inc.driver_raw || inc.driver_id);
       }
     }
-    return Object.values(monthly);
-  }, [history, selectedYear]);
+    for (const rec of history) {
+      if (!rec.driver_id || !CAT_IDS.includes(rec.category)) continue;
+      const ym = `${rec.year}-${String(rec.month).padStart(2, "0")}`;
+      if (liveByYm[ym]) continue; // live supersedes
+      const cell = ensure(ym);
+      const k = `${rec.driver_id}|${rec.category}`;
+      cell.set(k, (cell.get(k) || 0) + (rec.count || 0));
+      if (!names.has(rec.driver_id)) names.set(rec.driver_id, rec.driver_name || rec.driver_id);
+    }
+    for (const d of drivers) names.set(d.id, d.name);
+    return { cells, names };
+  }, [incidents, history, drivers]);
 
-  // Year-over-Year: totals per year per category
-  const yoyData = React.useMemo(() => {
+  const years = React.useMemo(() => {
+    const ys = new Set(Object.keys(cube.cells).map((ym) => Number(ym.slice(0, 4))));
+    ys.add(new Date().getFullYear());
+    return [...ys].sort();
+  }, [cube]);
+
+  // ---- Overview: monthly stacked totals for the selected year ----
+  const monthly = React.useMemo(() => {
+    return MONTHS.map((label, i) => {
+      const ym = `${year}-${String(i + 1).padStart(2, "0")}`;
+      const row = { month: label };
+      let total = 0;
+      for (const c of CATS) row[c.id] = 0;
+      for (const [k, n] of cube.cells[ym] || []) {
+        const cat = k.split("|")[1];
+        row[cat] = (row[cat] || 0) + n;
+        total += n;
+      }
+      row.total = total;
+      return row;
+    });
+  }, [cube, year]);
+
+  // ---- YoY: per-year stacked totals ----
+  const yoy = React.useMemo(() => {
     const byYear = {};
-    for (const rec of history) {
-      if (!CATEGORY_IDS.includes(rec.category)) continue;
-      const yr = String(rec.year);
-      if (!byYear[yr]) {
-        byYear[yr] = { year: yr };
-        for (const cat of CATEGORY_IDS) byYear[yr][cat] = 0;
-      }
-      byYear[yr][rec.category] += rec.count;
-    }
-    return Object.values(byYear).sort((a, b) => a.year.localeCompare(b.year));
-  }, [history]);
-
-  // Leaderboard: drivers sorted by total incidents for selected year
-  const leaderboardData = React.useMemo(() => {
-    if (!selectedYear) return [];
-    const byDriver = {};
-    for (const rec of history) {
-      if (rec.year === selectedYear && CATEGORY_IDS.includes(rec.category)) {
-        if (!byDriver[rec.driver_id]) {
-          byDriver[rec.driver_id] = {
-            driver_id: rec.driver_id,
-            driver_name: rec.driver_name || "(unknown)",
-            total: 0,
-          };
-          for (const cat of CATEGORY_IDS) byDriver[rec.driver_id][cat] = 0;
-        }
-        byDriver[rec.driver_id][rec.category] += rec.count;
-        byDriver[rec.driver_id].total += rec.count;
+    for (const [ym, cell] of Object.entries(cube.cells)) {
+      const y = ym.slice(0, 4);
+      byYear[y] = byYear[y] || Object.fromEntries(CATS.map((c) => [c.id, 0]));
+      for (const [k, n] of cell) {
+        const cat = k.split("|")[1];
+        byYear[y][cat] += n;
       }
     }
-    return Object.values(byDriver).sort((a, b) => b.total - a.total);
-  }, [history, selectedYear]);
+    return Object.entries(byYear)
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([y, cats]) => ({ year: y, ...cats }));
+  }, [cube]);
 
-  // Per-driver: monthly timeline for selected driver
-  const driverTimeline = React.useMemo(() => {
-    if (!selectedDriver) return [];
-    const rows = [];
-    const driverRecords = history.filter((r) => r.driver_id === selectedDriver.id);
-    const driverYears = [...new Set(driverRecords.map((r) => r.year))].sort();
-    for (const yr of driverYears) {
-      for (let m = 1; m <= 12; m++) {
-        const entry = { label: `${MONTHS[m - 1]} ${String(yr).slice(2)}`, year: yr, month: m };
-        for (const cat of CATEGORY_IDS) entry[cat] = 0;
-        for (const rec of driverRecords) {
-          if (rec.year === yr && rec.month === m && CATEGORY_IDS.includes(rec.category)) {
-            entry[rec.category] += rec.count;
-          }
-        }
-        rows.push(entry);
+  // ---- Leaderboards: per-category, selected year vs all-time ----
+  const leaderData = React.useMemo(() => {
+    const out = {};
+    for (const c of CATS) out[c.id] = new Map();
+    for (const [ym, cell] of Object.entries(cube.cells)) {
+      const inYear = ym.startsWith(String(year));
+      for (const [k, n] of cell) {
+        const [did, cat] = k.split("|");
+        if (!out[cat]) continue;
+        const rec = out[cat].get(did) || { driverId: did, name: cube.names.get(did) || did, month: 0, ytd: 0 };
+        rec.ytd += n;            // all-time (faded)
+        if (inYear) rec.month += n; // selected year (solid)
+        out[cat].set(did, rec);
       }
     }
-    return rows;
-  }, [history, selectedDriver]);
-
-  // Per-driver: lifetime totals
-  const driverLifetime = React.useMemo(() => {
-    if (!selectedDriver) return {};
-    const totals = { total: 0 };
-    for (const cat of CATEGORY_IDS) totals[cat] = 0;
-    for (const rec of history) {
-      if (rec.driver_id === selectedDriver.id && CATEGORY_IDS.includes(rec.category)) {
-        totals[rec.category] += rec.count;
-        totals.total += rec.count;
-      }
+    const final = {};
+    for (const c of CATS) {
+      final[c.id] = [...out[c.id].values()].sort((a, b) => b.month - a.month || b.ytd - a.ytd);
     }
-    return totals;
-  }, [history, selectedDriver]);
+    return final;
+  }, [cube, year]);
 
-  if (loading) {
-    return <div className="empty-state">Loading history...</div>;
-  }
+  // ---- Per-driver: pick driver → monthly trend + category rows ----
+  const filteredDrivers = React.useMemo(() => {
+    const q = driverQuery.toLowerCase();
+    return drivers
+      .filter((d) => !q || d.name.toLowerCase().includes(q))
+      .slice(0, 30);
+  }, [drivers, driverQuery]);
 
-  if (history.length === 0) {
-    return (
-      <div>
-        <div className="page-title">Trends</div>
-        <h1 className="page-heading">No historical data yet</h1>
-        <div className="empty-state">
-          <p>
-            Upload historical DRIVER_PERFORMANCE.xlsx files on the{" "}
-            <strong>History Import</strong> tab to populate this view, or save a new weekly report
-            — it will automatically roll up into the history table.
-          </p>
-        </div>
-      </div>
-    );
-  }
+  const [perDriverId, setPerDriverId] = React.useState("");
+  const perDriver = React.useMemo(() => {
+    if (!perDriverId) return null;
+    const byMonth = MONTHS.map((label, i) => {
+      const ym = `${year}-${String(i + 1).padStart(2, "0")}`;
+      let n = 0;
+      for (const [k, v] of cube.cells[ym] || []) {
+        if (k.startsWith(`${perDriverId}|`)) n += v;
+      }
+      return { month: label, count: n };
+    });
+    const cats = CATS.map((c) => {
+      let yr = 0, all = 0;
+      for (const [ym, cell] of Object.entries(cube.cells)) {
+        const n = cell.get(`${perDriverId}|${c.id}`) || 0;
+        all += n;
+        if (ym.startsWith(String(year))) yr += n;
+      }
+      return { ...c, yr, all };
+    });
+    return { byMonth, cats };
+  }, [cube, perDriverId, year]);
+
+  const TABS = [
+    ["overview", "Overview"],
+    ["yoy", "Year over Year"],
+    ["leaders", "Leaderboards"],
+    ["driver", "Per Driver"],
+  ];
 
   return (
     <div>
-      <div className="page-title">Trends</div>
+      <div className="page-title">Performance Trends</div>
       <h1 className="page-heading">
-        Historical Performance
-        <span className="meta">· {history.length} monthly rollup records</span>
+        Trends <span className="meta">· live + 3-yr history blend</span>
       </h1>
 
-      {/* Mode toggle + year selector */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
-        <button className={`btn ${mode === "overview" ? "" : "ghost"}`} onClick={() => setMode("overview")}>
-          Overview
-        </button>
-        <button className={`btn ${mode === "driver" ? "" : "ghost"}`} onClick={() => setMode("driver")}>
-          Per Driver
-        </button>
-        <button className={`btn ${mode === "leaderboard" ? "" : "ghost"}`} onClick={() => setMode("leaderboard")}>
-          Leaderboard
-        </button>
-        <button className={`btn ${mode === "yoy" ? "" : "ghost"}`} onClick={() => setMode("yoy")}>
-          Year-over-Year
-        </button>
-
-        {(mode === "overview" || mode === "leaderboard") && (
-          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-2)" }}>
-              YEAR:
-            </span>
-            {availableYears.map((yr) => (
-              <button
-                key={yr}
-                className={`btn ${selectedYear === yr ? "" : "ghost"} sm`}
-                onClick={() => setSelectedYear(yr)}
-              >
-                {yr}
-              </button>
-            ))}
-          </div>
-        )}
+      <div className="toolbar">
+        <div className="month-picker">
+          {TABS.map(([id, label]) => (
+            <button key={id} className={`month-btn ${tab === id ? "active" : ""}`} onClick={() => setTab(id)}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="month-picker">
+          {years.map((y) => (
+            <button key={y} className={`month-btn ${year === y ? "active" : ""}`} onClick={() => setYear(y)}>
+              {y}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {/* Overview mode: monthly line chart */}
-      {mode === "overview" && (
-        <div className="card" style={{ marginBottom: 16 }}>
-          <div className="card-header">
-            <div className="card-title">Monthly incidents by category — {selectedYear}</div>
+      {tab === "overview" && (
+        <div className="chart-card">
+          <div className="chart-card-header">
+            <div className="chart-card-title">Monthly Incidents · {year}</div>
+            <div className="cc-count">{monthly.reduce((a, r) => a + r.total, 0)} total</div>
           </div>
-          <div className="card-body" style={{ height: 420 }}>
+          <div style={{ height: 300, padding: "10px 14px" }}>
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={overviewData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-                <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
-                <XAxis dataKey="month" stroke="var(--text-2)" style={{ fontSize: 11 }} />
-                <YAxis stroke="var(--text-2)" style={{ fontSize: 11 }} />
-                <Tooltip contentStyle={{ background: "var(--bg-1)", border: "1px solid var(--border)" }} />
-                <Legend />
-                {CATEGORY_IDS.map((cat) => {
-                  const meta = getCategoryMeta(cat);
-                  return (
-                    <Line
-                      key={cat}
-                      type="monotone"
-                      dataKey={cat}
-                      name={meta.label}
-                      stroke={meta.color}
-                      strokeWidth={2}
-                      dot={{ r: 3 }}
-                    />
-                  );
-                })}
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      )}
-
-      {/* Year-over-Year mode: bar chart */}
-      {mode === "yoy" && (
-        <div className="card" style={{ marginBottom: 16 }}>
-          <div className="card-header">
-            <div className="card-title">Year-over-year totals by category</div>
-          </div>
-          <div className="card-body" style={{ height: 420 }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={yoyData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-                <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
-                <XAxis dataKey="year" stroke="var(--text-2)" style={{ fontSize: 12 }} />
-                <YAxis stroke="var(--text-2)" style={{ fontSize: 11 }} />
-                <Tooltip contentStyle={{ background: "var(--bg-1)", border: "1px solid var(--border)" }} />
-                <Legend />
-                {CATEGORY_IDS.map((cat) => {
-                  const meta = getCategoryMeta(cat);
-                  return <Bar key={cat} dataKey={cat} name={meta.label} fill={meta.color} />;
-                })}
+              <BarChart data={monthly} margin={{ top: 8, right: 8, left: -18, bottom: 0 }} barCategoryGap={5}>
+                <XAxis dataKey="month" tick={axisTick} axisLine={false} tickLine={false} />
+                <YAxis tick={axisTick} axisLine={false} tickLine={false} allowDecimals={false} />
+                <Tooltip {...tooltipStyle} />
+                <Legend wrapperStyle={legendStyle} />
+                {CATS.map((c) => (
+                  <Bar key={c.id} dataKey={c.id} name={c.title} stackId="m" fill={c.color} radius={[2, 2, 0, 0]} />
+                ))}
               </BarChart>
             </ResponsiveContainer>
           </div>
         </div>
       )}
 
-      {/* Leaderboard mode: table */}
-      {mode === "leaderboard" && (
-        <div className="card" style={{ marginBottom: 16 }}>
-          <div className="card-header">
-            <div className="card-title">Most incidents — {selectedYear}</div>
-            <span style={{ fontSize: 11, color: "var(--text-2)" }}>{leaderboardData.length} drivers</span>
+      {tab === "yoy" && (
+        <div className="chart-card">
+          <div className="chart-card-header">
+            <div className="chart-card-title">Year over Year</div>
+            <div className="cc-count">{yoy.length} years</div>
           </div>
-          <div className="card-body" style={{ padding: 0 }}>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>Driver</th>
-                  <th>Total</th>
-                  {CATEGORY_IDS.map((cat) => (
-                    <th key={cat} style={{ color: getCategoryMeta(cat).color }}>
-                      {getCategoryMeta(cat).label}
-                    </th>
-                  ))}
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {leaderboardData.map((row, idx) => (
-                  <tr key={row.driver_id}>
-                    <td style={{ color: "var(--text-2)", fontFamily: "var(--mono)" }}>{idx + 1}</td>
-                    <td>
-                      <strong>{row.driver_name}</strong>
-                    </td>
-                    <td style={{ fontFamily: "var(--mono)", fontWeight: 600 }}>{row.total}</td>
-                    {CATEGORY_IDS.map((cat) => (
-                      <td
-                        key={cat}
-                        style={{
-                          fontFamily: "var(--mono)",
-                          color: row[cat] > 0 ? getCategoryMeta(cat).color : "var(--text-2)",
-                        }}
-                      >
-                        {row[cat] || "·"}
-                      </td>
-                    ))}
-                    <td>
-                      <button
-                        className="btn ghost sm"
-                        onClick={() => {
-                          const driver = drivers.find((d) => d.id === row.driver_id);
-                          if (driver) {
-                            setSelectedDriver(driver);
-                            setMode("driver");
-                          }
-                        }}
-                      >
-                        View →
-                      </button>
-                    </td>
-                  </tr>
+          <div style={{ height: 300, padding: "10px 14px" }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={yoy} margin={{ top: 8, right: 8, left: -18, bottom: 0 }} barCategoryGap={18}>
+                <XAxis dataKey="year" tick={axisTick} axisLine={false} tickLine={false} />
+                <YAxis tick={axisTick} axisLine={false} tickLine={false} allowDecimals={false} />
+                <Tooltip {...tooltipStyle} />
+                <Legend wrapperStyle={legendStyle} />
+                {CATS.map((c) => (
+                  <Bar key={c.id} dataKey={c.id} name={c.title} stackId="y" fill={c.color} radius={[2, 2, 0, 0]} />
                 ))}
-              </tbody>
-            </table>
+              </BarChart>
+            </ResponsiveContainer>
           </div>
         </div>
       )}
 
-      {/* Per Driver mode */}
-      {mode === "driver" && (
-        <>
-          <div className="card" style={{ marginBottom: 16 }}>
-            <div className="card-header">
-              <div className="card-title">Select a driver</div>
-            </div>
-            <div className="card-body">
-              <select
-                value={selectedDriver?.id || ""}
-                onChange={(e) => {
-                  const driver = drivers.find((d) => d.id === e.target.value);
-                  setSelectedDriver(driver || null);
-                }}
-                style={{ width: "100%", maxWidth: 400 }}
-              >
-                <option value="">— Pick a driver —</option>
-                {drivers
-                  .filter((d) => history.some((r) => r.driver_id === d.id))
-                  .sort((a, b) => a.name.localeCompare(b.name))
-                  .map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.name}
-                    </option>
-                  ))}
-              </select>
-            </div>
+      {tab === "leaders" && (
+        <div className="chart-grid">
+          {CATS.map((c) => (
+            <CategoryLeaderboard
+              key={c.id}
+              title={c.title}
+              color={c.color}
+              data={leaderData[c.id] || []}
+              onSelect={setFocusId}
+              periodLabel={String(year)}
+              totalLabel="ALL"
+            />
+          ))}
+        </div>
+      )}
+
+      {tab === "driver" && (
+        <div>
+          <div className="toolbar">
+            <input
+              type="text"
+              placeholder="Search driver…"
+              value={driverQuery}
+              onChange={(e) => setDriverQuery(e.target.value)}
+              style={{ maxWidth: 240 }}
+            />
+            <select value={perDriverId} onChange={(e) => setPerDriverId(e.target.value)}>
+              <option value="">— Select driver —</option>
+              {filteredDrivers.map((d) => (
+                <option key={d.id} value={d.id}>{d.name}</option>
+              ))}
+            </select>
+            {perDriverId && (
+              <button className="btn primary" onClick={() => setFocusId(perDriverId)}>
+                View Incidents
+              </button>
+            )}
           </div>
-
-          {selectedDriver && (
+          {perDriver && (
             <>
-              <div className="kpi-grid" style={{ marginBottom: 16 }}>
-                <div className="kpi">
-                  <div className="kpi-label">lifetime total</div>
-                  <div className="kpi-value">{driverLifetime.total}</div>
+              <div className="chart-card" style={{ marginBottom: 16 }}>
+                <div className="chart-card-header">
+                  <div className="chart-card-title">
+                    {cube.names.get(perDriverId)} · Monthly · {year}
+                  </div>
+                  <div className="cc-count">
+                    {perDriver.byMonth.reduce((a, r) => a + r.count, 0)} in {year}
+                  </div>
                 </div>
-                {CATEGORY_IDS.map((cat) => {
-                  const meta = getCategoryMeta(cat);
-                  return (
-                    <div key={cat} className="kpi">
-                      <div className="kpi-label">{meta.label.toLowerCase()}</div>
-                      <div
-                        className="kpi-value"
-                        style={{ color: driverLifetime[cat] > 0 ? meta.color : "var(--text-2)" }}
-                      >
-                        {driverLifetime[cat] || 0}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              <div className="card" style={{ marginBottom: 16 }}>
-                <div className="card-header">
-                  <div className="card-title">{selectedDriver.name} — monthly timeline</div>
-                </div>
-                <div className="card-body" style={{ height: 360 }}>
+                <div style={{ height: 220, padding: "10px 14px" }}>
                   <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={driverTimeline} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-                      <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
-                      <XAxis
-                        dataKey="label"
-                        stroke="var(--text-2)"
-                        style={{ fontSize: 10 }}
-                        interval={2}
-                      />
-                      <YAxis stroke="var(--text-2)" style={{ fontSize: 11 }} />
-                      <Tooltip contentStyle={{ background: "var(--bg-1)", border: "1px solid var(--border)" }} />
-                      <Legend />
-                      {CATEGORY_IDS.map((cat) => {
-                        const meta = getCategoryMeta(cat);
-                        return (
-                          <Line
-                            key={cat}
-                            type="monotone"
-                            dataKey={cat}
-                            name={meta.label}
-                            stroke={meta.color}
-                            strokeWidth={2}
-                            dot={false}
-                          />
-                        );
-                      })}
-                    </LineChart>
+                    <BarChart data={perDriver.byMonth} margin={{ top: 8, right: 8, left: -22, bottom: 0 }}>
+                      <XAxis dataKey="month" tick={axisTick} axisLine={false} tickLine={false} />
+                      <YAxis tick={axisTick} axisLine={false} tickLine={false} allowDecimals={false} />
+                      <Tooltip {...tooltipStyle} />
+                      <Bar dataKey="count" name="Incidents" fill="#1e5b92" radius={[3, 3, 0, 0]} />
+                    </BarChart>
                   </ResponsiveContainer>
+                </div>
+              </div>
+              <div className="chart-card">
+                <div className="chart-card-header">
+                  <div className="chart-card-title">Category Breakdown</div>
+                  <div className="cc-count">
+                    <span className="cc-key"><i style={{ background: "#1e5b92" }} /> {year}</span>
+                    <span className="cc-key"><i className="cc-key-ytd" style={{ background: "#1e5b92" }} /> ALL</span>
+                  </div>
+                </div>
+                <div className="lb-body">
+                  {perDriver.cats.map((c, i) => (
+                    <LeaderRow
+                      key={c.id}
+                      rank={i + 1}
+                      row={{ driverId: perDriverId, name: c.title, month: c.yr, ytd: c.all }}
+                      color={c.color}
+                      max={Math.max(1, ...perDriver.cats.map((x) => x.all))}
+                      onSelect={() => setFocusId(perDriverId)}
+                    />
+                  ))}
                 </div>
               </div>
             </>
           )}
-        </>
+          {!perDriver && <div className="empty-state">Pick a driver to see their trend.</div>}
+        </div>
+      )}
+
+      {focusId && (
+        <DriverModal
+          driver={drivers.find((d) => d.id === focusId) || { id: focusId, name: cube.names.get(focusId) || focusId, role: "driver" }}
+          incidents={incidents.filter((i) => i.driver_id === focusId)}
+          onClose={() => setFocusId(null)}
+        />
       )}
     </div>
   );

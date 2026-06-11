@@ -80,7 +80,15 @@ export async function saveIncident(incident) {
     // If the incident (with inline photos) is too large, persist metadata only;
     // photo bytes are managed separately by the batch / enrich paths.
     if (serialized.length > MAX_BODY) {
-      const { photo_meta, ...light } = incident;
+      // Strip ALL photo payload (bytes + meta) — keeping photo_urls here used
+      // to push the body right back over the function payload limit.
+      const { photo_meta, photo_urls, ...rest } = incident;
+      const light = {
+        ...rest,
+        has_photos: false,
+        photo_count: 0,
+        photos_dropped_oversize: true,
+      };
       const { incident: saved } = await apiFetch(API.incidents, {
         method: "PUT",
         body: JSON.stringify(light),

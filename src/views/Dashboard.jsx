@@ -1,15 +1,8 @@
 import React, { useState, useEffect, useMemo } from "react";
-import {
-  ResponsiveContainer,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  Legend,
-} from "recharts";
 import { INCIDENT_CATEGORIES } from "../data/drivers.js";
 import { getHistory } from "../data/firebase.js";
+import DriverModal from "./DriverModal.jsx";
+import { CategoryLeaderboard } from "./leaderboard.jsx";
 
 // Month names used throughout the scorecard.
 const MONTH_NAMES = [
@@ -40,70 +33,38 @@ CHART_CATEGORIES.forEach((c) => {
   }
 });
 
-// ─── Monthly chart card (internal sub-component) ─────────────────────────────
-function MonthlyChartCard({ title, data, monthColor }) {
-  return (
-    <div className="chart-card">
-      <div className="chart-card-header">
-        <div className="chart-card-title">{title}</div>
-        <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-2)" }}>
-          {data.length} driver{data.length === 1 ? "" : "s"}
-        </div>
-      </div>
-      <div className="chart-card-body">
-        {data.length === 0 ? (
-          <div className="empty-state">No data</div>
-        ) : (
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart
-              data={data}
-              margin={{ top: 10, right: 20, left: 0, bottom: 80 }}
-            >
-              <XAxis
-                dataKey="name"
-                angle={-55}
-                textAnchor="end"
-                height={80}
-                interval={0}
-                tick={{ fill: "#6b7280", fontSize: 9, fontFamily: "JetBrains Mono" }}
-                axisLine={{ stroke: "#dde3ec" }}
-                tickLine={{ stroke: "#dde3ec" }}
-              />
-              <YAxis
-                tick={{ fill: "#6b7280", fontSize: 10, fontFamily: "JetBrains Mono" }}
-                axisLine={{ stroke: "#dde3ec" }}
-                tickLine={{ stroke: "#dde3ec" }}
-                allowDecimals={false}
-              />
-              <Tooltip
-                contentStyle={{
-                  background: "#ffffff",
-                  border: "1px solid #dde3ec",
-                  borderRadius: 6,
-                  fontFamily: "JetBrains Mono",
-                  fontSize: 11,
-                  boxShadow: "0 2px 8px rgba(17, 24, 39, 0.1)",
-                }}
-                labelStyle={{ color: "#111827" }}
-                cursor={{ fill: "rgba(30, 91, 146, 0.08)" }}
-              />
-              <Legend
-                wrapperStyle={{
-                  fontFamily: "JetBrains Mono",
-                  fontSize: 10,
-                  textTransform: "uppercase",
-                  letterSpacing: "0.08em",
-                }}
-              />
-              <Bar dataKey="month" name="Month" fill={monthColor} radius={[2, 2, 0, 0]} />
-              <Bar dataKey="ytd"   name="YTD"   fill="#cbd5e1"   radius={[2, 2, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        )}
-      </div>
-    </div>
-  );
+
+// List of YYYY-MM strings for the selected comparison period.
+function computePeriodMonths(sel, from, to) {
+  const now = new Date();
+  const ym = (d) => `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+  const cur = new Date(Date.UTC(now.getFullYear(), now.getMonth(), 1));
+  if (sel === "this") return [ym(cur)];
+  if (sel === "last") {
+    return [ym(new Date(Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth() - 1, 1)))];
+  }
+  if (sel === "custom") {
+    if (!from || !to) return [ym(cur)];
+    let [fy, fm] = from.split("-").map(Number);
+    const [ty, tm] = to.split("-").map(Number);
+    const out = [];
+    while (fy < ty || (fy === ty && fm <= tm)) {
+      out.push(`${fy}-${String(fm).padStart(2, "0")}`);
+      fm++;
+      if (fm > 12) { fm = 1; fy++; }
+      if (out.length >= 36) break; // sanity cap
+    }
+    return out.length ? out : [ym(cur)];
+  }
+  const n = Number(sel) || 1;
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    out.push(ym(new Date(Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth() - i, 1))));
+  }
+  return out;
 }
+
+const PERIOD_LABELS = { this: "MO", last: "LMO", 3: "3M", 6: "6M", 12: "12M", custom: "SEL" };
 
 // ─── Dashboard (default export) ──────────────────────────────────────────────
 export default function Dashboard({ incidents, drivers }) {
@@ -112,6 +73,10 @@ export default function Dashboard({ incidents, drivers }) {
   const [faultFilter, setFaultFilter] = useState("all");
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [focusId, setFocusId] = useState(null);
+  const [periodSel, setPeriodSel] = useState("this"); // this|last|3|6|12|custom
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
 
   // Load all history records on mount.
   useEffect(() => {
@@ -182,103 +147,108 @@ export default function Dashboard({ incidents, drivers }) {
     return history.filter((r) => r.year === yr);
   }, [history, selectedYear]);
 
-  // Per-driver month + YTD tallies, blending live data and historical rollup.
+  // Per-driver tallies from a blended monthly map: for every (year-month),
+  // live incidents win when any exist for that month; otherwise the historical
+  // rollup fills in. "period" = trailing N months ending at the selected month.
   const driverTotals = useMemo(() => {
     const map = new Map();
     const blankCounts = () =>
       Object.fromEntries(CHART_CATEGORIES.map((c) => [c.id, 0]));
 
-    // Seed from the known driver list.
     for (const drv of drivers) {
-      map.set(drv.id, { driver: drv, month: blankCounts(), ytd: blankCounts() });
+      map.set(drv.id, { driver: drv, month: blankCounts(), period: blankCounts(), ytd: blankCounts() });
     }
-
     const getOrCreate = (driverId, driverName) => {
       let entry = map.get(driverId);
       if (!entry) {
         entry = {
           driver: { id: driverId, name: driverName || "(unknown)", role: "driver" },
-          month: blankCounts(),
-          ytd: blankCounts(),
+          month: blankCounts(), period: blankCounts(), ytd: blankCounts(),
         };
         map.set(driverId, entry);
       }
       return entry;
     };
 
-    // ── Month counts ──
-    if (isHistorical) {
-      for (const rec of monthHistory) {
-        if (!rec.driver_id || !CHART_CATEGORIES.some((c) => c.id === rec.category)) continue;
-        const entry = getOrCreate(rec.driver_id, rec.driver_name);
-        entry.month[rec.category] = (entry.month[rec.category] || 0) + (rec.count || 0);
-      }
-    } else {
-      for (const inc of monthIncidents) {
-        if (
-          (faultFilter === "driver" && inc.fault !== "driver") ||
-          !inc.driver_id ||
-          !CHART_CATEGORIES.some((c) => c.id === inc.category)
-        )
-          continue;
-        const entry = getOrCreate(inc.driver_id, inc.driver_name || inc.driver_raw);
-        entry.month[inc.category] = (entry.month[inc.category] || 0) + 1;
-      }
-    }
+    // The window of months we need: the selected year (for YTD) plus enough
+    // months before the selected month to cover the trailing period.
+    const periodMonths = computePeriodMonths(periodSel, customFrom, customTo);
+    const ytdYear = Number(
+      (periodMonths[periodMonths.length - 1] || new Date().toISOString().slice(0, 7)).slice(0, 4),
+    );
+    const months = new Set(periodMonths);
+    for (let m = 1; m <= 12; m++) months.add(`${ytdYear}-${String(m).padStart(2, "0")}`);
 
-    // ── YTD counts: blend live months with historical rollup for months with
-    //    no live data yet. ──
-    const liveByMonth = {};
+    // Live incidents grouped by month (all years).
+    const liveByYm = {};
     for (const inc of incidents) {
       const dateStr =
-        inc.delivered_date ||
-        inc.actual_delivery ||
-        inc.return_date ||
-        inc.trace_date ||
-        inc.ship_date ||
-        inc.week_ending ||
-        inc.ingested_at ||
-        "";
-      if (!dateStr.startsWith(selectedYear)) continue;
+        inc.delivered_date || inc.actual_delivery || inc.return_date ||
+        inc.trace_date || inc.ship_date || inc.week_ending || inc.ingested_at || "";
       const ym = dateStr.slice(0, 7);
-      if (!liveByMonth[ym]) liveByMonth[ym] = [];
-      liveByMonth[ym].push(inc);
+      if (!months.has(ym)) continue;
+      if (!liveByYm[ym]) liveByYm[ym] = [];
+      liveByYm[ym].push(inc);
     }
 
-    for (let mo = 1; mo <= 12; mo++) {
-      const pad = String(mo).padStart(2, "0");
-      const ym = `${selectedYear}-${pad}`;
-      if (liveByMonth[ym] && liveByMonth[ym].length > 0) {
-        for (const inc of liveByMonth[ym]) {
+    // blend[ym] = Map("driverId|cat" -> count)
+    const blend = {};
+    for (const ym of months) {
+      const cell = new Map();
+      const live = liveByYm[ym] || [];
+      if (live.length > 0) {
+        for (const inc of live) {
           if (
             (faultFilter === "driver" && inc.fault !== "driver") ||
-            !inc.driver_id ||
+            inc.no_fault || !inc.driver_id ||
             !CHART_CATEGORIES.some((c) => c.id === inc.category)
-          )
-            continue;
-          const entry = getOrCreate(inc.driver_id, inc.driver_name || inc.driver_raw);
-          entry.ytd[inc.category] = (entry.ytd[inc.category] || 0) + 1;
+          ) continue;
+          const k = `${inc.driver_id}|${inc.category}`;
+          cell.set(k, (cell.get(k) || 0) + 1);
+          getOrCreate(inc.driver_id, inc.driver_name || inc.driver_raw);
         }
       } else {
-        const rollupRecs = yearHistory.filter((r) => r.month === mo);
-        for (const rec of rollupRecs) {
-          if (!rec.driver_id || !CHART_CATEGORIES.some((c) => c.id === rec.category)) continue;
-          const entry = getOrCreate(rec.driver_id, rec.driver_name);
-          entry.ytd[rec.category] = (entry.ytd[rec.category] || 0) + (rec.count || 0);
+        const [y, m] = ym.split("-").map(Number);
+        for (const rec of history) {
+          if (rec.year !== y || rec.month !== m || !rec.driver_id) continue;
+          if (!CHART_CATEGORIES.some((c) => c.id === rec.category)) continue;
+          const k = `${rec.driver_id}|${rec.category}`;
+          cell.set(k, (cell.get(k) || 0) + (rec.count || 0));
+          getOrCreate(rec.driver_id, rec.driver_name);
         }
       }
+      blend[ym] = cell;
     }
 
+    const addInto = (bucketName, ym) => {
+      for (const [k, n] of blend[ym] || []) {
+        const [did, cat] = k.split("|");
+        const entry = map.get(did);
+        if (entry) entry[bucketName][cat] = (entry[bucketName][cat] || 0) + n;
+      }
+    };
+
+    // month = the selected month; ytd = whole selected year; period = trailing N.
+    addInto("month", selectedMonth);
+    for (let m = 1; m <= 12; m++) addInto("ytd", `${ytdYear}-${String(m).padStart(2, "0")}`);
+    for (const ym of periodMonths) addInto("period", ym);
+
     return Array.from(map.values());
-  }, [drivers, incidents, monthIncidents, monthHistory, yearHistory, isHistorical, selectedYear, faultFilter]);
+  }, [drivers, incidents, history, selectedMonth, periodSel, customFrom, customTo, faultFilter]);
 
   // Build sorted chart data for a single category.
-  const chartDataFor = (categoryId) =>
+  const chartDataFor = (categoryId, roleGroup) =>
     driverTotals
-      .filter((e) => e.month[categoryId] > 0 || e.ytd[categoryId] > 0)
+      .filter((e) => {
+        const role = e.driver.role || "driver";
+        const inGroup =
+          roleGroup === "loader" ? role === "loader" : role !== "loader";
+        return inGroup && (e.month[categoryId] > 0 || e.ytd[categoryId] > 0);
+      })
       .map((e) => ({
+        driverId: e.driver.id,
         name: e.driver.name,
-        month: e.month[categoryId] || 0,
+        month: e.period[categoryId] || 0,
         ytd: e.ytd[categoryId] || 0,
       }))
       .sort((a, b) => b.ytd - a.ytd || b.month - a.month);
@@ -318,7 +288,7 @@ export default function Dashboard({ incidents, drivers }) {
     () =>
       isHistorical
         ? null
-        : monthIncidents.filter((inc) => inc.fault === "driver").length,
+        : monthIncidents.filter((inc) => inc.fault === "driver" && !inc.no_fault).length,
     [isHistorical, monthIncidents],
   );
 
@@ -398,6 +368,32 @@ export default function Dashboard({ incidents, drivers }) {
         </select>
 
         <div className="month-picker">
+          {[
+            ["this", "This Mo"],
+            ["last", "Last Mo"],
+            ["3", "3M"],
+            ["6", "6M"],
+            ["12", "12M"],
+            ["custom", "Custom"],
+          ].map(([val, label]) => (
+            <button
+              key={val}
+              className={`month-btn ${periodSel === val ? "active" : ""}`}
+              onClick={() => setPeriodSel(val)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {periodSel === "custom" && (
+          <div className="custom-range">
+            <input type="month" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} />
+            <span className="meta">to</span>
+            <input type="month" value={customTo} onChange={(e) => setCustomTo(e.target.value)} />
+          </div>
+        )}
+
+        <div className="month-picker">
           <button
             className={`month-btn ${faultFilter === "all" ? "active" : ""}`}
             onClick={() => setFaultFilter("all")}
@@ -442,16 +438,52 @@ export default function Dashboard({ incidents, drivers }) {
         </div>
       </div>
 
+      <div className="section-head">Drivers</div>
       <div className="chart-grid">
         {CHART_CATEGORIES.map((cat) => (
-          <MonthlyChartCard
+          <CategoryLeaderboard
             key={cat.id}
             title={cat.title}
-            data={chartDataFor(cat.id)}
-            monthColor={cat.color}
+            color={cat.color}
+            data={chartDataFor(cat.id, "driver")}
+            onSelect={setFocusId}
+            periodLabel={PERIOD_LABELS[periodSel] || "SEL"}
           />
         ))}
       </div>
+
+      <div className="section-head" style={{ marginTop: 26 }}>Loaders</div>
+      <div className="chart-grid">
+        {CHART_CATEGORIES.filter(
+          (cat) => chartDataFor(cat.id, "loader").length > 0,
+        ).map((cat) => (
+          <CategoryLeaderboard
+            key={cat.id}
+            title={cat.title}
+            color={cat.color}
+            data={chartDataFor(cat.id, "loader")}
+            onSelect={setFocusId}
+            periodLabel={PERIOD_LABELS[periodSel] || "SEL"}
+          />
+        ))}
+        {CHART_CATEGORIES.every(
+          (cat) => chartDataFor(cat.id, "loader").length === 0,
+        ) && <div className="empty-state">No loader incidents on record.</div>}
+      </div>
+
+      {focusId && (
+        <DriverModal
+          driver={
+            drivers.find((d) => d.id === focusId) || {
+              id: focusId,
+              name: focusId,
+              role: "driver",
+            }
+          }
+          incidents={incidents.filter((inc) => inc.driver_id === focusId)}
+          onClose={() => setFocusId(null)}
+        />
+      )}
 
       {incidents.length === 0 && history.length === 0 && (
         <div style={{ marginTop: 30 }} className="card">

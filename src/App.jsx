@@ -14,12 +14,14 @@ import Drivers from "./views/Drivers.jsx";
 import Trends from "./views/Trends.jsx";
 import History from "./views/History.jsx";
 import Reviews from "./views/Reviews.jsx";
+import ForgottenFreight from "./views/ForgottenFreight.jsx";
 
-export const APP_VERSION = "0.7.1";
+export const APP_VERSION = "0.10.1";
 
 const TABS = [
   { id: "dashboard", label: "Scorecard", icon: "◫", shortcut: "d" },
   { id: "reports", label: "Reports", icon: "▦", shortcut: "r" },
+  { id: "ff", label: "Forgotten Freight", icon: "▣", shortcut: "f" },
   { id: "ingest", label: "New Report", icon: "+", shortcut: "n" },
   { id: "incidents", label: "All Incidents", icon: "⚠", shortcut: "i" },
   { id: "trends", label: "Trends", icon: "◭", shortcut: "t" },
@@ -227,7 +229,14 @@ export default function App() {
                 onUpdate={reloadDrivers}
               />
             )}
-            {tab === "trends" && <Trends drivers={drivers} />}
+            {tab === "trends" && <Trends drivers={drivers} incidents={incidents} />}
+            {tab === "ff" && (
+              <ForgottenFreight
+                drivers={drivers}
+                incidents={incidents}
+                onSaved={reloadIncidents}
+              />
+            )}
             {tab === "reviews" && <Reviews />}
             {tab === "history" && (
               <History

@@ -190,7 +190,7 @@ function drawCover(doc, incidents, meta) {
   const cardsTop = y;
   const cardW = (pageW - 2 * margin - 30) / 3;
   const cardH = 70;
-  const driverFault = incidents.filter((i) => i.fault === "driver").length;
+  const driverFault = incidents.filter((i) => i.fault === "driver" && !i.no_fault).length;
   const exonerated = incidents.filter(
     (i) =>
       i.fault === "exonerated" ||
@@ -259,7 +259,7 @@ function drawCover(doc, incidents, meta) {
   setColor(doc, LINE, "draw");
   doc.line(offX, y + 4, offX + colW, y + 4);
   const offenders = {};
-  for (const inc of incidents.filter((i) => i.fault === "driver")) {
+  for (const inc of incidents.filter((i) => i.fault === "driver" && !i.no_fault)) {
     const name = inc.driver_name || inc.driver_raw || "Unknown";
     offenders[name] = (offenders[name] || 0) + 1;
   }
@@ -316,14 +316,40 @@ function drawCardHeader(doc, inc, x, y, w, h) {
   const padX = 10;
   const headY = y + 18;
 
-  // Category + fault badges, right-aligned. Drawn first so we know their left edge.
+  // Badges, right-aligned (drawn right→left so we know their left edge):
+  // [sources…] [category] [fault | late reason] [NO FAULT?]
+  const LATE_REASON_PDF = {
+    attempted: "attempted", unable_to_locate: "unable to locate",
+    forgotten_freight: "forgotten freight", closed_mondays: "closed mondays",
+    closed_fridays: "closed fridays", forgot_close_out: "forgot close out",
+  };
+  const SOURCE_PDF = { laters: "LATE", returns: "RETURN", traces: "TRACE" };
   let badgeRight = x + w - 10;
-  const faultW = doc.getTextWidth((inc.fault || "unknown").toUpperCase()) + 10;
-  drawBadge(doc, inc.fault || "unknown", badgeRight - faultW, headY, faultColor(inc.fault));
+  if (inc.no_fault) {
+    const t = "NO FAULT";
+    const bw = doc.getTextWidth(t.toUpperCase()) + 10;
+    drawBadge(doc, t, badgeRight - bw, headY, RED);
+    badgeRight -= bw + 5;
+  }
+  const isLateRow =
+    (Array.isArray(inc.sources) && inc.sources.includes("laters")) || inc.category === "late";
+  const rightBadgeText = isLateRow && inc.late_reason
+    ? LATE_REASON_PDF[inc.late_reason] || inc.late_reason
+    : inc.fault || "unknown";
+  const faultW = doc.getTextWidth(rightBadgeText.toUpperCase()) + 10;
+  drawBadge(doc, rightBadgeText, badgeRight - faultW, headY, faultColor(isLateRow && inc.late_reason ? "driver" : inc.fault));
   badgeRight -= faultW + 5;
   const catW = doc.getTextWidth(inc.category.toUpperCase()) + 10;
   drawBadge(doc, inc.category, badgeRight - catW, headY, catColor);
-  const badgeLeft = badgeRight - catW;
+  badgeRight -= catW + 5;
+  for (const s of Array.isArray(inc.sources) ? inc.sources : []) {
+    const t = SOURCE_PDF[s];
+    if (!t) continue;
+    const bw = doc.getTextWidth(t) + 10;
+    drawBadge(doc, t, badgeRight - bw, headY, TEXT_MUTED);
+    badgeRight -= bw + 5;
+  }
+  const badgeLeft = badgeRight;
 
   // PRO# in its own left zone. Measure at the SAME 11pt size it is drawn at —
   // the old code measured at 9pt, undersizing the gutter and overlapping the name.
@@ -387,7 +413,13 @@ async function drawIncidentCard(doc, inc, x, y, w, h, photos) {
   doc.setFont("helvetica", "normal");
   doc.setFontSize(7);
   setColor(doc, TEXT_MUTED, "text");
+  const LATE_META = {
+    attempted: "Attempted", unable_to_locate: "Unable to Locate",
+    forgotten_freight: "Forgotten Freight", closed_mondays: "Closed Mondays",
+    closed_fridays: "Closed Fridays", forgot_close_out: "Forgot Close Out",
+  };
   const metaParts = [
+    inc.late_reason && `Late Reason: ${LATE_META[inc.late_reason] || inc.late_reason}`,
     inc.ship_date && `Ship: ${inc.ship_date}`,
     inc.delivered_date && `Delivered: ${inc.delivered_date}`,
     inc.return_date && `Returned: ${inc.return_date}`,
