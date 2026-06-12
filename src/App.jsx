@@ -16,7 +16,7 @@ import History from "./views/History.jsx";
 import Reviews from "./views/Reviews.jsx";
 import ForgottenFreight from "./views/ForgottenFreight.jsx";
 
-export const APP_VERSION = "0.10.1";
+export const APP_VERSION = "0.10.2";
 
 const TABS = [
   { id: "dashboard", label: "Scorecard", icon: "◫", shortcut: "d" },
@@ -107,6 +107,31 @@ export default function App() {
   const reloadReportsAndIncidents = async () => {
     await Promise.all([reloadIncidents(), reloadReports()]);
   };
+
+  // Cross-device freshness: the app used to fetch once per page load, so a
+  // phone tab left open for days showed a frozen snapshot of the cloud store.
+  // Refetch everything whenever the tab regains focus (throttled to 60s).
+  const lastRefreshRef = useRef(Date.now());
+  useEffect(() => {
+    const refreshIfStale = () => {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - lastRefreshRef.current < 60_000) return;
+      lastRefreshRef.current = Date.now();
+      Promise.all([getIncidents(), getReports(), getDrivers()])
+        .then(([inc, reps, roster]) => {
+          setIncidents(inc);
+          setReports(reps);
+          if (roster && roster.length) setDrivers(roster);
+        })
+        .catch(() => {}); // offline — keep showing what we have
+    };
+    window.addEventListener("focus", refreshIfStale);
+    document.addEventListener("visibilitychange", refreshIfStale);
+    return () => {
+      window.removeEventListener("focus", refreshIfStale);
+      document.removeEventListener("visibilitychange", refreshIfStale);
+    };
+  }, []);
 
   const tabCount = (id) => {
     if (id === "reports") return reports.length;
