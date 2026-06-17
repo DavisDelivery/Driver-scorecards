@@ -6,6 +6,7 @@ import {
   deleteIncident,
   getIncidentPhotos,
 } from "../data/firebase.js";
+import { matchDriver } from "../data/driverMatch.js";
 import DriverModal from "./DriverModal.jsx";
 
 const pad9 = (p) => String(p || "").replace(/\D/g, "").padStart(9, "0");
@@ -16,33 +17,6 @@ const fmtMDY = (s) => {
   const m = String(s || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
   return m ? `${m[2]}/${m[3]}/${m[1]}` : String(s || "").slice(0, 10);
 };
-
-// Fuzzy-match a NuVizz driver name to the roster.
-function matchDriver(nuvizzName, drivers) {
-  if (!nuvizzName) return null;
-  const norm = (s) => s.toLowerCase().replace(/[^a-z ]/g, "").trim();
-  const target = norm(nuvizzName);
-  if (!target) return null;
-  // exact
-  let hit = drivers.find((d) => norm(d.name) === target);
-  if (hit) return hit;
-  // all tokens contained either way
-  const tTokens = target.split(/\s+/);
-  hit = drivers.find((d) => {
-    const dn = norm(d.name);
-    return tTokens.every((t) => dn.includes(t));
-  });
-  if (hit) return hit;
-  // first+last initial style fallback
-  hit = drivers.find((d) => {
-    const dTokens = norm(d.name).split(/\s+/);
-    return (
-      dTokens[0] === tTokens[0] &&
-      dTokens[dTokens.length - 1]?.[0] === tTokens[tTokens.length - 1]?.[0]
-    );
-  });
-  return hit || null;
-}
 
 export default function ForgottenFreight({ drivers, incidents, onSaved }) {
   const [pro, setPro] = React.useState("");
