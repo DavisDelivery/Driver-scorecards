@@ -10,6 +10,13 @@ import DriverModal from "./DriverModal.jsx";
 
 const pad9 = (p) => String(p || "").replace(/\D/g, "").padStart(9, "0");
 
+// Format an ISO date (YYYY-MM-DD…) as US month/day/year (MM/DD/YYYY). Parsed from
+// the string directly so it never shifts a day from new Date() timezone handling.
+const fmtMDY = (s) => {
+  const m = String(s || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[2]}/${m[3]}/${m[1]}` : String(s || "").slice(0, 10);
+};
+
 // Fuzzy-match a NuVizz driver name to the roster.
 function matchDriver(nuvizzName, drivers) {
   if (!nuvizzName) return null;
@@ -197,7 +204,7 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
     };
     try {
       await saveIncident(incident);
-      setSavedMsg(`Saved — ${pull.pro} charged to ${drv.name} under ${delivered} (${photos.length} photo${photos.length === 1 ? "" : "s"}).`);
+      setSavedMsg(`Saved — ${pull.pro} charged to ${drv.name} under ${fmtMDY(delivered)} (${photos.length} photo${photos.length === 1 ? "" : "s"}).`);
       setPull(null);
       setPro("");
       setNotes("");
@@ -357,7 +364,7 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
                 <span className="lb-name" style={{ width: "auto" }}>{inc.driver_name}</span>
                 <span className="meta">{inc.customer || ""}</span>
                 <span className="meta" style={{ marginLeft: "auto" }}>
-                  {(inc.delivered_date || inc.created_at || "").slice(0, 10)}
+                  {fmtMDY(inc.delivered_date || inc.created_at)}
                   {inc.has_photos ? " · 📸" : ""}
                 </span>
                 <span className="ff-row-actions" onClick={(e) => e.stopPropagation()}>
