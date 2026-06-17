@@ -1,6 +1,11 @@
 import React from "react";
 import { fetchStopData } from "../parsers/nuvizzClient.js";
-import { saveIncident, getIncidents } from "../data/firebase.js";
+import {
+  saveIncident,
+  getIncidents,
+  deleteIncident,
+  getIncidentPhotos,
+} from "../data/firebase.js";
 import DriverModal from "./DriverModal.jsx";
 
 const pad9 = (p) => String(p || "").replace(/\D/g, "").padStart(9, "0");
@@ -43,6 +48,70 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
   const [saving, setSaving] = React.useState(false);
   const [savedMsg, setSavedMsg] = React.useState("");
   const [focus, setFocus] = React.useState(null);
+
+  // Inline edit / delete of an existing forgotten-freight log entry.
+  const [editingId, setEditingId] = React.useState(null);
+  const [editDriverId, setEditDriverId] = React.useState("");
+  const [editDate, setEditDate] = React.useState("");
+  const [editNotes, setEditNotes] = React.useState("");
+  const [rowBusy, setRowBusy] = React.useState(false);
+
+  function startEdit(inc) {
+    setEditingId(inc.id);
+    setEditDriverId(inc.driver_id || "");
+    setEditDate((inc.delivered_date || inc.created_at || "").slice(0, 10));
+    setEditNotes(inc.notes || "");
+  }
+  function cancelEdit() {
+    setEditingId(null);
+    setRowBusy(false);
+  }
+  async function saveEdit(inc) {
+    if (!editDriverId) return;
+    setRowBusy(true);
+    const drv = drivers.find((d) => d.id === editDriverId);
+    try {
+      // Light log records carry no photo bytes; re-attach the stored photos so the
+      // save doesn't blank out has_photos / wipe the photos:{id} side of the blob.
+      const { photo_urls, photo_meta } = await getIncidentPhotos(inc.id);
+      await saveIncident({
+        ...inc,
+        driver_id: drv.id,
+        driver_name: drv.name,
+        delivered_date: editDate || inc.delivered_date,
+        notes: editNotes,
+        photo_urls,
+        photo_meta,
+        updated_at: new Date().toISOString(),
+      });
+      setSavedMsg(`Updated — ${inc.pro_number} now charged to ${drv.name}.`);
+      setEditingId(null);
+      onSaved && onSaved();
+    } catch (err) {
+      setSavedMsg(`Update failed: ${err.message}`);
+    } finally {
+      setRowBusy(false);
+    }
+  }
+  async function deleteEntry(inc) {
+    if (
+      !window.confirm(
+        `Delete forgotten-freight entry ${inc.pro_number} (${inc.driver_name || "unknown driver"})? This cannot be undone.`,
+      )
+    )
+      return;
+    setRowBusy(true);
+    try {
+      await deleteIncident(inc.id);
+      setSavedMsg(`Deleted — ${inc.pro_number} removed from the log.`);
+      if (editingId === inc.id) setEditingId(null);
+      onSaved && onSaved();
+    } catch (err) {
+      setSavedMsg(`Delete failed: ${err.message}`);
+    } finally {
+      setRowBusy(false);
+    }
+  }
 
   const ffIncidents = React.useMemo(
     () =>
@@ -273,24 +342,93 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
             <div className="empty-state">Nothing logged yet.</div>
           )}
           {ffIncidents.map((inc) => (
-            <div
-              key={inc.id}
-              className="dd-incident-head"
-              onClick={() =>
-                setFocus(drivers.find((d) => d.id === inc.driver_id) || {
-                  id: inc.driver_id,
-                  name: inc.driver_name || "(unknown)",
-                  role: "driver",
-                })
-              }
-            >
-              <span className="pro-num">{inc.pro_number}</span>
-              <span className="lb-name" style={{ width: "auto" }}>{inc.driver_name}</span>
-              <span className="meta">{inc.customer || ""}</span>
-              <span className="meta" style={{ marginLeft: "auto" }}>
-                {(inc.delivered_date || inc.created_at || "").slice(0, 10)}
-                {inc.has_photos ? " · 📸" : ""}
-              </span>
+            <div key={inc.id} className="ff-log-entry">
+              <div
+                className="dd-incident-head"
+                onClick={() =>
+                  setFocus(drivers.find((d) => d.id === inc.driver_id) || {
+                    id: inc.driver_id,
+                    name: inc.driver_name || "(unknown)",
+                    role: "driver",
+                  })
+                }
+              >
+                <span className="pro-num">{inc.pro_number}</span>
+                <span className="lb-name" style={{ width: "auto" }}>{inc.driver_name}</span>
+                <span className="meta">{inc.customer || ""}</span>
+                <span className="meta" style={{ marginLeft: "auto" }}>
+                  {(inc.delivered_date || inc.created_at || "").slice(0, 10)}
+                  {inc.has_photos ? " · 📸" : ""}
+                </span>
+                <span className="ff-row-actions" onClick={(e) => e.stopPropagation()}>
+                  <button
+                    className="btn ghost sm"
+                    onClick={() => (editingId === inc.id ? cancelEdit() : startEdit(inc))}
+                    title="Edit this entry"
+                  >
+                    {editingId === inc.id ? "Close" : "Edit"}
+                  </button>
+                  <button
+                    className="btn ghost sm"
+                    onClick={() => deleteEntry(inc)}
+                    disabled={rowBusy}
+                    title="Delete this entry"
+                    style={{ color: "var(--accent-red)" }}
+                  >
+                    Delete
+                  </button>
+                </span>
+              </div>
+
+              {editingId === inc.id && (
+                <div className="ff-edit-row" onClick={(e) => e.stopPropagation()}>
+                  <div>
+                    <div className="dd-k">Charge to driver</div>
+                    <select
+                      value={editDriverId}
+                      onChange={(e) => setEditDriverId(e.target.value)}
+                    >
+                      <option value="">— Select driver —</option>
+                      {drivers
+                        .slice()
+                        .sort((a, b) => a.name.localeCompare(b.name))
+                        .map((d) => (
+                          <option key={d.id} value={d.id}>
+                            {d.name}{d.role === "loader" ? " (loader)" : ""}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                  <div>
+                    <div className="dd-k">Incident date</div>
+                    <input
+                      type="date"
+                      value={editDate}
+                      onChange={(e) => setEditDate(e.target.value)}
+                      style={{ fontFamily: "var(--mono)" }}
+                    />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div className="dd-k">Notes</div>
+                    <input
+                      type="text"
+                      placeholder="Optional notes…"
+                      value={editNotes}
+                      onChange={(e) => setEditNotes(e.target.value)}
+                    />
+                  </div>
+                  <button
+                    className="btn primary"
+                    onClick={() => saveEdit(inc)}
+                    disabled={!editDriverId || rowBusy}
+                  >
+                    {rowBusy ? "Saving…" : "Save Changes"}
+                  </button>
+                  <button className="btn ghost" onClick={cancelEdit} disabled={rowBusy}>
+                    Cancel
+                  </button>
+                </div>
+              )}
             </div>
           ))}
         </div>

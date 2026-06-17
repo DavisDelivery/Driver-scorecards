@@ -1637,6 +1637,31 @@ table.data.analytics-subtable th {
   flex-wrap: wrap;
 }
 .ff-charge-row select, .ff-charge-row input { margin-top: 4px; }
+/* Forgotten-freight log: per-entry edit/delete affordances. */
+.ff-log-entry { border-bottom: 1px solid #f1f5f9; }
+.ff-log-entry:last-child { border-bottom: none; }
+.ff-row-actions {
+  display: flex;
+  gap: 4px;
+  margin-left: 14px;
+  flex-shrink: 0;
+}
+.ff-edit-row {
+  display: flex;
+  gap: 14px;
+  align-items: flex-end;
+  padding: 12px 2px 14px;
+  flex-wrap: wrap;
+  background: var(--bg-2);
+  border-radius: 6px;
+  margin: 0 0 8px;
+  padding-left: 12px;
+  padding-right: 12px;
+}
+.ff-edit-row select, .ff-edit-row input { margin-top: 4px; }
+@media (max-width: 640px) {
+  .ff-edit-row { flex-direction: column; align-items: stretch; gap: 10px; }
+}
 .btn.primary {
   background: #1e5b92;
   color: #fff;
