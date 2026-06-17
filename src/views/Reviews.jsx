@@ -1,5 +1,27 @@
 import { useState, useEffect, useMemo } from "react";
 import { getReviews } from "../data/reviews.js";
+import { getDrivers } from "../data/firebase.js";
+import { fetchStopData } from "../parsers/nuvizzClient.js";
+import { matchDriver } from "../data/driverMatch.js";
+
+// Per-browser cache of PRO → resolved driver so we don't re-hit NuVizz each load.
+const ATTR_CACHE = "dds_review_pro_driver";
+const readAttrCache = () => {
+  try {
+    return JSON.parse(localStorage.getItem(ATTR_CACHE) || "{}");
+  } catch {
+    return {};
+  }
+};
+const writeAttrCache = (o) => {
+  try {
+    localStorage.setItem(ATTR_CACHE, JSON.stringify(o));
+  } catch {
+    /* quota / private mode — ignore */
+  }
+};
+// A review counts as already-attributed if the source supplied a driver name.
+const sourceHasDriver = (r) => !!(r.driver && r.driver.trim());
 
 const ACCENT = "#1e5b92";
 const GREEN = "#15803d";
@@ -37,22 +59,91 @@ function ratingColor(avg) {
 
 export default function Reviews() {
   const [reviews, setReviews] = useState([]);
+  const [drivers, setDrivers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
   const [sortKey, setSortKey] = useState("avg");
   const [sortDir, setSortDir] = useState("asc"); // worst-first by default
+  // PRO → driver attribution for reviews the source left unattributed, resolved
+  // via NuVizz. { [pro]: { driverId, driverName, status } }
+  const [attrib, setAttrib] = useState(() => readAttrCache());
+  const [resolving, setResolving] = useState(0); // # of PROs still resolving
 
   useEffect(() => {
     (async () => {
       try {
-        setReviews(await getReviews());
+        const [revs, drvs] = await Promise.all([getReviews(), getDrivers()]);
+        setReviews(revs);
+        setDrivers(drvs);
+        resolveAttributions(revs, drvs);
       } catch (e) {
         setErr(e.message);
       } finally {
         setLoading(false);
       }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Resolve the delivering driver for each unattributed review by looking up its
+  // PRO in NuVizz and matching the driver name to the roster. Cached per-PRO so
+  // it only hits NuVizz once per PRO per browser; pass force=true to re-check.
+  async function resolveAttributions(revs, drvs, force = false) {
+    if (force) {
+      setAttrib({});
+      writeAttrCache({});
+    }
+    const cache = force ? {} : readAttrCache();
+    const pending = [
+      ...new Set(
+        revs
+          .filter((r) => !sourceHasDriver(r) && r.proNumber)
+          .map((r) => r.proNumber),
+      ),
+    ].filter((pro) => force || !(pro in cache));
+    if (!pending.length) {
+      setAttrib(cache);
+      return;
+    }
+    setResolving(pending.length);
+    const CONC = 4;
+    for (let i = 0; i < pending.length; i += CONC) {
+      const slice = pending.slice(i, i + CONC);
+      const results = await Promise.all(
+        slice.map(async (pro) => {
+          try {
+            const res = await fetchStopData(pro);
+            const name = res?.stop?.driverName || "";
+            const d = matchDriver(name, drvs);
+            if (d)
+              return [pro, { driverId: d.id, driverName: d.name, nuvizzName: name, status: "resolved" }];
+            if (name)
+              return [pro, { driverId: "", driverName: "", nuvizzName: name, status: "unmatched" }];
+            return [pro, { driverId: "", driverName: "", nuvizzName: "", status: "none" }];
+          } catch (e) {
+            return [pro, { driverId: "", driverName: "", status: "error", err: e.message }];
+          }
+        }),
+      );
+      setAttrib((prev) => {
+        const next = { ...prev };
+        for (const [pro, v] of results) next[pro] = v;
+        writeAttrCache(next);
+        return next;
+      });
+      setResolving((n) => Math.max(0, n - slice.length));
+    }
+    setResolving(0);
+  }
+
+  // Effective driver name for a review: source-provided, else PRO-attributed.
+  const driverFor = (r) => {
+    if (sourceHasDriver(r)) return r.driver.trim();
+    const a = attrib[r.proNumber];
+    return a && a.status === "resolved" ? a.driverName : null;
+  };
+  const attributedViaPro = (r) =>
+    !sourceHasDriver(r) && attrib[r.proNumber]?.status === "resolved";
 
   const kpis = useMemo(() => {
     const n = reviews.length;
@@ -63,11 +154,12 @@ export default function Reviews() {
     return { n, avg, google, internal, dist };
   }, [reviews]);
 
-  // Per-driver rollup. Reviews with no resolved driver bucket as "Unattributed".
+  // Per-driver rollup. Uses the PRO-attributed driver when the source left one
+  // blank; anything still unresolved buckets as "Unattributed".
   const byDriver = useMemo(() => {
     const map = new Map();
     for (const r of reviews) {
-      const key = (r.driver && r.driver.trim()) || "Unattributed (PRO only)";
+      const key = driverFor(r) || "Unattributed (PRO only)";
       if (!map.has(key)) map.set(key, { driver: key, count: 0, sum: 0, low: 0, last: "" });
       const d = map.get(key);
       d.count += 1;
@@ -76,7 +168,8 @@ export default function Reviews() {
       if (!d.last || new Date(r.submittedAt) > new Date(d.last)) d.last = r.submittedAt;
     }
     return Array.from(map.values()).map((d) => ({ ...d, avg: d.count ? d.sum / d.count : 0 }));
-  }, [reviews]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reviews, attrib]);
 
   const sortedDrivers = useMemo(() => {
     const arr = [...byDriver];
@@ -145,11 +238,28 @@ export default function Reviews() {
 
   return (
     <div className="fade-in" style={{ display: "flex", flexDirection: "column", gap: "18px", maxWidth: "100%" }}>
-      <div>
-        <h2 style={{ fontSize: "20px", color: "#0a2744", margin: 0 }}>Customer Reviews</h2>
-        <p style={{ color: "#97a3b3", fontSize: "13px", marginTop: "4px" }}>
-          Delivery ratings from the public tracking portal, attributed to the delivering driver.
-        </p>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px", flexWrap: "wrap" }}>
+        <div>
+          <h2 style={{ fontSize: "20px", color: "#0a2744", margin: 0 }}>Customer Reviews</h2>
+          <p style={{ color: "#97a3b3", fontSize: "13px", marginTop: "4px" }}>
+            Delivery ratings from the public tracking portal, attributed to the delivering driver by PRO.
+          </p>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          {resolving > 0 && (
+            <span style={{ fontSize: "12px", color: "#97a3b3" }}>
+              Attributing {resolving} PRO{resolving === 1 ? "" : "s"}…
+            </span>
+          )}
+          <button
+            className="btn ghost sm"
+            onClick={() => resolveAttributions(reviews, drivers, true)}
+            disabled={resolving > 0 || loading}
+            title="Re-check every unattributed review's driver from NuVizz"
+          >
+            Re-attribute
+          </button>
+        </div>
       </div>
 
       {err && (
@@ -252,9 +362,23 @@ export default function Reviews() {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                   <Stars n={r.rating} />
-                  <span style={{ fontWeight: 700, color: r.driver ? "#0a2744" : "#97a3b3" }}>
-                    {r.driver || "Unattributed"}
+                  <span style={{ fontWeight: 700, color: driverFor(r) ? "#0a2744" : "#97a3b3" }}>
+                    {driverFor(r) || "Unattributed"}
                   </span>
+                  {attributedViaPro(r) && (
+                    <span
+                      style={{
+                        fontSize: "10px",
+                        color: GREEN,
+                        background: "#e7f4ec",
+                        border: "1px solid #cce8d6",
+                        borderRadius: "4px",
+                        padding: "1px 5px",
+                      }}
+                    >
+                      via PRO
+                    </span>
+                  )}
                   {r.proNumber && (
                     <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: "11px", color: "#97a3b3" }}>
                       PRO {r.proNumber}
