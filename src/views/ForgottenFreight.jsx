@@ -18,14 +18,21 @@ const fmtMDY = (s) => {
   return m ? `${m[2]}/${m[3]}/${m[1]}` : String(s || "").slice(0, 10);
 };
 
+const today = () => new Date().toISOString().slice(0, 10);
+
+// What was left behind on the order. Free pick — blank is allowed.
+const FORGOTTEN_ITEMS = ["Skid", "Peanut", "Bubble Wrap", "Foam Box", "Pallet Jack"];
+
 export default function ForgottenFreight({ drivers, incidents, onSaved }) {
   const [pro, setPro] = React.useState("");
   const [pulling, setPulling] = React.useState(false);
   const [pull, setPull] = React.useState(null); // { stop, photos, error }
   const [driverId, setDriverId] = React.useState("");
   const [notes, setNotes] = React.useState("");
-  const [incidentDate, setIncidentDate] = React.useState("");
-  const [dateTouched, setDateTouched] = React.useState(false);
+  const [forgottenItem, setForgottenItem] = React.useState("");
+  // One date the whole batch is logged under; defaults to today and stays put
+  // between entries so a day's worth of forgotten freight all lands on one date.
+  const [incidentDate, setIncidentDate] = React.useState(today);
   const [saving, setSaving] = React.useState(false);
   const [savedMsg, setSavedMsg] = React.useState("");
   const [focus, setFocus] = React.useState(null);
@@ -35,6 +42,7 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
   const [editDriverId, setEditDriverId] = React.useState("");
   const [editDate, setEditDate] = React.useState("");
   const [editNotes, setEditNotes] = React.useState("");
+  const [editItem, setEditItem] = React.useState("");
   const [rowBusy, setRowBusy] = React.useState(false);
 
   function startEdit(inc) {
@@ -42,6 +50,7 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
     setEditDriverId(inc.driver_id || "");
     setEditDate((inc.delivered_date || inc.created_at || "").slice(0, 10));
     setEditNotes(inc.notes || "");
+    setEditItem(inc.forgotten_item || "");
   }
   function cancelEdit() {
     setEditingId(null);
@@ -61,6 +70,10 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
         driver_name: drv.name,
         delivered_date: editDate || inc.delivered_date,
         notes: editNotes,
+        forgotten_item: editItem,
+        reason: editItem
+          ? `Forgotten freight — ${editItem} (manual entry)`
+          : "Forgotten freight (manual entry)",
         photo_urls,
         photo_meta,
         updated_at: new Date().toISOString(),
@@ -116,11 +129,8 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
       setPull({ ...res, pro: p });
       const auto = matchDriver(res?.stop?.driverName, drivers);
       setDriverId(auto ? auto.id : "");
-      if (!dateTouched) {
-        const t = res?.stop?.to || {};
-        const raw = t.confirmedDTTM || t.departureDTTM || t.arrivalDTTM || "";
-        setIncidentDate(raw ? String(raw).slice(0, 10) : new Date().toISOString().slice(0, 10));
-      }
+      // Date intentionally left as the batch date (see incidentDate) — it is not
+      // pulled from NuVizz so a day's entries all land on the chosen/today date.
     } catch (err) {
       setPull({ error: err.message || "Pull failed", pro: p });
     } finally {
@@ -141,12 +151,9 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
     const drv = drivers.find((d) => d.id === driverId);
     const s = pull.stop || {};
     const now = new Date().toISOString();
-    const deliveredRaw = s.to?.confirmedDTTM || s.to?.departureDTTM || s.to?.arrivalDTTM || "";
-    // The set incident date wins (historical backfill); falls back to the
-    // NuVizz delivery date, then today. Sticky between entries on purpose.
-    const delivered =
-      incidentDate ||
-      (deliveredRaw ? String(deliveredRaw).slice(0, 10) : now.slice(0, 10));
+    // The batch date (defaults to today, sticky between entries) is what every
+    // entry is logged under; falls back to today if somehow cleared.
+    const delivered = incidentDate || now.slice(0, 10);
     const photos = (pull.photos || []).map((p) => p.dataUri || p.url).filter(Boolean);
     const incident = {
       id: `i_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -165,7 +172,10 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
       to_state: s.to?.state || "",
       zip_code: s.to?.zip || "",
       delivered_date: delivered,
-      reason: "Forgotten freight (manual entry)",
+      forgotten_item: forgottenItem,
+      reason: forgottenItem
+        ? `Forgotten freight — ${forgottenItem} (manual entry)`
+        : "Forgotten freight (manual entry)",
       notes: notes || "",
       sources: [],
       report_id: null,
@@ -183,6 +193,7 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
       setPro("");
       setNotes("");
       setDriverId("");
+      setForgottenItem("");
       onSaved && onSaved();
     } catch (err) {
       setSavedMsg(`Save failed: ${err.message}`);
@@ -217,6 +228,20 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
             <button className="btn primary" onClick={doPull} disabled={pulling}>
               {pulling ? "Pulling from NuVizz…" : "Pull Order"}
             </button>
+            <div className="ff-date-field">
+              <span className="dd-k">Log entries under</span>
+              <input
+                type="date"
+                value={incidentDate}
+                onChange={(e) => setIncidentDate(e.target.value)}
+                style={{ fontFamily: "var(--mono)" }}
+                title="Every new entry is logged under this date"
+              />
+            </div>
+          </div>
+          <div className="meta" style={{ marginTop: 6 }}>
+            All new entries are logged under this date (defaults to today). Change it
+            once and the whole batch follows.
           </div>
 
           {pull?.error && !s && (
@@ -255,21 +280,18 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
 
               <div className="ff-charge-row">
                 <div>
-                  <div className="dd-k">Incident date</div>
-                  <input
-                    type="date"
-                    value={incidentDate}
-                    onChange={(e) => {
-                      setIncidentDate(e.target.value);
-                      setDateTouched(true);
-                    }}
-                    style={{ fontFamily: "var(--mono)" }}
-                  />
-                  <div className="meta" style={{ marginTop: 4 }}>
-                    {dateTouched
-                      ? "Set manually — stays for the next entry (backfill mode)"
-                      : "From NuVizz delivery — edit for historical backfill"}
-                  </div>
+                  <div className="dd-k">What was forgotten</div>
+                  <select
+                    value={forgottenItem}
+                    onChange={(e) => setForgottenItem(e.target.value)}
+                  >
+                    <option value="">— Select item —</option>
+                    {FORGOTTEN_ITEMS.map((it) => (
+                      <option key={it} value={it}>
+                        {it}
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <div>
                   <div className="dd-k">Charge to driver</div>
@@ -337,6 +359,9 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
                 <span className="pro-num">{inc.pro_number}</span>
                 <span className="lb-name" style={{ width: "auto" }}>{inc.driver_name}</span>
                 <span className="meta">{inc.customer || ""}</span>
+                {inc.forgotten_item && (
+                  <span className="ff-item-chip">{inc.forgotten_item}</span>
+                )}
                 <span className="meta" style={{ marginLeft: "auto" }}>
                   {fmtMDY(inc.delivered_date || inc.created_at)}
                   {inc.has_photos ? " · 📸" : ""}
@@ -388,6 +413,17 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
                       onChange={(e) => setEditDate(e.target.value)}
                       style={{ fontFamily: "var(--mono)" }}
                     />
+                  </div>
+                  <div>
+                    <div className="dd-k">What was forgotten</div>
+                    <select value={editItem} onChange={(e) => setEditItem(e.target.value)}>
+                      <option value="">— Select item —</option>
+                      {FORGOTTEN_ITEMS.map((it) => (
+                        <option key={it} value={it}>
+                          {it}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                   <div style={{ flex: 1 }}>
                     <div className="dd-k">Notes</div>
