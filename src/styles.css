@@ -1614,7 +1614,26 @@ table.data.analytics-subtable th {
 .cc-key i { width: 10px; height: 7px; border-radius: 2px; display: inline-block; }
 .cc-key .cc-key-ytd, .cc-key i.cc-key-ytd { opacity: 0.28; }
 
-.ff-input-row { display: flex; gap: 10px; align-items: center; }
+.ff-input-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.ff-date-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-left: auto;
+}
+.ff-item-chip {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--davis-blue);
+  background: var(--davis-blue-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
 .ff-error {
   margin-top: 12px;
   color: #b91c1c;
