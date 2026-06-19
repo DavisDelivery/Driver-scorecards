@@ -23,5 +23,16 @@ export function matchDriver(nuvizzName, drivers) {
       dTokens[dTokens.length - 1]?.[0] === tTokens[tTokens.length - 1]?.[0]
     );
   });
-  return hit || null;
+  if (hit) return hit;
+  // first-name-only fallback: if exactly ONE driver on the roster shares the
+  // first name, use them (e.g. NuVizz "Kobe Boakye" → the only "Kobe"). Skipped
+  // when two or more share a first name so we never credit the wrong driver.
+  const firstName = tTokens[0];
+  if (firstName) {
+    const sameFirst = drivers.filter(
+      (d) => norm(d.name).split(/\s+/)[0] === firstName,
+    );
+    if (sameFirst.length === 1) return sameFirst[0];
+  }
+  return null;
 }
