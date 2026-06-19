@@ -14,7 +14,7 @@ import Drivers from "./views/Drivers.jsx";
 import Trends from "./views/Trends.jsx";
 import History from "./views/History.jsx";
 import Reviews from "./views/Reviews.jsx";
-import ForgottenFreight from "./views/ForgottenFreight.jsx";
+import ManualEntry, { FF_CONFIG, MISDELIVERY_CONFIG } from "./views/ManualEntry.jsx";
 
 export const APP_VERSION = "0.10.2";
 
@@ -22,6 +22,7 @@ const TABS = [
   { id: "dashboard", label: "Scorecard", icon: "◫", shortcut: "d" },
   { id: "reports", label: "Reports", icon: "▦", shortcut: "r" },
   { id: "ff", label: "Forgotten Freight", icon: "▣", shortcut: "f" },
+  { id: "misdeliveries", label: "Mis-Deliveries", icon: "⇄", shortcut: "m" },
   { id: "ingest", label: "New Report", icon: "+", shortcut: "n" },
   { id: "incidents", label: "All Incidents", icon: "⚠", shortcut: "i" },
   { id: "trends", label: "Trends", icon: "◭", shortcut: "t" },
@@ -256,7 +257,16 @@ export default function App() {
             )}
             {tab === "trends" && <Trends drivers={drivers} incidents={incidents} />}
             {tab === "ff" && (
-              <ForgottenFreight
+              <ManualEntry
+                config={FF_CONFIG}
+                drivers={drivers}
+                incidents={incidents}
+                onSaved={reloadIncidents}
+              />
+            )}
+            {tab === "misdeliveries" && (
+              <ManualEntry
+                config={MISDELIVERY_CONFIG}
                 drivers={drivers}
                 incidents={incidents}
                 onSaved={reloadIncidents}

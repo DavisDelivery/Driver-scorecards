@@ -2,7 +2,6 @@ import React from "react";
 import { fetchStopData } from "../parsers/nuvizzClient.js";
 import {
   saveIncident,
-  getIncidents,
   deleteIncident,
   getIncidentPhotos,
 } from "../data/firebase.js";
@@ -20,37 +19,74 @@ const fmtMDY = (s) => {
 
 const today = () => new Date().toISOString().slice(0, 10);
 
-// What was left behind on the order. Free pick — blank is allowed.
-const FORGOTTEN_ITEMS = ["Skid", "Peanut", "Bubble Wrap", "Foam Box", "Pallet Jack"];
+// Config presets for the manual-entry tabs. Both pull a PRO from NuVizz, attribute
+// it to a driver, and log it as a manual incident; they differ only in copy,
+// category, and whether they carry a classification dropdown.
+export const FF_CONFIG = {
+  category: "forgotten_freight",
+  heading: "Forgotten Freight",
+  logTitle: "Forgotten Freight Log",
+  addLabel: "Add Forgotten Freight",
+  recordNoun: "forgotten freight", // "…already logged as forgotten freight for…"
+  deleteNoun: "forgotten-freight", // "Delete forgotten-freight entry…"
+  reasonLabel: "Forgotten freight",
+  classify: {
+    label: "What was forgotten",
+    field: "forgotten_item",
+    placeholder: "— Select item —",
+    options: ["Skid", "Peanut", "Bubble Wrap", "Foam Box", "Pallet Jack"],
+  },
+};
 
-export default function ForgottenFreight({ drivers, incidents, onSaved }) {
+export const MISDELIVERY_CONFIG = {
+  category: "misdelivery",
+  heading: "Mis-Deliveries",
+  logTitle: "Mis-Delivery Log",
+  addLabel: "Add Mis-Delivery",
+  recordNoun: "a mis-delivery",
+  deleteNoun: "mis-delivery",
+  reasonLabel: "Mis-delivery",
+  classify: null,
+};
+
+// Generic manual-entry view: pull an order from NuVizz, charge it to a driver, and
+// log it as a manual incident, plus an editable/deletable log. Driven by `config`
+// so Forgotten Freight and Mis-Deliveries share one implementation.
+export default function ManualEntry({ drivers, incidents, onSaved, config }) {
+  const classifyField = config.classify?.field;
+
   const [pro, setPro] = React.useState("");
   const [pulling, setPulling] = React.useState(false);
   const [pull, setPull] = React.useState(null); // { stop, photos, error }
   const [driverId, setDriverId] = React.useState("");
   const [notes, setNotes] = React.useState("");
-  const [forgottenItem, setForgottenItem] = React.useState("");
+  const [classifyValue, setClassifyValue] = React.useState("");
   // One date the whole batch is logged under; defaults to today and stays put
-  // between entries so a day's worth of forgotten freight all lands on one date.
+  // between entries so a day's worth of entries all land on one date.
   const [incidentDate, setIncidentDate] = React.useState(today);
   const [saving, setSaving] = React.useState(false);
   const [savedMsg, setSavedMsg] = React.useState("");
   const [focus, setFocus] = React.useState(null);
 
-  // Inline edit / delete of an existing forgotten-freight log entry.
+  // Inline edit / delete of an existing log entry.
   const [editingId, setEditingId] = React.useState(null);
   const [editDriverId, setEditDriverId] = React.useState("");
   const [editDate, setEditDate] = React.useState("");
   const [editNotes, setEditNotes] = React.useState("");
-  const [editItem, setEditItem] = React.useState("");
+  const [editClassify, setEditClassify] = React.useState("");
   const [rowBusy, setRowBusy] = React.useState(false);
+
+  const buildReason = (value) =>
+    value
+      ? `${config.reasonLabel} — ${value} (manual entry)`
+      : `${config.reasonLabel} (manual entry)`;
 
   function startEdit(inc) {
     setEditingId(inc.id);
     setEditDriverId(inc.driver_id || "");
     setEditDate((inc.delivered_date || inc.created_at || "").slice(0, 10));
     setEditNotes(inc.notes || "");
-    setEditItem(inc.forgotten_item || "");
+    setEditClassify(classifyField ? inc[classifyField] || "" : "");
   }
   function cancelEdit() {
     setEditingId(null);
@@ -64,20 +100,19 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
       // Light log records carry no photo bytes; re-attach the stored photos so the
       // save doesn't blank out has_photos / wipe the photos:{id} side of the blob.
       const { photo_urls, photo_meta } = await getIncidentPhotos(inc.id);
-      await saveIncident({
+      const patch = {
         ...inc,
         driver_id: drv.id,
         driver_name: drv.name,
         delivered_date: editDate || inc.delivered_date,
         notes: editNotes,
-        forgotten_item: editItem,
-        reason: editItem
-          ? `Forgotten freight — ${editItem} (manual entry)`
-          : "Forgotten freight (manual entry)",
+        reason: buildReason(editClassify),
         photo_urls,
         photo_meta,
         updated_at: new Date().toISOString(),
-      });
+      };
+      if (classifyField) patch[classifyField] = editClassify;
+      await saveIncident(patch);
       setSavedMsg(`Updated — ${inc.pro_number} now charged to ${drv.name}.`);
       setEditingId(null);
       onSaved && onSaved();
@@ -90,7 +125,7 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
   async function deleteEntry(inc) {
     if (
       !window.confirm(
-        `Delete forgotten-freight entry ${inc.pro_number} (${inc.driver_name || "unknown driver"})? This cannot be undone.`,
+        `Delete ${config.deleteNoun} entry ${inc.pro_number} (${inc.driver_name || "unknown driver"})? This cannot be undone.`,
       )
     )
       return;
@@ -107,12 +142,12 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
     }
   }
 
-  const ffIncidents = React.useMemo(
+  const logIncidents = React.useMemo(
     () =>
       incidents
-        .filter((i) => i.category === "forgotten_freight")
+        .filter((i) => i.category === config.category)
         .sort((a, b) => (b.created_at || "").localeCompare(a.created_at || "")),
-    [incidents],
+    [incidents, config.category],
   );
 
   async function doPull() {
@@ -141,11 +176,15 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
   async function doSave() {
     if (!pull || !driverId) return;
     const dup = incidents.find(
-      (i) => i.category === "forgotten_freight" && i.pro_number === pull.pro,
+      (i) => i.category === config.category && i.pro_number === pull.pro,
     );
-    if (dup && !window.confirm(
-      `PRO ${pull.pro} is already logged as forgotten freight for ${dup.driver_name || "a driver"}. Add it again anyway?`,
-    )) return;
+    if (
+      dup &&
+      !window.confirm(
+        `PRO ${pull.pro} is already logged as ${config.recordNoun} for ${dup.driver_name || "a driver"}. Add it again anyway?`,
+      )
+    )
+      return;
     setSaving(true);
     setSavedMsg("");
     const drv = drivers.find((d) => d.id === driverId);
@@ -158,7 +197,7 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
     const incident = {
       id: `i_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       pro_number: pull.pro,
-      category: "forgotten_freight",
+      category: config.category,
       fault: "driver",
       no_fault: false,
       driver_id: drv.id,
@@ -172,10 +211,7 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
       to_state: s.to?.state || "",
       zip_code: s.to?.zip || "",
       delivered_date: delivered,
-      forgotten_item: forgottenItem,
-      reason: forgottenItem
-        ? `Forgotten freight — ${forgottenItem} (manual entry)`
-        : "Forgotten freight (manual entry)",
+      reason: buildReason(classifyValue),
       notes: notes || "",
       sources: [],
       report_id: null,
@@ -186,6 +222,7 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
       created_at: now,
       ingested_at: now,
     };
+    if (classifyField) incident[classifyField] = classifyValue;
     try {
       await saveIncident(incident);
       setSavedMsg(`Saved — ${pull.pro} charged to ${drv.name} under ${fmtMDY(delivered)} (${photos.length} photo${photos.length === 1 ? "" : "s"}).`);
@@ -193,7 +230,7 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
       setPro("");
       setNotes("");
       setDriverId("");
-      setForgottenItem("");
+      setClassifyValue("");
       onSaved && onSaved();
     } catch (err) {
       setSavedMsg(`Save failed: ${err.message}`);
@@ -205,12 +242,21 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
   const matched = drivers.find((d) => d.id === driverId);
   const s = pull?.stop;
 
+  const driverOptions = drivers
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((d) => (
+      <option key={d.id} value={d.id}>
+        {d.name}{d.role === "loader" ? " (loader)" : ""}
+      </option>
+    ));
+
   return (
     <div>
       <div className="page-title">Manual Entry</div>
       <h1 className="page-heading">
-        Forgotten Freight
-        <span className="meta">· {ffIncidents.length} on record</span>
+        {config.heading}
+        <span className="meta">· {logIncidents.length} on record</span>
       </h1>
 
       <div className="card" style={{ marginBottom: 18 }}>
@@ -279,32 +325,27 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
               )}
 
               <div className="ff-charge-row">
-                <div>
-                  <div className="dd-k">What was forgotten</div>
-                  <select
-                    value={forgottenItem}
-                    onChange={(e) => setForgottenItem(e.target.value)}
-                  >
-                    <option value="">— Select item —</option>
-                    {FORGOTTEN_ITEMS.map((it) => (
-                      <option key={it} value={it}>
-                        {it}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                {config.classify && (
+                  <div>
+                    <div className="dd-k">{config.classify.label}</div>
+                    <select
+                      value={classifyValue}
+                      onChange={(e) => setClassifyValue(e.target.value)}
+                    >
+                      <option value="">{config.classify.placeholder}</option>
+                      {config.classify.options.map((it) => (
+                        <option key={it} value={it}>
+                          {it}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
                 <div>
                   <div className="dd-k">Charge to driver</div>
                   <select value={driverId} onChange={(e) => setDriverId(e.target.value)}>
                     <option value="">— Select driver —</option>
-                    {drivers
-                      .slice()
-                      .sort((a, b) => a.name.localeCompare(b.name))
-                      .map((d) => (
-                        <option key={d.id} value={d.id}>
-                          {d.name}{d.role === "loader" ? " (loader)" : ""}
-                        </option>
-                      ))}
+                    {driverOptions}
                   </select>
                   {matched && s.driverName && (
                     <div className="meta" style={{ marginTop: 4 }}>
@@ -328,7 +369,7 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
                   onClick={doSave}
                   disabled={!driverId || saving}
                 >
-                  {saving ? "Saving…" : "Add Forgotten Freight"}
+                  {saving ? "Saving…" : config.addLabel}
                 </button>
               </div>
             </div>
@@ -338,13 +379,13 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
         </div>
       </div>
 
-      <div className="section-head">Forgotten Freight Log</div>
+      <div className="section-head">{config.logTitle}</div>
       <div className="card">
         <div className="card-body" style={{ padding: "4px 14px" }}>
-          {ffIncidents.length === 0 && (
+          {logIncidents.length === 0 && (
             <div className="empty-state">Nothing logged yet.</div>
           )}
-          {ffIncidents.map((inc) => (
+          {logIncidents.map((inc) => (
             <div key={inc.id} className="ff-log-entry">
               <div
                 className="dd-incident-head"
@@ -359,8 +400,8 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
                 <span className="pro-num">{inc.pro_number}</span>
                 <span className="lb-name" style={{ width: "auto" }}>{inc.driver_name}</span>
                 <span className="meta">{inc.customer || ""}</span>
-                {inc.forgotten_item && (
-                  <span className="ff-item-chip">{inc.forgotten_item}</span>
+                {classifyField && inc[classifyField] && (
+                  <span className="ff-item-chip">{inc[classifyField]}</span>
                 )}
                 <span className="meta" style={{ marginLeft: "auto" }}>
                   {fmtMDY(inc.delivered_date || inc.created_at)}
@@ -395,14 +436,7 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
                       onChange={(e) => setEditDriverId(e.target.value)}
                     >
                       <option value="">— Select driver —</option>
-                      {drivers
-                        .slice()
-                        .sort((a, b) => a.name.localeCompare(b.name))
-                        .map((d) => (
-                          <option key={d.id} value={d.id}>
-                            {d.name}{d.role === "loader" ? " (loader)" : ""}
-                          </option>
-                        ))}
+                      {driverOptions}
                     </select>
                   </div>
                   <div>
@@ -414,17 +448,19 @@ export default function ForgottenFreight({ drivers, incidents, onSaved }) {
                       style={{ fontFamily: "var(--mono)" }}
                     />
                   </div>
-                  <div>
-                    <div className="dd-k">What was forgotten</div>
-                    <select value={editItem} onChange={(e) => setEditItem(e.target.value)}>
-                      <option value="">— Select item —</option>
-                      {FORGOTTEN_ITEMS.map((it) => (
-                        <option key={it} value={it}>
-                          {it}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                  {config.classify && (
+                    <div>
+                      <div className="dd-k">{config.classify.label}</div>
+                      <select value={editClassify} onChange={(e) => setEditClassify(e.target.value)}>
+                        <option value="">{config.classify.placeholder}</option>
+                        {config.classify.options.map((it) => (
+                          <option key={it} value={it}>
+                            {it}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                   <div style={{ flex: 1 }}>
                     <div className="dd-k">Notes</div>
                     <input
