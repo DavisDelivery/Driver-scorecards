@@ -46,7 +46,12 @@ export const MISDELIVERY_CONFIG = {
   recordNoun: "a mis-delivery",
   deleteNoun: "mis-delivery",
   reasonLabel: "Mis-delivery",
-  classify: null,
+  classify: {
+    label: "What went wrong",
+    field: "misdelivery_type",
+    placeholder: "— Select issue —",
+    options: ["Wrong Address", "Wrong Customer", "Wrong Item"],
+  },
 };
 
 // Generic manual-entry view: pull an order from NuVizz, charge it to a driver, and
