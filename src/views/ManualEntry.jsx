@@ -180,16 +180,25 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
 
   async function doSave() {
     if (!pull || !driverId) return;
-    const dup = incidents.find(
+    // Flag a duplicate PRO before saving: list who it's already charged to and the
+    // date(s) it was logged under, then confirm whether to add it again.
+    const dups = incidents.filter(
       (i) => i.category === config.category && i.pro_number === pull.pro,
     );
-    if (
-      dup &&
-      !window.confirm(
-        `PRO ${pull.pro} is already logged as ${config.recordNoun} for ${dup.driver_name || "a driver"}. Add it again anyway?`,
-      )
-    )
-      return;
+    if (dups.length) {
+      const lines = dups
+        .map(
+          (d) =>
+            `  • ${d.driver_name || "a driver"} — ${fmtMDY(d.delivered_date || d.created_at)}`,
+        )
+        .join("\n");
+      const proceed = window.confirm(
+        `PRO ${pull.pro} is already logged as ${config.recordNoun}` +
+          (dups.length > 1 ? ` ${dups.length} times` : "") +
+          `:\n${lines}\n\nAdd it again anyway?`,
+      );
+      if (!proceed) return;
+    }
     setSaving(true);
     setSavedMsg("");
     const drv = drivers.find((d) => d.id === driverId);
@@ -246,6 +255,12 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
 
   const matched = drivers.find((d) => d.id === driverId);
   const s = pull?.stop;
+  // Existing log entries for the pulled PRO — surfaced as a heads-up in the preview.
+  const existingForPro = pull
+    ? incidents.filter(
+        (i) => i.category === config.category && i.pro_number === pull.pro,
+      )
+    : [];
 
   const driverOptions = drivers
     .slice()
@@ -301,6 +316,19 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
 
           {s && (
             <div className="ff-preview">
+              {existingForPro.length > 0 && (
+                <div className="ff-dup-warning">
+                  ⚠ PRO {pull.pro} is already logged as {config.recordNoun}
+                  {existingForPro.length > 1 ? ` ${existingForPro.length} times` : ""}:{" "}
+                  {existingForPro
+                    .map(
+                      (d) =>
+                        `${d.driver_name || "a driver"} (${fmtMDY(d.delivered_date || d.created_at)})`,
+                    )
+                    .join(", ")}
+                  . Saving will add another entry.
+                </div>
+              )}
               <div className="dd-meta-grid" style={{ marginTop: 14 }}>
                 <div><span className="dd-k">PRO</span><span className="dd-v" style={{ fontFamily: "var(--mono)" }}>{pull.pro}</span></div>
                 <div><span className="dd-k">NuVizz Driver</span><span className="dd-v">{s.driverName || "—"}</span></div>
