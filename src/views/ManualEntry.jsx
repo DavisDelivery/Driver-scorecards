@@ -72,6 +72,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   const [saving, setSaving] = React.useState(false);
   const [savedMsg, setSavedMsg] = React.useState("");
   const [focus, setFocus] = React.useState(null);
+  const [logSearch, setLogSearch] = React.useState("");
 
   // Inline edit / delete of an existing log entry.
   const [editingId, setEditingId] = React.useState(null);
@@ -154,6 +155,23 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         .sort((a, b) => (b.created_at || "").localeCompare(a.created_at || "")),
     [incidents, config.category],
   );
+
+  // Free-text filter over the log so you can quickly check whether something has
+  // been logged (matches PRO, driver, customer, item/type, notes, or date).
+  const filteredLog = React.useMemo(() => {
+    const q = logSearch.trim().toLowerCase();
+    if (!q) return logIncidents;
+    return logIncidents.filter((i) =>
+      [
+        i.pro_number,
+        i.driver_name,
+        i.customer,
+        classifyField ? i[classifyField] : "",
+        i.notes,
+        fmtMDY(i.delivered_date || i.created_at),
+      ].some((f) => String(f || "").toLowerCase().includes(q)),
+    );
+  }, [logIncidents, logSearch, classifyField]);
 
   async function doPull() {
     const p = pad9(pro);
@@ -412,13 +430,28 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         </div>
       </div>
 
-      <div className="section-head">{config.logTitle}</div>
+      <div className="ff-log-head">
+        <div className="section-head" style={{ margin: 0 }}>{config.logTitle}</div>
+        <input
+          type="text"
+          className="ff-log-search"
+          placeholder="Search PRO, driver, customer…"
+          value={logSearch}
+          onChange={(e) => setLogSearch(e.target.value)}
+        />
+      </div>
       <div className="card">
         <div className="card-body" style={{ padding: "4px 14px" }}>
-          {logIncidents.length === 0 && (
+          {logIncidents.length === 0 ? (
             <div className="empty-state">Nothing logged yet.</div>
+          ) : (
+            filteredLog.length === 0 && (
+              <div className="empty-state">
+                No entries match “{logSearch.trim()}”.
+              </div>
+            )
           )}
-          {logIncidents.map((inc) => (
+          {filteredLog.map((inc) => (
             <div key={inc.id} className="ff-log-entry">
               <div
                 className="dd-incident-head"
