@@ -34,7 +34,7 @@ export const FF_CONFIG = {
     label: "What was forgotten",
     field: "forgotten_item",
     placeholder: "— Select item —",
-    options: ["Skid", "Peanut", "Bubble Wrap", "Foam Box", "Pallet Jack"],
+    options: ["Skid", "Peanut", "Bubble Wrap", "Foam", "Box", "Pallet Jack"],
   },
 };
 
@@ -430,18 +430,18 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         </div>
       </div>
 
-      <div className="ff-log-head">
-        <div className="section-head" style={{ margin: 0 }}>{config.logTitle}</div>
-        <input
-          type="text"
-          className="ff-log-search"
-          placeholder="Search PRO, driver, customer…"
-          value={logSearch}
-          onChange={(e) => setLogSearch(e.target.value)}
-        />
-      </div>
+      <div className="section-head">{config.logTitle}</div>
       <div className="card">
         <div className="card-body" style={{ padding: "4px 14px" }}>
+          <div className="ff-log-search-wrap">
+            <input
+              type="text"
+              className="ff-log-search"
+              placeholder="Search PRO, driver, customer…"
+              value={logSearch}
+              onChange={(e) => setLogSearch(e.target.value)}
+            />
+          </div>
           {logIncidents.length === 0 ? (
             <div className="empty-state">Nothing logged yet.</div>
           ) : (

@@ -1656,16 +1656,15 @@ table.data.analytics-subtable th {
   font-size: 12px;
   font-weight: 600;
 }
-.ff-log-head {
+.ff-log-search-wrap {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin: 4px 0 10px;
-  flex-wrap: wrap;
+  justify-content: center;
+  padding: 12px 0 10px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
 }
 .ff-log-search {
-  max-width: 280px;
+  max-width: 360px;
   width: 100%;
   font-family: var(--mono);
   font-size: 12px;
