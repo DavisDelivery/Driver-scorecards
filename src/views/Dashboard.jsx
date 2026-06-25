@@ -3,6 +3,7 @@ import { INCIDENT_CATEGORIES } from "../data/drivers.js";
 import { getHistory } from "../data/firebase.js";
 import DriverModal from "./DriverModal.jsx";
 import { CategoryLeaderboard } from "./leaderboard.jsx";
+import AttemptsScorecardCard from "./AttemptsScorecardCard.jsx";
 
 // Month names used throughout the scorecard.
 const MONTH_NAMES = [
@@ -451,6 +452,8 @@ export default function Dashboard({ incidents, drivers }) {
           />
         ))}
       </div>
+
+      <AttemptsScorecardCard />
 
       <div className="section-head" style={{ marginTop: 26 }}>Loaders</div>
       <div className="chart-grid">
