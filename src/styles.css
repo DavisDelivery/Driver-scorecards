@@ -1634,6 +1634,27 @@ table.data.analytics-subtable th {
   padding: 1px 7px;
   white-space: nowrap;
 }
+/* Source tag on the Attempts log: auto-detected (feed) vs manually-logged. */
+.ff-src-chip {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  border-radius: 4px;
+  padding: 1px 6px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.ff-src-chip.auto {
+  color: #0e7490;
+  background: #ecfeff;
+  border: 1px solid #a5e8f0;
+}
+.ff-src-chip.manual {
+  color: var(--text-2);
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+}
 .ff-error {
   margin-top: 12px;
   color: #b91c1c;
