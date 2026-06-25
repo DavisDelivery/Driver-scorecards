@@ -54,6 +54,17 @@ export const MISDELIVERY_CONFIG = {
   },
 };
 
+export const ATTEMPTS_CONFIG = {
+  category: "attempts",
+  heading: "Attempts",
+  logTitle: "Attempts Log",
+  addLabel: "Add Attempt",
+  recordNoun: "an attempt",
+  deleteNoun: "attempt",
+  reasonLabel: "Delivery attempt",
+  classify: null,
+};
+
 // Generic manual-entry view: pull an order from NuVizz, charge it to a driver, and
 // log it as a manual incident, plus an editable/deletable log. Driven by `config`
 // so Forgotten Freight and Mis-Deliveries share one implementation.
