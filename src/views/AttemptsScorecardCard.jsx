@@ -1,24 +1,10 @@
 import React, { useState, useEffect } from "react";
+import { todayET, fetchAttempts } from "../data/attemptsFeed.js";
 
-// Live attempts feed from the dispatch app (CORS-enabled, read-only, no auth).
-// A delivery "attempt" is a stop a driver couldn't complete; CS prepends "ATT"
-// to the shipment and unplans it, so it later shows a different driver (or none).
-// The feed computes who ORIGINALLY had each attempt from that morning's routed
-// plan. This card only consumes + displays it — no backend here.
-const FEED_URL =
-  "https://dd-dispatch-map.netlify.app/.netlify/functions/nuvizz-attempts";
-
+// Live "Delivery Attempts" card for the driver scorecard. Reads the dispatch
+// app's automated attempts feed (see attemptsFeed.js) and shows who ORIGINALLY
+// had each attempted delivery. Display only — no backend here.
 const AMBER = "#b45309";
-
-// Today as YYYY-MM-DD in America/New_York (the feed's default day boundary).
-function todayET() {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/New_York",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date());
-}
 
 // MM/DD/YYYY for display, parsed from the string to avoid timezone day-shift.
 function fmtMDY(s) {
@@ -43,8 +29,7 @@ function StatusBadge({ a }) {
   );
 }
 
-// Live "Delivery Attempts" card for the driver scorecard. Optional `driver`
-// (userName/name substring) filters the feed for a single-driver view.
+// Optional `driver` (userName/name substring) filters the feed for a single-driver view.
 export default function AttemptsScorecardCard({ driver }) {
   const [date, setDate] = useState(todayET);
   const [status, setStatus] = useState("loading"); // loading | ready | error
@@ -56,17 +41,9 @@ export default function AttemptsScorecardCard({ driver }) {
     let active = true;
     setStatus("loading");
     setError(null);
-    const url =
-      `${FEED_URL}?date=${encodeURIComponent(date)}` +
-      (driver ? `&driver=${encodeURIComponent(driver)}` : "");
-    fetch(url, { signal: controller.signal })
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
+    fetchAttempts(date, { driver, signal: controller.signal })
       .then((j) => {
         if (!active) return;
-        if (!j || j.ok === false) throw new Error(j?.error || "Feed error");
         setData(j);
         setStatus("ready");
       })

@@ -6,6 +6,7 @@ import {
   getIncidentPhotos,
 } from "../data/firebase.js";
 import { matchDriver } from "../data/driverMatch.js";
+import { fetchAttempts, deleteAttempt, todayET } from "../data/attemptsFeed.js";
 import DriverModal from "./DriverModal.jsx";
 
 const pad9 = (p) => String(p || "").replace(/\D/g, "").padStart(9, "0");
@@ -17,7 +18,23 @@ const fmtMDY = (s) => {
   return m ? `${m[2]}/${m[3]}/${m[1]}` : String(s || "").slice(0, 10);
 };
 
-const today = () => new Date().toISOString().slice(0, 10);
+// Status badge for an auto-detected (feed) attempt: amber "Unplanned" when the
+// stop is currently unplanned, else the raw status.
+function AttemptStatusBadge({ a }) {
+  const unplanned = a.currentlyUnplanned;
+  return (
+    <span
+      className="chip"
+      style={
+        unplanned
+          ? { background: "#fef3c7", color: "#b45309", border: "1px solid #fcd9a3" }
+          : { background: "var(--bg-3)", color: "var(--text-2)" }
+      }
+    >
+      {unplanned ? "Unplanned" : a.currentStatus || "—"}
+    </span>
+  );
+}
 
 // Config presets for the manual-entry tabs. Both pull a PRO from NuVizz, attribute
 // it to a driver, and log it as a manual incident; they differ only in copy,
@@ -63,6 +80,10 @@ export const ATTEMPTS_CONFIG = {
   deleteNoun: "attempt",
   reasonLabel: "Delivery attempt",
   classify: null,
+  // Also load the dispatch app's automated attempts feed for the selected date,
+  // merged into the log alongside manual entries (with a per-row delete).
+  feed: true,
+  feedDeletable: true,
 };
 
 // Generic manual-entry view: pull an order from NuVizz, charge it to a driver, and
@@ -77,13 +98,57 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   const [driverId, setDriverId] = React.useState("");
   const [notes, setNotes] = React.useState("");
   const [classifyValue, setClassifyValue] = React.useState("");
-  // One date the whole batch is logged under; defaults to today and stays put
-  // between entries so a day's worth of entries all land on one date.
-  const [incidentDate, setIncidentDate] = React.useState(today);
+  // One date the whole batch is logged under; defaults to today (ET, matching the
+  // feed's day boundary) and stays put between entries. Also drives the feed query.
+  const [incidentDate, setIncidentDate] = React.useState(todayET);
   const [saving, setSaving] = React.useState(false);
   const [savedMsg, setSavedMsg] = React.useState("");
   const [focus, setFocus] = React.useState(null);
   const [logSearch, setLogSearch] = React.useState("");
+
+  // Automated attempts feed (only when config.feed) for the selected date.
+  const feedEnabled = !!config.feed;
+  const [feed, setFeed] = React.useState({ status: "idle", attempts: [], error: null });
+  const [feedNonce, setFeedNonce] = React.useState(0); // bump to refetch
+  const [feedDeletingId, setFeedDeletingId] = React.useState(null);
+
+  React.useEffect(() => {
+    if (!feedEnabled) return;
+    const controller = new AbortController();
+    let active = true;
+    setFeed((f) => ({ ...f, status: "loading", error: null }));
+    fetchAttempts(incidentDate, { signal: controller.signal })
+      .then((j) => {
+        if (!active) return;
+        setFeed({ status: "ready", attempts: j.attempts || [], error: null });
+      })
+      .catch((e) => {
+        if (!active || e.name === "AbortError") return;
+        setFeed({ status: "error", attempts: [], error: e.message || "Failed to load" });
+      });
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [feedEnabled, incidentDate, feedNonce]);
+
+  async function deleteAuto(a) {
+    if (
+      !window.confirm(
+        `Remove auto-detected attempt ${a.shipmentNbr || a.stopNbr} (${a.originalDriverName || "Unknown"})?\n\nThis deletes it from the dispatch feed for ${fmtMDY(incidentDate)}.`,
+      )
+    )
+      return;
+    setFeedDeletingId(a.stopNbr);
+    try {
+      await deleteAttempt(incidentDate, a.stopNbr);
+      setFeedNonce((n) => n + 1); // refetch
+    } catch (e) {
+      setSavedMsg(`Auto-attempt delete failed: ${e.message}`);
+    } finally {
+      setFeedDeletingId(null);
+    }
+  }
 
   // Inline edit / delete of an existing log entry.
   const [editingId, setEditingId] = React.useState(null);
@@ -183,6 +248,25 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       ].some((f) => String(f || "").toLowerCase().includes(q)),
     );
   }, [logIncidents, logSearch, classifyField]);
+
+  // Same search applied to the auto (feed) rows — by PRO/driver/customer/route/stop.
+  const filteredFeed = React.useMemo(() => {
+    if (!feedEnabled) return [];
+    const q = logSearch.trim().toLowerCase();
+    if (!q) return feed.attempts;
+    return feed.attempts.filter((a) =>
+      [
+        a.shipmentNbr,
+        a.stopNbr,
+        a.originalDriverName,
+        a.originalDriverUserName,
+        a.businessName,
+        a.city,
+        a.state,
+        a.routeName,
+      ].some((f) => String(f || "").toLowerCase().includes(q)),
+    );
+  }, [feedEnabled, feed.attempts, logSearch]);
 
   async function doPull() {
     const p = pad9(pro);
@@ -291,6 +375,11 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       )
     : [];
 
+  const feedRows = feedEnabled ? feed.attempts : [];
+  // "N on record" includes the feed count for the selected date (per spec).
+  const totalOnRecord = logIncidents.length + feedRows.length;
+  const totalShown = filteredLog.length + filteredFeed.length;
+
   const driverOptions = drivers
     .slice()
     .sort((a, b) => a.name.localeCompare(b.name))
@@ -305,7 +394,12 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       <div className="page-title">Manual Entry</div>
       <h1 className="page-heading">
         {config.heading}
-        <span className="meta">· {logIncidents.length} on record</span>
+        <span className="meta">
+          · {totalOnRecord} on record
+          {feedEnabled && feedRows.length > 0
+            ? ` (${feedRows.length} auto for ${fmtMDY(incidentDate)})`
+            : ""}
+        </span>
       </h1>
 
       <div className="card" style={{ marginBottom: 18 }}>
@@ -453,15 +547,68 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
               onChange={(e) => setLogSearch(e.target.value)}
             />
           </div>
-          {logIncidents.length === 0 ? (
-            <div className="empty-state">Nothing logged yet.</div>
-          ) : (
-            filteredLog.length === 0 && (
-              <div className="empty-state">
-                No entries match “{logSearch.trim()}”.
-              </div>
-            )
+          {feedEnabled && feed.status === "loading" && (
+            <div className="empty-state">Loading attempts…</div>
           )}
+          {feedEnabled && feed.status === "error" && (
+            <div className="empty-state" style={{ color: "var(--accent-red)" }}>
+              Couldn't load auto attempts for {fmtMDY(incidentDate)} ({feed.error}).
+            </div>
+          )}
+          {totalOnRecord === 0 &&
+            !(feedEnabled && (feed.status === "loading" || feed.status === "error")) && (
+              <div className="empty-state">Nothing logged yet.</div>
+            )}
+          {totalOnRecord > 0 && totalShown === 0 && logSearch.trim() && (
+            <div className="empty-state">
+              No entries match “{logSearch.trim()}”.
+            </div>
+          )}
+
+          {/* Auto-detected attempts from the dispatch feed (selected date). */}
+          {filteredFeed.map((a) => (
+            <div key={`auto-${a.stopNbr || a.shipmentNbr}`} className="ff-log-entry">
+              <div className="dd-incident-head" style={{ cursor: "default" }}>
+                <span className="ff-src-chip auto">AUTO</span>
+                <span className="pro-num">{a.shipmentNbr || "—"}</span>
+                <span className="lb-name" style={{ width: "auto" }}>
+                  {a.matched && a.originalDriverName ? (
+                    a.originalDriverName
+                  ) : (
+                    <span style={{ color: "#b45309" }}>Unknown</span>
+                  )}
+                </span>
+                <span className="meta">
+                  {a.businessName || "—"}
+                  {a.city || a.state
+                    ? ` · ${[a.city, a.state].filter(Boolean).join(", ")}`
+                    : ""}
+                </span>
+                <span className="meta">
+                  Stop {a.stopNbr || "—"}
+                  {a.routeName ? ` · ${a.routeName}` : ""}
+                </span>
+                <span style={{ marginLeft: "auto" }}>
+                  <AttemptStatusBadge a={a} />
+                </span>
+                {config.feedDeletable && (
+                  <span className="ff-row-actions">
+                    <button
+                      className="btn ghost sm"
+                      onClick={() => deleteAuto(a)}
+                      disabled={feedDeletingId === a.stopNbr}
+                      title="Remove this auto-detected attempt from the feed"
+                      style={{ color: "var(--accent-red)" }}
+                    >
+                      {feedDeletingId === a.stopNbr ? "…" : "Delete"}
+                    </button>
+                  </span>
+                )}
+              </div>
+            </div>
+          ))}
+
+          {/* Manually-logged entries. */}
           {filteredLog.map((inc) => (
             <div key={inc.id} className="ff-log-entry">
               <div
@@ -474,6 +621,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                   })
                 }
               >
+                {feedEnabled && <span className="ff-src-chip manual">MANUAL</span>}
                 <span className="pro-num">{inc.pro_number}</span>
                 <span className="lb-name" style={{ width: "auto" }}>{inc.driver_name}</span>
                 <span className="meta">{inc.customer || ""}</span>
