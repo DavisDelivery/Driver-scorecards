@@ -8,6 +8,7 @@ import {
 import { matchDriver } from "../data/driverMatch.js";
 import { fetchAttempts, deleteAttempt, todayET } from "../data/attemptsFeed.js";
 import DriverModal from "./DriverModal.jsx";
+import ManualEntryAnalytics from "./ManualEntryAnalytics.jsx";
 
 const pad9 = (p) => String(p || "").replace(/\D/g, "").padStart(9, "0");
 
@@ -41,6 +42,7 @@ function AttemptStatusBadge({ a }) {
 // category, and whether they carry a classification dropdown.
 export const FF_CONFIG = {
   category: "forgotten_freight",
+  color: "#f97316",
   heading: "Forgotten Freight",
   logTitle: "Forgotten Freight Log",
   addLabel: "Add Forgotten Freight",
@@ -57,6 +59,7 @@ export const FF_CONFIG = {
 
 export const MISDELIVERY_CONFIG = {
   category: "misdelivery",
+  color: "#f472b6",
   heading: "Mis-Deliveries",
   logTitle: "Mis-Delivery Log",
   addLabel: "Add Mis-Delivery",
@@ -73,6 +76,7 @@ export const MISDELIVERY_CONFIG = {
 
 export const ATTEMPTS_CONFIG = {
   category: "attempts",
+  color: "#14b8a6",
   heading: "Attempts",
   logTitle: "Attempts Log",
   addLabel: "Add Attempt",
@@ -452,13 +456,46 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                   . Saving will add another entry.
                 </div>
               )}
-              <div className="dd-meta-grid" style={{ marginTop: 14 }}>
-                <div><span className="dd-k">PRO</span><span className="dd-v" style={{ fontFamily: "var(--mono)" }}>{pull.pro}</span></div>
-                <div><span className="dd-k">NuVizz Driver</span><span className="dd-v">{s.driverName || "—"}</span></div>
-                <div><span className="dd-k">Customer</span><span className="dd-v">{s.to?.name || "—"}</span></div>
-                <div><span className="dd-k">Destination</span><span className="dd-v">{[s.to?.city, s.to?.state].filter(Boolean).join(", ") || "—"}</span></div>
-                <div><span className="dd-k">Route</span><span className="dd-v">{s.routeName || "—"}</span></div>
-                <div><span className="dd-k">Status</span><span className="dd-v">{s.stopStatus || "—"}</span></div>
+              <div className="ff-preview-top" style={{ marginTop: 14 }}>
+                <div className="dd-meta-grid" style={{ flex: 1, marginBottom: 0 }}>
+                  <div><span className="dd-k">PRO</span><span className="dd-v" style={{ fontFamily: "var(--mono)" }}>{pull.pro}</span></div>
+                  <div><span className="dd-k">NuVizz Driver</span><span className="dd-v">{s.driverName || "—"}</span></div>
+                  <div><span className="dd-k">Customer</span><span className="dd-v">{s.to?.name || "—"}</span></div>
+                  <div><span className="dd-k">Destination</span><span className="dd-v">{[s.to?.city, s.to?.state].filter(Boolean).join(", ") || "—"}</span></div>
+                  <div><span className="dd-k">Route</span><span className="dd-v">{s.routeName || "—"}</span></div>
+                  <div><span className="dd-k">Status</span><span className="dd-v">{s.stopStatus || "—"}</span></div>
+                </div>
+                <div className="ff-order-contents">
+                  <div className="dd-k" style={{ marginBottom: 8 }}>Order Contents</div>
+                  <div className="ff-oc-stats">
+                    <div className="ff-oc">
+                      <span className="ff-oc-num">{s.pieces?.skids ?? "—"}</span>
+                      <span className="ff-oc-lbl">Skids</span>
+                    </div>
+                    <div className="ff-oc">
+                      <span className="ff-oc-num">{s.pieces?.loose ?? "—"}</span>
+                      <span className="ff-oc-lbl">Loose Pieces</span>
+                    </div>
+                    <div className="ff-oc">
+                      <span className="ff-oc-num">
+                        {s.pieces?.total ?? "—"}
+                        {s.pieces?.total != null && s.pieces?.uom ? (
+                          <span className="ff-oc-uom"> {s.pieces.uom}</span>
+                        ) : null}
+                      </span>
+                      <span className="ff-oc-lbl">Total Pieces</span>
+                    </div>
+                    <div className="ff-oc">
+                      <span className="ff-oc-num">
+                        {s.pieces?.weight != null ? s.pieces.weight : "—"}
+                        {s.pieces?.weight != null && s.pieces?.weightUOM ? (
+                          <span className="ff-oc-uom"> {s.pieces.weightUOM}</span>
+                        ) : null}
+                      </span>
+                      <span className="ff-oc-lbl">Weight</span>
+                    </div>
+                  </div>
+                </div>
               </div>
 
               {(s.exceptions || []).length > 0 && (
@@ -534,6 +571,13 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
           {savedMsg && <div className="ff-saved">{savedMsg}</div>}
         </div>
       </div>
+
+      <ManualEntryAnalytics
+        title={config.heading}
+        color={config.color || "var(--davis-blue)"}
+        records={logIncidents}
+        drivers={drivers}
+      />
 
       <div className="section-head">{config.logTitle}</div>
       <div className="card">

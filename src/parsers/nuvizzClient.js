@@ -124,10 +124,25 @@ export async function fetchStopData(pro, { company = "ULINE" } = {}) {
       }
     }
 
+    // Order contents (skids / loose pieces / total pieces / weight). totalPallets
+    // = skids, totalCartons = loose handling units, and the true piece count is
+    // the sum of the line-item quantities in stopDetails.
+    const details = Array.isArray(stopData.stopDetails) ? stopData.stopDetails : [];
+    const totalPieces = details.reduce((n, d) => n + (Number(d.quantity) || 0), 0);
+    const pieceUOMs = [...new Set(details.map((d) => d.quantityUOM).filter(Boolean))];
+
     // Build normalized stop summary
     const stop = {
       stopNbr: stopData.stopNbr,
       proNumber: pro,
+      pieces: {
+        skids: stopData.totalPallets ?? null,
+        loose: stopData.totalCartons ?? null,
+        total: totalPieces || null,
+        uom: pieceUOMs.length === 1 ? pieceUOMs[0] : "",
+        weight: stopData.weight ?? null,
+        weightUOM: stopData.weightUOM || "",
+      },
       driverName: loadData.driverName || null,
       driverId: loadData.driverId || null,
       driverEmail: loadData.driverEmail || null,
