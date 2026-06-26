@@ -470,29 +470,15 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                   <div className="ff-oc-stats">
                     <div className="ff-oc">
                       <span className="ff-oc-num">{s.pieces?.skids ?? "—"}</span>
-                      <span className="ff-oc-lbl">Skids</span>
+                      <span className="ff-oc-lbl">Palettes</span>
                     </div>
                     <div className="ff-oc">
-                      <span className="ff-oc-num">{s.pieces?.loose ?? "—"}</span>
-                      <span className="ff-oc-lbl">Loose Pieces</span>
-                    </div>
-                    <div className="ff-oc">
-                      <span className="ff-oc-num">
-                        {s.pieces?.total ?? "—"}
-                        {s.pieces?.total != null && s.pieces?.uom ? (
-                          <span className="ff-oc-uom"> {s.pieces.uom}</span>
-                        ) : null}
-                      </span>
+                      <span className="ff-oc-num">{s.pieces?.total ?? "—"}</span>
                       <span className="ff-oc-lbl">Total Pieces</span>
                     </div>
                     <div className="ff-oc">
-                      <span className="ff-oc-num">
-                        {s.pieces?.weight != null ? s.pieces.weight : "—"}
-                        {s.pieces?.weight != null && s.pieces?.weightUOM ? (
-                          <span className="ff-oc-uom"> {s.pieces.weightUOM}</span>
-                        ) : null}
-                      </span>
-                      <span className="ff-oc-lbl">Weight</span>
+                      <span className="ff-oc-num">{s.pieces?.loose ?? "—"}</span>
+                      <span className="ff-oc-lbl">Loose</span>
                     </div>
                   </div>
                 </div>
