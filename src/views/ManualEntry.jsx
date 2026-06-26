@@ -470,7 +470,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                   <div className="ff-oc-stats">
                     <div className="ff-oc">
                       <span className="ff-oc-num">{s.pieces?.skids ?? "—"}</span>
-                      <span className="ff-oc-lbl">Palettes</span>
+                      <span className="ff-oc-lbl">Pallets</span>
                     </div>
                     <div className="ff-oc">
                       <span className="ff-oc-num">{s.pieces?.total ?? "—"}</span>
