@@ -1700,6 +1700,87 @@ table.data.analytics-subtable th {
   flex-wrap: wrap;
 }
 .ff-charge-row select, .ff-charge-row input { margin-top: 4px; }
+/* Lookup preview: meta grid on the left, order-contents stats filling the right. */
+.ff-preview-top {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.ff-order-contents {
+  flex: 0 0 320px;
+  max-width: 360px;
+  border-left: 1px solid var(--border);
+  padding-left: 20px;
+}
+@media (max-width: 760px) {
+  .ff-order-contents { flex-basis: 100%; border-left: none; padding-left: 0; }
+}
+.ff-oc-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.ff-oc { display: flex; flex-direction: column; gap: 2px; }
+.ff-oc-num {
+  font-family: var(--mono);
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-0);
+  line-height: 1;
+}
+.ff-oc-uom { font-size: 12px; font-weight: 500; color: var(--text-2); }
+.ff-oc-lbl {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+/* Manual-entry analytics panel. */
+.me-analytics-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 4px 0 10px;
+  flex-wrap: wrap;
+}
+.me-stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 14px;
+  margin-bottom: 16px;
+}
+.me-stat { display: flex; flex-direction: column; gap: 3px; }
+.me-stat-num {
+  font-family: var(--mono);
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-0);
+  line-height: 1.1;
+}
+.me-stat-lbl {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.me-chart-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  gap: 22px;
+}
+@media (max-width: 760px) {
+  .me-chart-grid { grid-template-columns: 1fr; }
+}
+.me-chart-title {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  margin-bottom: 6px;
+}
 /* Forgotten-freight log: per-entry edit/delete affordances. */
 .ff-log-entry { border-bottom: 1px solid #f1f5f9; }
 .ff-log-entry:last-child { border-bottom: none; }

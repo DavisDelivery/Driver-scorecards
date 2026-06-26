@@ -128,6 +128,14 @@ export async function fetchStopData(pro, { company = "ULINE" } = {}) {
     const stop = {
       stopNbr: stopData.stopNbr,
       proNumber: pro,
+      // NuVizz's field labels are misaligned for Davis's data: their "cartons"
+      // are actually palettes (skids), their "pallets" are the total piece count,
+      // and "volume" is the loose-piece count. Map to what they really represent.
+      pieces: {
+        skids: stopData.totalCartons ?? null,
+        total: stopData.totalPallets ?? null,
+        loose: stopData.volume ?? null,
+      },
       driverName: loadData.driverName || null,
       driverId: loadData.driverId || null,
       driverEmail: loadData.driverEmail || null,
