@@ -34,6 +34,7 @@ const TABS = [
 
 export default function App() {
   const [tab, setTab] = useState("dashboard");
+  const [menuOpen, setMenuOpen] = useState(false); // mobile nav drawer
   const [incidents, setIncidents] = useState([]);
   const [drivers, setDrivers] = useState([]);
   const [reports, setReports] = useState([]);
@@ -182,11 +183,21 @@ export default function App() {
       </aside>
 
       <header className="app-header">
-        <div className="brand">
-          <div className="brand-mark">D</div>
-          <div className="brand-text">
-            <div className="brand-name">DRIVER SCORECARD</div>
-            <div className="brand-sub">Davis Delivery · v{APP_VERSION}</div>
+        <div className="app-header-left">
+          <button
+            className="hamburger"
+            onClick={() => setMenuOpen(true)}
+            aria-label="Open menu"
+            aria-expanded={menuOpen}
+          >
+            ☰
+          </button>
+          <div className="brand">
+            <div className="brand-mark">D</div>
+            <div className="brand-text">
+              <div className="brand-name">DRIVER SCORECARD</div>
+              <div className="brand-sub">Davis Delivery · v{APP_VERSION}</div>
+            </div>
           </div>
         </div>
         <div className="status-pill">
@@ -195,24 +206,41 @@ export default function App() {
         </div>
       </header>
 
-      <nav className="tab-bar">
-        {TABS.map((x) => {
-          const count = tabCount(x.id);
-          return (
-            <button
-              key={x.id}
-              className={`tab ${tab === x.id ? "active" : ""}`}
-              onClick={() => setTab(x.id)}
-            >
-              <span>{x.icon}</span>
-              <span>{x.label}</span>
-              {count !== undefined && (
-                <span className="tab-count">{count}</span>
-              )}
-            </button>
-          );
-        })}
-      </nav>
+      {menuOpen && (
+        <div className="nav-drawer-overlay" onClick={() => setMenuOpen(false)}>
+          <nav className="nav-drawer" onClick={(e) => e.stopPropagation()}>
+            <div className="nav-drawer-head">
+              <div className="brand-name">DRIVER SCORECARD</div>
+              <button
+                className="nav-drawer-close"
+                onClick={() => setMenuOpen(false)}
+                aria-label="Close menu"
+              >
+                ×
+              </button>
+            </div>
+            {TABS.map((x) => {
+              const count = tabCount(x.id);
+              return (
+                <button
+                  key={x.id}
+                  className={`nav-drawer-item ${tab === x.id ? "active" : ""}`}
+                  onClick={() => {
+                    setTab(x.id);
+                    setMenuOpen(false);
+                  }}
+                >
+                  <span className="nav-drawer-icon">{x.icon}</span>
+                  <span className="nav-drawer-label">{x.label}</span>
+                  {count !== undefined && (
+                    <span className="sidebar-tab-count">{count}</span>
+                  )}
+                </button>
+              );
+            })}
+          </nav>
+        </div>
+      )}
 
       <main className="content">
         {loading ? (

@@ -172,6 +172,116 @@ body {
   background: var(--davis-blue);
   color: #fff;
 }
+/* Mobile navigation: hamburger in the header opens a vertical drawer (replaces
+   the old horizontal scrolling tab bar). Hidden on desktop, which uses the sidebar. */
+.app-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.hamburger {
+  background: transparent;
+  border: none;
+  color: var(--text-1);
+  font-size: 22px;
+  line-height: 1;
+  padding: 4px 8px;
+  margin-left: -4px;
+  cursor: pointer;
+  border-radius: 6px;
+}
+.hamburger:hover {
+  background: var(--bg-2);
+}
+.nav-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.45);
+  z-index: 200;
+  display: flex;
+}
+.nav-drawer {
+  width: 272px;
+  max-width: 82vw;
+  height: 100%;
+  background: var(--bg-1);
+  border-right: 1px solid var(--border);
+  box-shadow: var(--shadow-md);
+  padding: 6px 0 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  animation: drawerIn 0.18s ease;
+}
+@keyframes drawerIn {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+.nav-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 6px;
+}
+.nav-drawer-head .brand-name {
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.05em;
+  color: var(--text-0);
+}
+.nav-drawer-close {
+  background: transparent;
+  border: none;
+  font-size: 26px;
+  line-height: 1;
+  color: var(--text-2);
+  cursor: pointer;
+  padding: 0 4px;
+}
+.nav-drawer-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-left: 3px solid transparent;
+  text-align: left;
+  padding: 13px 18px;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.nav-drawer-item:hover {
+  background: var(--bg-2);
+  color: var(--text-0);
+}
+.nav-drawer-item.active {
+  color: var(--davis-blue);
+  background: var(--davis-blue-bg);
+  border-left-color: var(--davis-blue);
+}
+.nav-drawer-icon {
+  width: 20px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.nav-drawer-label {
+  flex: 1;
+}
+@media (min-width: 1024px) {
+  .nav-drawer-overlay,
+  .hamburger {
+    display: none !important;
+  }
+}
 .content {
   padding: 20px;
   max-width: 1600px;
