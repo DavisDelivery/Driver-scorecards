@@ -1790,9 +1790,21 @@ table.data.analytics-subtable th {
 .ff-log-search-wrap {
   display: flex;
   justify-content: center;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
   padding: 12px 0 10px;
   border-bottom: 1px solid var(--border);
   margin-bottom: 4px;
+}
+.ff-log-search-wrap:has(.ff-feed-date) {
+  justify-content: space-between;
+}
+.ff-feed-date {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 .ff-log-search {
   max-width: 360px;
