@@ -138,6 +138,60 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     };
   }, [feedEnabled, feedDate, feedNonce]);
 
+  // A saved driver-reassignment for a feed attempt (an attributed "attempts"
+  // incident keyed to the stop). Its presence overrides the feed's driver and
+  // makes the attempt count toward that driver in the scorecard/analytics.
+  const overrideFor = (stopNbr) =>
+    incidents.find(
+      (i) => i.category === config.category && i.attempt_stop_nbr === stopNbr,
+    );
+
+  // Reassign (or clear) the driver an auto attempt is attributed to. Persists as
+  // a manual "attempts" incident so the correction sticks and counts; the feed
+  // row then shows the chosen driver.
+  async function reassignAuto(a, driverId) {
+    const drv = drivers.find((d) => d.id === driverId);
+    const existing = overrideFor(a.stopNbr);
+    try {
+      if (!driverId) {
+        // Cleared back to the feed's driver — drop the override if one existed.
+        if (existing) {
+          await deleteIncident(existing.id);
+          onSaved && onSaved();
+        }
+        return;
+      }
+      const now = new Date().toISOString();
+      await saveIncident({
+        id: existing?.id || `i_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        pro_number: a.stopNbr,
+        category: config.category,
+        fault: "driver",
+        no_fault: false,
+        driver_id: drv.id,
+        driver_name: drv.name,
+        driver_raw: a.originalDriverName || "",
+        customer: a.businessName || "",
+        to_city: a.city || "",
+        to_state: a.state || "",
+        delivered_date: feedDate,
+        reason: `Delivery attempt — reassigned from auto feed (was ${a.originalDriverName || "Unknown"})`,
+        notes: existing?.notes || "",
+        attempt_stop_nbr: a.stopNbr,
+        shipment_nbr: a.shipmentNbr || "",
+        sources: [],
+        report_id: null,
+        manual_entry: true,
+        created_at: existing?.created_at || now,
+        ingested_at: existing?.ingested_at || now,
+        updated_at: now,
+      });
+      onSaved && onSaved();
+    } catch (e) {
+      setSavedMsg(`Reassign failed: ${e.message}`);
+    }
+  }
+
   async function deleteAuto(a) {
     if (
       !window.confirm(
@@ -148,6 +202,12 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     setFeedDeletingId(a.stopNbr);
     try {
       await deleteAttempt(feedDate, a.stopNbr);
+      // Drop any reassignment we saved for this stop so it isn't orphaned.
+      const existing = overrideFor(a.stopNbr);
+      if (existing) {
+        await deleteIncident(existing.id);
+        onSaved && onSaved();
+      }
       setFeedNonce((n) => n + 1); // refetch
     } catch (e) {
       setSavedMsg(`Auto-attempt delete failed: ${e.message}`);
@@ -241,9 +301,12 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   // Free-text filter over the log so you can quickly check whether something has
   // been logged (matches PRO, driver, customer, item/type, notes, or date).
   const filteredLog = React.useMemo(() => {
+    // Reassignment overrides (attempt_stop_nbr set) are surfaced on their auto row,
+    // not as separate manual rows — exclude them here (they still count in analytics).
+    const base = logIncidents.filter((i) => !i.attempt_stop_nbr);
     const q = logSearch.trim().toLowerCase();
-    if (!q) return logIncidents;
-    return logIncidents.filter((i) =>
+    if (!q) return base;
+    return base.filter((i) =>
       [
         i.pro_number,
         i.driver_name,
@@ -616,11 +679,26 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
               <div className="dd-incident-head" style={{ cursor: "default" }}>
                 <span className="ff-src-chip auto">AUTO</span>
                 <span className="pro-num">{a.shipmentNbr || "—"}</span>
-                <span className="lb-name" style={{ width: "auto" }}>
-                  {a.matched && a.originalDriverName ? (
-                    a.originalDriverName
-                  ) : (
-                    <span style={{ color: "#b45309" }}>Unknown</span>
+                <span
+                  className="ff-auto-driver"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <select
+                    value={overrideFor(a.stopNbr)?.driver_id || ""}
+                    onChange={(e) => reassignAuto(a, e.target.value)}
+                    title="Attribute this attempt to a driver"
+                  >
+                    <option value="">
+                      {a.originalDriverName
+                        ? `${a.originalDriverName} · from feed`
+                        : "Unknown · from feed"}
+                    </option>
+                    {driverOptions}
+                  </select>
+                  {overrideFor(a.stopNbr) && (
+                    <span className="ff-reassigned" title={`Feed said ${a.originalDriverName || "Unknown"}`}>
+                      reassigned
+                    </span>
                   )}
                 </span>
                 <span className="meta">
