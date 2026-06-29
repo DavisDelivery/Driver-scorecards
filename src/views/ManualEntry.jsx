@@ -102,16 +102,18 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   const [driverId, setDriverId] = React.useState("");
   const [notes, setNotes] = React.useState("");
   const [classifyValue, setClassifyValue] = React.useState("");
-  // One date the whole batch is logged under; defaults to today (ET, matching the
-  // feed's day boundary) and stays put between entries. Also drives the feed query.
+  // One date new MANUAL entries are logged under; defaults to today (ET) and stays
+  // put between entries. This does NOT drive the auto feed (see feedDate below).
   const [incidentDate, setIncidentDate] = React.useState(todayET);
   const [saving, setSaving] = React.useState(false);
   const [savedMsg, setSavedMsg] = React.useState("");
   const [focus, setFocus] = React.useState(null);
   const [logSearch, setLogSearch] = React.useState("");
 
-  // Automated attempts feed (only when config.feed) for the selected date.
+  // Automated attempts feed (only when config.feed). It has its OWN date picker so
+  // you can browse auto attempts for any day independent of the manual log date.
   const feedEnabled = !!config.feed;
+  const [feedDate, setFeedDate] = React.useState(todayET);
   const [feed, setFeed] = React.useState({ status: "idle", attempts: [], error: null });
   const [feedNonce, setFeedNonce] = React.useState(0); // bump to refetch
   const [feedDeletingId, setFeedDeletingId] = React.useState(null);
@@ -121,7 +123,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     const controller = new AbortController();
     let active = true;
     setFeed((f) => ({ ...f, status: "loading", error: null }));
-    fetchAttempts(incidentDate, { signal: controller.signal })
+    fetchAttempts(feedDate, { signal: controller.signal })
       .then((j) => {
         if (!active) return;
         setFeed({ status: "ready", attempts: j.attempts || [], error: null });
@@ -134,18 +136,18 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       active = false;
       controller.abort();
     };
-  }, [feedEnabled, incidentDate, feedNonce]);
+  }, [feedEnabled, feedDate, feedNonce]);
 
   async function deleteAuto(a) {
     if (
       !window.confirm(
-        `Remove auto-detected attempt ${a.shipmentNbr || a.stopNbr} (${a.originalDriverName || "Unknown"})?\n\nThis deletes it from the dispatch feed for ${fmtMDY(incidentDate)}.`,
+        `Remove auto-detected attempt ${a.shipmentNbr || a.stopNbr} (${a.originalDriverName || "Unknown"})?\n\nThis deletes it from the dispatch feed for ${fmtMDY(feedDate)}.`,
       )
     )
       return;
     setFeedDeletingId(a.stopNbr);
     try {
-      await deleteAttempt(incidentDate, a.stopNbr);
+      await deleteAttempt(feedDate, a.stopNbr);
       setFeedNonce((n) => n + 1); // refetch
     } catch (e) {
       setSavedMsg(`Auto-attempt delete failed: ${e.message}`);
@@ -401,7 +403,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         <span className="meta">
           · {totalOnRecord} on record
           {feedEnabled && feedRows.length > 0
-            ? ` (${feedRows.length} auto for ${fmtMDY(incidentDate)})`
+            ? ` (${feedRows.length} auto for ${fmtMDY(feedDate)})`
             : ""}
         </span>
       </h1>
@@ -569,6 +571,19 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       <div className="card">
         <div className="card-body" style={{ padding: "4px 14px" }}>
           <div className="ff-log-search-wrap">
+            {feedEnabled && (
+              <div className="ff-feed-date">
+                <span className="dd-k">Auto attempts for</span>
+                <input
+                  type="date"
+                  value={feedDate}
+                  max={todayET()}
+                  onChange={(e) => setFeedDate(e.target.value || todayET())}
+                  style={{ fontFamily: "var(--mono)" }}
+                  title="View auto-detected attempts for this day"
+                />
+              </div>
+            )}
             <input
               type="text"
               className="ff-log-search"
@@ -578,11 +593,11 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
             />
           </div>
           {feedEnabled && feed.status === "loading" && (
-            <div className="empty-state">Loading attempts…</div>
+            <div className="empty-state">Loading attempts for {fmtMDY(feedDate)}…</div>
           )}
           {feedEnabled && feed.status === "error" && (
             <div className="empty-state" style={{ color: "var(--accent-red)" }}>
-              Couldn't load auto attempts for {fmtMDY(incidentDate)} ({feed.error}).
+              Couldn't load auto attempts for {fmtMDY(feedDate)} ({feed.error}).
             </div>
           )}
           {totalOnRecord === 0 &&
