@@ -1806,6 +1806,30 @@ table.data.analytics-subtable th {
   gap: 8px;
   flex-shrink: 0;
 }
+.ff-auto-driver {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ff-auto-driver select {
+  min-width: 150px;
+  max-width: 200px;
+  font-size: 12px;
+  padding: 3px 6px;
+}
+.ff-reassigned {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent-green);
+  background: #e7f4ec;
+  border: 1px solid #cce8d6;
+  border-radius: 4px;
+  padding: 1px 5px;
+  white-space: nowrap;
+}
 .ff-log-search {
   max-width: 360px;
   width: 100%;
