@@ -182,12 +182,12 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         // Cleared back to the feed's driver — drop the override if one existed.
         if (existing) {
           await deleteIncident(existing.id);
-          onSaved && onSaved();
+          onSaved && onSaved({ type: "delete", id: existing.id });
         }
         return;
       }
       const now = new Date().toISOString();
-      await saveIncident({
+      const saved = await saveIncident({
         id: existing?.id || `i_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         pro_number: a.stopNbr,
         category: config.category,
@@ -211,7 +211,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         ingested_at: existing?.ingested_at || now,
         updated_at: now,
       });
-      onSaved && onSaved();
+      onSaved && onSaved({ type: "upsert", incident: saved });
     } catch (e) {
       setSavedMsg(`Reassign failed: ${e.message}`);
     }
@@ -231,7 +231,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       const existing = overrideFor(a.stopNbr);
       if (existing) {
         await deleteIncident(existing.id);
-        onSaved && onSaved();
+        onSaved && onSaved({ type: "delete", id: existing.id });
       }
       setFeedNonce((n) => n + 1); // refetch
     } catch (e) {
@@ -285,10 +285,10 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         updated_at: new Date().toISOString(),
       };
       if (classifyField) patch[classifyField] = editClassify;
-      await saveIncident(patch);
+      const saved = await saveIncident(patch);
       setSavedMsg(`Updated — ${inc.pro_number} now charged to ${drv.name}.`);
       setEditingId(null);
-      onSaved && onSaved();
+      onSaved && onSaved({ type: "upsert", incident: saved || patch });
     } catch (err) {
       setSavedMsg(`Update failed: ${err.message}`);
     } finally {
@@ -307,7 +307,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       await deleteIncident(inc.id);
       setSavedMsg(`Deleted — ${inc.pro_number} removed from the log.`);
       if (editingId === inc.id) setEditingId(null);
-      onSaved && onSaved();
+      onSaved && onSaved({ type: "delete", id: inc.id });
     } catch (err) {
       setSavedMsg(`Delete failed: ${err.message}`);
     } finally {
@@ -453,7 +453,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     };
     if (classifyField) incident[classifyField] = classifyValue;
     try {
-      await saveIncident(incident);
+      const saved = await saveIncident(incident);
       setSavedMsg(`Saved — ${pull.pro} charged to ${drv.name} under ${fmtMDY(delivered)} (${photos.length} photo${photos.length === 1 ? "" : "s"}).`);
       // Jump the log view to the date just logged so the new entry is visible.
       if (feedEnabled) setFeedDate(delivered);
@@ -462,7 +462,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       setNotes("");
       setDriverId("");
       setClassifyValue("");
-      onSaved && onSaved();
+      onSaved && onSaved({ type: "upsert", incident: saved || incident });
     } catch (err) {
       setSavedMsg(`Save failed: ${err.message}`);
     } finally {
