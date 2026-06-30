@@ -298,15 +298,23 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     [incidents, config.category],
   );
 
-  // Free-text filter over the log so you can quickly check whether something has
-  // been logged (matches PRO, driver, customer, item/type, notes, or date).
-  const filteredLog = React.useMemo(() => {
-    // Reassignment overrides (attempt_stop_nbr set) are surfaced on their auto row,
-    // not as separate manual rows — exclude them here (they still count in analytics).
+  // Manual rows for the log. Reassignment overrides (attempt_stop_nbr set) are
+  // shown on their auto row, not duplicated here (they still count in analytics).
+  // On the feed-backed tab (Attempts), the log is a per-day view: manual rows are
+  // scoped to the selected feed date so it matches the auto rows shown for that day.
+  const manualForView = React.useMemo(() => {
     const base = logIncidents.filter((i) => !i.attempt_stop_nbr);
+    if (!feedEnabled) return base;
+    return base.filter(
+      (i) => (i.delivered_date || i.created_at || "").slice(0, 10) === feedDate,
+    );
+  }, [logIncidents, feedEnabled, feedDate]);
+
+  // Free-text filter over the manual rows (PRO/driver/customer/item/notes/date).
+  const filteredLog = React.useMemo(() => {
     const q = logSearch.trim().toLowerCase();
-    if (!q) return base;
-    return base.filter((i) =>
+    if (!q) return manualForView;
+    return manualForView.filter((i) =>
       [
         i.pro_number,
         i.driver_name,
@@ -316,7 +324,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         fmtMDY(i.delivered_date || i.created_at),
       ].some((f) => String(f || "").toLowerCase().includes(q)),
     );
-  }, [logIncidents, logSearch, classifyField]);
+  }, [manualForView, logSearch, classifyField]);
 
   // Same search applied to the auto (feed) rows — by PRO/driver/customer/route/stop.
   const filteredFeed = React.useMemo(() => {
@@ -422,6 +430,8 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     try {
       await saveIncident(incident);
       setSavedMsg(`Saved — ${pull.pro} charged to ${drv.name} under ${fmtMDY(delivered)} (${photos.length} photo${photos.length === 1 ? "" : "s"}).`);
+      // Jump the log view to the date just logged so the new entry is visible.
+      if (feedEnabled) setFeedDate(delivered);
       setPull(null);
       setPro("");
       setNotes("");
@@ -445,9 +455,12 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     : [];
 
   const feedRows = feedEnabled ? feed.attempts : [];
-  // "N on record" includes the feed count for the selected date (per spec).
-  const totalOnRecord = logIncidents.length + feedRows.length;
+  // Counts for the current view. On the feed-backed tab everything is scoped to
+  // the selected day (manualForView is already date-filtered); elsewhere it's the
+  // all-time manual total.
+  const totalOnRecord = manualForView.length + feedRows.length;
   const totalShown = filteredLog.length + filteredFeed.length;
+  const allTimeManual = logIncidents.filter((i) => !i.attempt_stop_nbr).length;
 
   const driverOptions = drivers
     .slice()
@@ -464,10 +477,9 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       <h1 className="page-heading">
         {config.heading}
         <span className="meta">
-          · {totalOnRecord} on record
-          {feedEnabled && feedRows.length > 0
-            ? ` (${feedRows.length} auto for ${fmtMDY(feedDate)})`
-            : ""}
+          {feedEnabled
+            ? ` · ${totalOnRecord} on ${fmtMDY(feedDate)} (${feedRows.length} auto, ${manualForView.length} manual) · ${allTimeManual} logged all-time`
+            : ` · ${allTimeManual} on record`}
         </span>
       </h1>
 
@@ -636,14 +648,14 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
           <div className="ff-log-search-wrap">
             {feedEnabled && (
               <div className="ff-feed-date">
-                <span className="dd-k">Auto attempts for</span>
+                <span className="dd-k">Attempts for</span>
                 <input
                   type="date"
                   value={feedDate}
                   max={todayET()}
                   onChange={(e) => setFeedDate(e.target.value || todayET())}
                   style={{ fontFamily: "var(--mono)" }}
-                  title="View auto-detected attempts for this day"
+                  title="Show the attempts log (auto + manual) for this day"
                 />
               </div>
             )}
@@ -665,7 +677,11 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
           )}
           {totalOnRecord === 0 &&
             !(feedEnabled && (feed.status === "loading" || feed.status === "error")) && (
-              <div className="empty-state">Nothing logged yet.</div>
+              <div className="empty-state">
+                {feedEnabled
+                  ? `No attempts (auto or manual) for ${fmtMDY(feedDate)}.`
+                  : "Nothing logged yet."}
+              </div>
             )}
           {totalOnRecord > 0 && totalShown === 0 && logSearch.trim() && (
             <div className="empty-state">
