@@ -11,6 +11,66 @@
 const TRACK_URL = "/.netlify/functions/track";
 const DOC_URL = "/.netlify/functions/doc";
 
+// Assemble a chronological activity timeline for a stop from every timestamped
+// field NuVizz scatters across the order: create/update, pickup + delivery
+// milestones, ETAs, POD/document uploads, comments/instructions, and exceptions.
+function buildTimeline(stopData, exeData, loadData) {
+  const events = [];
+  const add = (t, label, detail, by, kind) => {
+    if (!t) return;
+    events.push({ t: String(t), label, detail: detail || "", by: by || "", kind: kind || "event" });
+  };
+  const cui = stopData.createUpdateInfo || {};
+
+  add(loadData.createdDttm, "Load created", loadData.loadNbr ? `Load ${loadData.loadNbr}` : "", "", "create");
+  add(cui.createdDTTM || stopData.createdDttm, "Order created", "", cui.createdBy, "create");
+
+  for (const c of stopData.comments || []) {
+    add(c.addedOn, c.commentTypeDescription || c.commentType || "Comment", c.commentDescription, c.addedByName, "comment");
+  }
+
+  add(exeData.from?.arrivalDTTM, "Arrived at pickup", "", "", "move");
+  add(exeData.from?.confirmedDTTM, "Pickup confirmed", "", "", "move");
+  add(loadData.routeStartDTTM, "Route started", loadData.routeName ? `Route ${loadData.routeName}` : "", loadData.driverName, "move");
+  add(loadData.departedDTTM, "Departed origin", "", loadData.driverName, "move");
+  add(exeData.to?.plannedEtaDTTM, "Planned ETA", "", "", "eta");
+  add(exeData.to?.etaDttm, "ETA", exeData.to?.etaCode || "", "", "eta");
+  add(exeData.to?.arrivalDTTM, "Arrived at delivery", "", loadData.driverName, "move");
+  add(exeData.to?.confirmedDTTM, "Delivery confirmed", "", loadData.driverName, "deliver");
+  add(exeData.to?.departureDTTM, "Departed delivery", "", "", "move");
+  add(exeData.receiveDTTM, "Stop received / closed", "", "", "deliver");
+
+  for (const side of ["from", "to"]) {
+    for (const d of stopData[side]?.documents || []) {
+      add(d.createdDTTM, "Document uploaded", d.documentName || d.docType || "", "", "doc");
+    }
+    for (const d of exeData[side]?.podDoc || []) {
+      add(d.createdTime, "POD photo uploaded", d.documentName || "", "", "doc");
+    }
+  }
+
+  for (const ex of exeData.exceptions || []) {
+    add(
+      ex.addedOn,
+      `Exception · ${ex.exceptionCode || ""}`.trim(),
+      [ex.exceptionDesc, ex.exceptionComment].filter(Boolean).join(" — "),
+      ex.addedByName,
+      "exception",
+    );
+  }
+
+  add(cui.lastUpdatedDTTM, "Last updated", "", cui.updatedBy, "update");
+
+  events.sort((a, b) => a.t.localeCompare(b.t));
+  const seen = new Set();
+  return events.filter((e) => {
+    const k = `${e.t}|${e.label}|${e.detail}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
 // ---------------------------------------------------------------------------
 // fetchStopData
 // ---------------------------------------------------------------------------
@@ -136,6 +196,8 @@ export async function fetchStopData(pro, { company = "ULINE" } = {}) {
         total: stopData.totalPallets ?? null,
         loose: stopData.volume ?? null,
       },
+      timeline: buildTimeline(stopData, exeData, loadData),
+      deliveryAttempt: stopData.deliveryAttempt ?? null,
       driverName: loadData.driverName || null,
       driverId: loadData.driverId || null,
       driverEmail: loadData.driverEmail || null,

@@ -19,6 +19,16 @@ const fmtMDY = (s) => {
   return m ? `${m[2]}/${m[3]}/${m[1]}` : String(s || "").slice(0, 10);
 };
 
+// Format a NuVizz local datetime ("YYYY-MM-DDTHH:MM:SS") as MM/DD/YYYY h:mm AM/PM.
+const fmtDateTime = (s) => {
+  const m = String(s || "").match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+  if (!m) return String(s || "");
+  let h = +m[4];
+  const ap = h >= 12 ? "PM" : "AM";
+  h = h % 12 || 12;
+  return `${m[2]}/${m[3]}/${m[1]} ${h}:${m[5]} ${ap}`;
+};
+
 // Status badge for an auto-detected (feed) attempt: amber "Unplanned" when the
 // stop is currently unplanned, else the raw status.
 function AttemptStatusBadge({ a }) {
@@ -560,6 +570,27 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                   </div>
                 </div>
               </div>
+
+              {(s.timeline || []).length > 0 && (
+                <details className="ff-timeline">
+                  <summary>
+                    Activity Timeline · {s.timeline.length} events
+                    {s.deliveryAttempt
+                      ? ` · ${s.deliveryAttempt} delivery attempt${s.deliveryAttempt === 1 ? "" : "s"}`
+                      : ""}
+                  </summary>
+                  <div className="ff-timeline-body">
+                    {s.timeline.map((e, i) => (
+                      <div key={i} className={`ff-tl-row ff-tl-${e.kind}`}>
+                        <span className="ff-tl-time">{fmtDateTime(e.t)}</span>
+                        <span className="ff-tl-label">{e.label}</span>
+                        {e.detail && <span className="ff-tl-detail">{e.detail}</span>}
+                        {e.by && <span className="ff-tl-by">{e.by}</span>}
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
 
               {(s.exceptions || []).length > 0 && (
                 <div className="dd-notes" style={{ marginTop: 10 }}>
