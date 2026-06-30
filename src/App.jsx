@@ -14,7 +14,12 @@ import Drivers from "./views/Drivers.jsx";
 import Trends from "./views/Trends.jsx";
 import History from "./views/History.jsx";
 import Reviews from "./views/Reviews.jsx";
-import ManualEntry, { FF_CONFIG, MISDELIVERY_CONFIG, ATTEMPTS_CONFIG } from "./views/ManualEntry.jsx";
+import ManualEntry, {
+  FF_CONFIG,
+  MISDELIVERY_CONFIG,
+  ATTEMPTS_CONFIG,
+  COMPLIMENTS_CONFIG,
+} from "./views/ManualEntry.jsx";
 
 export const APP_VERSION = "0.10.2";
 
@@ -24,6 +29,7 @@ const TABS = [
   { id: "ff", label: "Forgotten Freight", icon: "▣", shortcut: "f" },
   { id: "misdeliveries", label: "Mis-Deliveries", icon: "⇄", shortcut: "m" },
   { id: "attempts", label: "Attempts", icon: "↻", shortcut: "a" },
+  { id: "compliments", label: "Compliments", icon: "✦", shortcut: "c" },
   { id: "ingest", label: "New Report", icon: "+", shortcut: "n" },
   { id: "incidents", label: "All Incidents", icon: "⚠", shortcut: "i" },
   { id: "trends", label: "Trends", icon: "◭", shortcut: "t" },
@@ -304,6 +310,14 @@ export default function App() {
             {tab === "attempts" && (
               <ManualEntry
                 config={ATTEMPTS_CONFIG}
+                drivers={drivers}
+                incidents={incidents}
+                onSaved={reloadIncidents}
+              />
+            )}
+            {tab === "compliments" && (
+              <ManualEntry
+                config={COMPLIMENTS_CONFIG}
                 drivers={drivers}
                 incidents={incidents}
                 onSaved={reloadIncidents}
