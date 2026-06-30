@@ -703,6 +703,16 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                   style={{ fontFamily: "var(--mono)" }}
                   title="Show the attempts log (auto + manual) for this day"
                 />
+                <button
+                  type="button"
+                  className="btn ghost sm"
+                  onClick={() => setFeedNonce((n) => n + 1)}
+                  disabled={feed.status === "loading"}
+                  title="Re-run the attempts scan for this day"
+                  style={{ marginLeft: 8 }}
+                >
+                  {feed.status === "loading" ? "Scanning…" : "↻ Run scan"}
+                </button>
               </div>
             )}
             <input
