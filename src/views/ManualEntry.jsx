@@ -84,6 +84,21 @@ export const MISDELIVERY_CONFIG = {
   },
 };
 
+export const COMPLIMENTS_CONFIG = {
+  category: "compliment",
+  color: "#22c55e",
+  // A compliment is positive credit to the driver — NOT a fault. Empty fault keeps
+  // it out of driver-fault counts while still crediting the compliment category.
+  fault: "",
+  heading: "Compliments",
+  logTitle: "Compliments Log",
+  addLabel: "Add Compliment",
+  recordNoun: "a compliment",
+  deleteNoun: "compliment",
+  reasonLabel: "Compliment",
+  classify: null,
+};
+
 export const ATTEMPTS_CONFIG = {
   category: "attempts",
   color: "#14b8a6",
@@ -412,7 +427,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       id: `i_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       pro_number: pull.pro,
       category: config.category,
-      fault: "driver",
+      fault: config.fault ?? "driver",
       no_fault: false,
       driver_id: drv.id,
       driver_name: drv.name,
