@@ -117,6 +117,32 @@ export default function App() {
     await Promise.all([reloadIncidents(), reloadReports()]);
   };
 
+  // Optimistic incident updates for the manual-entry tabs (Forgotten Freight,
+  // Mis-Deliveries, Attempts, Compliments). Netlify Blobs `list` is eventually
+  // consistent, so a refetch immediately after a write can return a snapshot that
+  // is still missing the just-saved row (or still includes a just-deleted one) —
+  // which made fresh entries appear to "not persist." Reflect the change in local
+  // state right away from the record the save returned; the throttled focus/
+  // visibility refresh reconciles with the cloud once it has caught up.
+  const applyIncidentChange = (change) => {
+    if (!change) {
+      reloadIncidents();
+      return;
+    }
+    if (change.type === "upsert" && change.incident && change.incident.id) {
+      const inc = change.incident;
+      setIncidents((prev) => {
+        const i = prev.findIndex((x) => x.id === inc.id);
+        if (i === -1) return [...prev, inc];
+        const next = prev.slice();
+        next[i] = { ...next[i], ...inc };
+        return next;
+      });
+    } else if (change.type === "delete" && change.id) {
+      setIncidents((prev) => prev.filter((x) => x.id !== change.id));
+    }
+  };
+
   // Cross-device freshness: the app used to fetch once per page load, so a
   // phone tab left open for days showed a frozen snapshot of the cloud store.
   // Refetch everything whenever the tab regains focus (throttled to 60s).
@@ -296,7 +322,7 @@ export default function App() {
                 config={FF_CONFIG}
                 drivers={drivers}
                 incidents={incidents}
-                onSaved={reloadIncidents}
+                onSaved={applyIncidentChange}
               />
             )}
             {tab === "misdeliveries" && (
@@ -304,7 +330,7 @@ export default function App() {
                 config={MISDELIVERY_CONFIG}
                 drivers={drivers}
                 incidents={incidents}
-                onSaved={reloadIncidents}
+                onSaved={applyIncidentChange}
               />
             )}
             {tab === "attempts" && (
@@ -312,7 +338,7 @@ export default function App() {
                 config={ATTEMPTS_CONFIG}
                 drivers={drivers}
                 incidents={incidents}
-                onSaved={reloadIncidents}
+                onSaved={applyIncidentChange}
               />
             )}
             {tab === "compliments" && (
@@ -320,7 +346,7 @@ export default function App() {
                 config={COMPLIMENTS_CONFIG}
                 drivers={drivers}
                 incidents={incidents}
-                onSaved={reloadIncidents}
+                onSaved={applyIncidentChange}
               />
             )}
             {tab === "reviews" && <Reviews />}
