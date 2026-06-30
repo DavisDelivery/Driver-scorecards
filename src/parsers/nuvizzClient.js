@@ -21,31 +21,39 @@ function buildTimeline(stopData, exeData, loadData) {
     events.push({ t: String(t), label, detail: detail || "", by: by || "", kind: kind || "event" });
   };
   const cui = stopData.createUpdateInfo || {};
+  // Best available actor per event. stop/info doesn't carry a per-milestone actor,
+  // so execution/movement events are attributed to the driver who performed them;
+  // create events to the integration/creator; updates to the updater.
+  const driver = loadData.driverName || "";
+  const createdBy = cui.createdBy || "";
+  const updatedBy = cui.updatedBy || driver;
 
-  add(loadData.createdDttm, "Load created", loadData.loadNbr ? `Load ${loadData.loadNbr}` : "", "", "create");
-  add(cui.createdDTTM || stopData.createdDttm, "Order created", "", cui.createdBy, "create");
+  add(loadData.createdDttm, "Load created", loadData.loadNbr ? `Load ${loadData.loadNbr}` : "", createdBy, "create");
+  add(cui.createdDTTM || stopData.createdDttm, "Order created", "", createdBy, "create");
 
   for (const c of stopData.comments || []) {
-    add(c.addedOn, c.commentTypeDescription || c.commentType || "Comment", c.commentDescription, c.addedByName, "comment");
+    add(c.addedOn, c.commentTypeDescription || c.commentType || "Comment", c.commentDescription, c.addedByName || createdBy, "comment");
   }
 
-  add(exeData.from?.arrivalDTTM, "Arrived at pickup", "", "", "move");
-  add(exeData.from?.confirmedDTTM, "Pickup confirmed", "", "", "move");
-  add(loadData.routeStartDTTM, "Route started", loadData.routeName ? `Route ${loadData.routeName}` : "", loadData.driverName, "move");
-  add(loadData.departedDTTM, "Departed origin", "", loadData.driverName, "move");
-  add(exeData.to?.plannedEtaDTTM, "Planned ETA", "", "", "eta");
-  add(exeData.to?.etaDttm, "ETA", exeData.to?.etaCode || "", "", "eta");
-  add(exeData.to?.arrivalDTTM, "Arrived at delivery", "", loadData.driverName, "move");
-  add(exeData.to?.confirmedDTTM, "Delivery confirmed", "", loadData.driverName, "deliver");
-  add(exeData.to?.departureDTTM, "Departed delivery", "", "", "move");
-  add(exeData.receiveDTTM, "Stop received / closed", "", "", "deliver");
+  add(exeData.from?.arrivalDTTM, "Arrived at pickup", "", driver, "move");
+  add(exeData.from?.confirmedDTTM, "Pickup confirmed", "", driver, "move");
+  add(loadData.routeStartDTTM, "Route started", loadData.routeName ? `Route ${loadData.routeName}` : "", driver, "move");
+  add(loadData.departedDTTM, "Departed origin", "", driver, "move");
+  add(exeData.to?.plannedEtaDTTM, "Planned ETA", "", driver, "eta");
+  add(exeData.to?.etaDttm, "ETA", exeData.to?.etaCode || "", driver, "eta");
+  add(exeData.to?.arrivalDTTM, "Arrived at delivery", "", driver, "move");
+  add(exeData.to?.confirmedDTTM, "Delivery confirmed", "", driver, "deliver");
+  add(exeData.to?.departureDTTM, "Departed delivery", "", driver, "move");
+  add(exeData.receiveDTTM, "Stop received / closed", "", driver, "deliver");
 
   for (const side of ["from", "to"]) {
     for (const d of stopData[side]?.documents || []) {
-      add(d.createdDTTM, "Document uploaded", d.documentName || d.docType || "", "", "doc");
+      // Order paperwork is created by the office/integration; POD-type docs by the driver.
+      const docBy = /pod|delivery|signature|sign/i.test(`${d.documentType || ""} ${d.documentName || ""}`) ? driver : createdBy;
+      add(d.createdDTTM, "Document uploaded", d.documentName || d.documentType || "", docBy, "doc");
     }
     for (const d of exeData[side]?.podDoc || []) {
-      add(d.createdTime, "POD photo uploaded", d.documentName || "", "", "doc");
+      add(d.createdTime, "POD photo uploaded", d.documentName || "", driver, "doc");
     }
   }
 
