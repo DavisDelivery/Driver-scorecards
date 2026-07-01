@@ -14,6 +14,7 @@ import {
 // defaults to the current month and can go back further. Built for an operator
 // who wants more than a flat list — counts by weekday, a trend, and quick KPIs.
 const PERIODS = [
+  ["30d", "Last 30 Days"],
   ["this", "This Mo"],
   ["last", "Last Mo"],
   ["3", "3M"],
@@ -44,6 +45,33 @@ function periodMonths(sel) {
   return out;
 }
 
+const pad2 = (n) => String(n).padStart(2, "0");
+const toYMD = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+
+// Resolve the selected period into an inclusive [start, end] YYYY-MM-DD window plus
+// how to render the trend (by day vs by month) and, for month windows, the month
+// keys. "30d" is a rolling 30-day window; every other option is whole calendar
+// months, matching the existing behavior.
+function periodWindow(sel) {
+  if (sel === "30d") {
+    const now = new Date();
+    const start = new Date(now);
+    start.setDate(start.getDate() - 29); // trailing 30 days, inclusive of today
+    return { start: toYMD(start), end: toYMD(now), byDay: true, months: [] };
+  }
+  const months = [...periodMonths(sel)].sort();
+  const first = months[0];
+  const last = months[months.length - 1];
+  const [ly, lm] = last.split("-").map(Number);
+  const lastDay = new Date(ly, lm, 0).getDate(); // day 0 of next month = last day
+  return {
+    start: `${first}-01`,
+    end: `${last}-${pad2(lastDay)}`,
+    byDay: months.length <= 1,
+    months,
+  };
+}
+
 // Weekday (0=Sun..6=Sat) from a YYYY-MM-DD string, parsed as UTC (no tz shift).
 function weekdayOf(ymd) {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(ymd);
@@ -61,7 +89,7 @@ function Stat({ label, value, color }) {
 }
 
 export default function ManualEntryAnalytics({ title, color, records, drivers }) {
-  const [periodSel, setPeriodSel] = React.useState("this");
+  const [periodSel, setPeriodSel] = React.useState("30d");
 
   const dateOf = (r) => (r.delivered_date || r.created_at || "").slice(0, 10);
   const driverName = (r) =>
@@ -70,16 +98,20 @@ export default function ManualEntryAnalytics({ title, color, records, drivers })
     r.driver_raw ||
     "Unassigned";
 
-  const months = React.useMemo(() => periodMonths(periodSel), [periodSel]);
-  const monthSet = React.useMemo(() => new Set(months), [months]);
+  const win = React.useMemo(() => periodWindow(periodSel), [periodSel]);
 
   const inPeriod = React.useMemo(
-    () => records.filter((r) => monthSet.has(dateOf(r).slice(0, 7))),
-    [records, monthSet],
+    () =>
+      records.filter((r) => {
+        const d = dateOf(r);
+        return d && d >= win.start && d <= win.end;
+      }),
+    [records, win],
   );
 
-  // Trend: by day for a single month, by month for multi-month ranges.
-  const byDay = months.length <= 1;
+  // Trend: by day for a single month / the rolling 30-day window, by month for
+  // multi-month ranges.
+  const byDay = win.byDay;
   const trend = React.useMemo(() => {
     const map = new Map();
     if (byDay) {
@@ -91,7 +123,7 @@ export default function ManualEntryAnalytics({ title, color, records, drivers })
         .sort((a, b) => a[0].localeCompare(b[0]))
         .map(([d, count]) => ({ label: `${d.slice(5, 7)}/${d.slice(8, 10)}`, count }));
     }
-    for (const ym of months) map.set(ym, 0);
+    for (const ym of win.months) map.set(ym, 0);
     for (const r of inPeriod) {
       const ym = dateOf(r).slice(0, 7);
       if (map.has(ym)) map.set(ym, map.get(ym) + 1);
@@ -99,7 +131,7 @@ export default function ManualEntryAnalytics({ title, color, records, drivers })
     return [...map.entries()]
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([ym, count]) => ({ label: `${MONTHS[+ym.slice(5, 7) - 1]} ${ym.slice(2, 4)}`, count }));
-  }, [inPeriod, months, byDay]);
+  }, [inPeriod, win, byDay]);
 
   // Workday distribution — Mon–Fri always, weekend only if it has any.
   const weekday = React.useMemo(() => {
