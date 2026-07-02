@@ -70,7 +70,11 @@ const PERIOD_LABELS = { this: "MO", last: "LMO", 3: "3M", 6: "6M", 12: "12M", cu
 // ─── Dashboard (default export) ──────────────────────────────────────────────
 export default function Dashboard({ incidents, drivers }) {
   const now = new Date();
-  const [selectedMonth, setSelectedMonth] = useState(now.toISOString().slice(0, 7));
+  // Local (not UTC) YYYY-MM so the default month doesn't jump ahead on the last
+  // evening of the month in the US/Eastern operating timezone.
+  const [selectedMonth, setSelectedMonth] = useState(
+    `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`,
+  );
   const [faultFilter, setFaultFilter] = useState("all");
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);

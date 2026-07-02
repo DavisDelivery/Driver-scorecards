@@ -162,7 +162,7 @@ export default function ManualEntryAnalytics({ title, color, records, drivers })
     let bestN = 0;
     for (const [n, c] of m) if (c > bestN) { best = n; bestN = c; }
     return bestN ? `${best} (${bestN})` : "—";
-  }, [inPeriod]);
+  }, [inPeriod, drivers]);
 
   return (
     <>

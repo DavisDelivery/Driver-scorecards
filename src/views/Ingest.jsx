@@ -9,16 +9,20 @@ function nextFriday() {
   const now = new Date();
   const daysUntilFriday = (5 - now.getDay() + 7) % 7;
   now.setDate(now.getDate() + daysUntilFriday);
-  return now.toISOString().slice(0, 10);
+  // Format from LOCAL date parts — toISOString() would shift to UTC and can land
+  // a day late in the evening in the US/Eastern operating timezone.
+  const p = (n) => String(n).padStart(2, "0");
+  return `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}`;
 }
 
 /** Format a YYYY-MM-DD string as "Week of MMM D, YYYY". */
 function formatWeekLabel(dateStr) {
-  const d = new Date(dateStr);
-  const month = d.toLocaleString(undefined, { month: "short" });
-  const day = d.getDate();
-  const year = d.getFullYear();
-  return `Week of ${month} ${day}, ${year}`;
+  // Parse the parts as a LOCAL date; new Date("YYYY-MM-DD") parses as UTC midnight
+  // and then getDate() can read the previous day in a negative-offset timezone.
+  const [y, m, d] = String(dateStr).split("-").map(Number);
+  const date = new Date(y, (m || 1) - 1, d || 1);
+  const month = date.toLocaleString(undefined, { month: "short" });
+  return `Week of ${month} ${date.getDate()}, ${y}`;
 }
 
 export default function Ingest({ drivers, onReportCreated, onNavigateToReport }) {

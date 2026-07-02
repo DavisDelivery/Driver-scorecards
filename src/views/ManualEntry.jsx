@@ -168,7 +168,12 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   // makes the attempt count toward that driver in the scorecard/analytics.
   const overrideFor = (stopNbr) =>
     incidents.find(
-      (i) => i.category === config.category && i.attempt_stop_nbr === stopNbr,
+      (i) =>
+        i.category === config.category &&
+        i.attempt_stop_nbr === stopNbr &&
+        // Scope to the day being viewed: NuVizz stop numbers can repeat across
+        // days, so an override saved on one day must not match another day's row.
+        (i.delivered_date || "").slice(0, 10) === feedDate,
     );
 
   // Reassign (or clear) the driver an auto attempt is attributed to. Persists as

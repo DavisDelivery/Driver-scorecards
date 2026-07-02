@@ -311,7 +311,7 @@ This OVERWRITES any existing rollup record for the same (driver × year × month
             </span>
           </div>
           <div className="card-body" style={{ padding: 0 }}>
-            <table className="data-table">
+            <table className="data">
               <thead>
                 <tr>
                   <th>Historical name</th>
