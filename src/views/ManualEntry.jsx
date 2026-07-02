@@ -459,7 +459,11 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     if (classifyField) incident[classifyField] = classifyValue;
     try {
       const saved = await saveIncident(incident);
-      setSavedMsg(`Saved — ${pull.pro} charged to ${drv.name} under ${fmtMDY(delivered)} (${photos.length} photo${photos.length === 1 ? "" : "s"}).`);
+      setSavedMsg(
+        saved?.photos_dropped_oversize
+          ? `Saved — ${pull.pro} charged to ${drv.name} under ${fmtMDY(delivered)}, but its ${photos.length} photo${photos.length === 1 ? "" : "s"} were too large to store.`
+          : `Saved — ${pull.pro} charged to ${drv.name} under ${fmtMDY(delivered)} (${photos.length} photo${photos.length === 1 ? "" : "s"}).`,
+      );
       // Jump the log view to the date just logged so the new entry is visible.
       if (feedEnabled) setFeedDate(delivered);
       setPull(null);

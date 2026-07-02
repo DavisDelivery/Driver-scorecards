@@ -7,6 +7,7 @@
 
 import * as XLSX from "xlsx";
 import { classifyFault } from "../data/drivers.js";
+import { matchDriver } from "../data/driverMatch.js";
 
 // PRO number pattern: 9-digit number starting with "00"
 const PRO_RE = /\b(00\d{7})\b/;
@@ -83,21 +84,27 @@ function parseDate(val) {
       out = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
     }
   } else {
-    const m = String(val)
-      .trim()
-      .match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
-    if (m) {
-      let [, month, day, year] = m;
-      if (year.length === 2) year = "20" + year;
-      out = `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+    const s = String(val).trim();
+    // Already an ISO date (YYYY-MM-DD…): keep it instead of returning null.
+    const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (iso) {
+      out = `${iso[1]}-${iso[2]}-${iso[3]}`;
+    } else {
+      const m = s.match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+      if (m) {
+        let [, month, day, year] = m;
+        if (year.length === 2) year = "20" + year;
+        out = `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+      }
     }
   }
 
-  // Reject implausible dates — a blank/zero Excel cell decodes to the 1900
-  // epoch, which otherwise poisons report-name date ranges and rollups.
+  // Reject implausible dates: blank/zero Excel cells decode to the 1900 epoch, and
+  // a D/M-ordered or corrupt cell yields impossible month/day values — both poison
+  // report-name ranges and rollups (and downstream string date comparisons).
   if (out) {
-    const y = Number(out.slice(0, 4));
-    if (y < 2000 || y > 2100) return null;
+    const [y, mo, d] = out.split("-").map(Number);
+    if (y < 2000 || y > 2100 || mo < 1 || mo > 12 || d < 1 || d > 31) return null;
   }
   return out;
 }
@@ -535,6 +542,14 @@ export function dedupeIncidents(incidents) {
     existing.notes = mergeText(existing.notes, inc.notes);
     existing.comments = mergeText(existing.comments, inc.comments);
     existing.reason = mergeText(existing.reason, inc.reason);
+    // Re-derive fault from the merged text. Fault is classified per-row at build
+    // time; when a merge flips the category (e.g. a return whose comments say
+    // "NON DRIVER/PRELOAD"), the first-seen row's fault would otherwise stick and
+    // discard the exoneration/attribution signal from the row(s) merged in.
+    existing.fault = classifyFault(
+      existing.reason,
+      `${existing.notes} ${existing.comments}`,
+    );
 
     // Dates: earliest ship_date, latest return/delivered/trace dates
     if (inc.ship_date && (!existing.ship_date || inc.ship_date < existing.ship_date)) {
@@ -600,26 +615,11 @@ export function dedupeIncidents(incidents) {
 
 export function resolveDriverId(driverRaw, drivers) {
   if (!driverRaw) return null;
-  const normalized = driverRaw
-    .replace(/NON DRIVER\//i, "")
-    .trim()
-    .toUpperCase();
-  if (!normalized || normalized === "****" || /^\*+$/.test(normalized)) return null;
-
-  let match = drivers.find((d) => d.name.toUpperCase() === normalized);
-  if (match) return match.id;
-
-  const parts = normalized.split(/\s+/);
-  match = drivers.find((d) => {
-    const name = d.name.toUpperCase();
-    return parts.every((p) => name.includes(p));
-  });
-  if (match) return match.id;
-
-  match = drivers.find(
-    (d) =>
-      d.name.toUpperCase().includes(normalized) ||
-      normalized.includes(d.name.toUpperCase()),
-  );
-  return match ? match.id : null;
+  // Strip the "NON DRIVER/" prefix Uline prepends, and reject the "****" placeholder.
+  const cleaned = driverRaw.replace(/NON DRIVER\//i, "").trim();
+  if (!cleaned || /^\*+$/.test(cleaned)) return null;
+  // Delegate to the shared fuzzy matcher so ingest, Forgotten Freight, and Reviews
+  // all attribute names the same way and don't diverge on loose-substring false
+  // positives (its own token-equality/first+last-prefix rules avoid mis-crediting).
+  return matchDriver(cleaned, drivers)?.id ?? null;
 }

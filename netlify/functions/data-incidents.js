@@ -48,17 +48,40 @@ async function listIncidents(store, reportId) {
 }
 
 async function saveOne(store, incident) {
+  const isUpdate = !!incident.id;
   const id = incident.id || newId();
   const now = new Date().toISOString();
+  // Did the client explicitly send photos? A metadata-only update — e.g. an inline
+  // fault/driver edit — sends the LIGHT record with no photo_urls. In that case we
+  // must PRESERVE the existing photos:{id} blob and its has_photos/photo_count,
+  // otherwise the edit silently wipes the incident's photos (they exist only in the
+  // separate blob, and split() would recompute has_photos:false from the absent
+  // urls).
+  const providedPhotos = Array.isArray(incident.photo_urls);
   const { light, photos, hasPhotos } = split({
     ...incident,
     id,
     created_at: incident.created_at || now,
     updated_at: now,
   });
+
+  if (isUpdate && !providedPhotos) {
+    const existing = await store.get(`inc:${id}`, { type: "json" });
+    if (existing) {
+      light.has_photos = !!existing.has_photos;
+      light.photo_count = existing.photo_count || 0;
+    }
+    await store.setJSON(`inc:${id}`, light);
+    return light;
+  }
+
   await store.setJSON(`inc:${id}`, light);
   if (hasPhotos) {
     await store.setJSON(`photos:${id}`, photos);
+  } else if (isUpdate) {
+    // Photos explicitly cleared on an existing incident — drop the stale blob so
+    // GET /photos can't keep serving the old images (and to reclaim storage).
+    await store.delete(`photos:${id}`);
   }
   return light;
 }

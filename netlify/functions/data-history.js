@@ -200,7 +200,13 @@ export default async (req) => {
 
     if (req.method === "POST" && path.endsWith("/batch")) {
       const { records = [], replace = false } = await req.json();
-      const data = replace ? { records: {}, updated_at: null } : await loadAll(store);
+      // replace=true (History backfill import) resets the rollup records, but must
+      // PRESERVE source_records and the per-report contribution snapshots. Dropping
+      // report_contrib here would leave a later re-rollup of an already-counted
+      // report with nothing to reverse, so it would double-count.
+      const data = replace
+        ? { ...(await loadAll(store)), records: {} }
+        : await loadAll(store);
       const saved = [];
       for (const rec of records) {
         const r = upsert(data, rec);
