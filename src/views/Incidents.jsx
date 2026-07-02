@@ -112,8 +112,8 @@ function IncidentList({
         av = driverName(a.driver_id) || a.driver_raw || "";
         bv = driverName(b.driver_id) || b.driver_raw || "";
       } else if (sortCol === "date") {
-        av = a.ship_date || a.return_date || "";
-        bv = b.ship_date || b.return_date || "";
+        av = a.ship_date || a.return_date || a.delivered_date || a.trace_date || "";
+        bv = b.ship_date || b.return_date || b.delivered_date || b.trace_date || "";
       } else {
         av = a[sortCol] || "";
         bv = b[sortCol] || "";
@@ -436,7 +436,7 @@ function IncidentList({
                               </td>
                             )}
                             <td className="pro-num">{inc.pro_number}</td>
-                            <td>{inc.ship_date || inc.return_date || "—"}</td>
+                            <td>{inc.ship_date || inc.return_date || inc.delivered_date || inc.trace_date || "—"}</td>
                             {groupBy !== "category" && (
                               <td>
                                 <span className={`chip ${inc.category}`}>

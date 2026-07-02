@@ -63,10 +63,11 @@ function IncidentDetailRow({ inc }) {
               <div><span className="dd-k">Late Reason</span><span className="dd-v">{LATE_REASON_LABELS[inc.late_reason] || inc.late_reason}</span></div>
             )}
           </div>
-          {(inc.reason || inc.notes) && (
+          {(inc.reason || inc.notes || inc.your_note) && (
             <div className="dd-notes">
-              {inc.reason && <div><span className="dd-k">Uline</span> {inc.reason}</div>}
-              {inc.notes && <div><span className="dd-k">Davis</span> {inc.notes}</div>}
+              {inc.reason && <div><span className="dd-k">Reason</span> {inc.reason}</div>}
+              {inc.notes && <div><span className="dd-k">Notes</span> {inc.notes}</div>}
+              {inc.your_note && <div><span className="dd-k">Your Note</span> {inc.your_note}</div>}
             </div>
           )}
           {inc.has_photos && (

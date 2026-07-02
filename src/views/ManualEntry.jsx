@@ -168,7 +168,12 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   // makes the attempt count toward that driver in the scorecard/analytics.
   const overrideFor = (stopNbr) =>
     incidents.find(
-      (i) => i.category === config.category && i.attempt_stop_nbr === stopNbr,
+      (i) =>
+        i.category === config.category &&
+        i.attempt_stop_nbr === stopNbr &&
+        // Scope to the day being viewed: NuVizz stop numbers can repeat across
+        // days, so an override saved on one day must not match another day's row.
+        (i.delivered_date || "").slice(0, 10) === feedDate,
     );
 
   // Reassign (or clear) the driver an auto attempt is attributed to. Persists as
@@ -454,7 +459,11 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     if (classifyField) incident[classifyField] = classifyValue;
     try {
       const saved = await saveIncident(incident);
-      setSavedMsg(`Saved — ${pull.pro} charged to ${drv.name} under ${fmtMDY(delivered)} (${photos.length} photo${photos.length === 1 ? "" : "s"}).`);
+      setSavedMsg(
+        saved?.photos_dropped_oversize
+          ? `Saved — ${pull.pro} charged to ${drv.name} under ${fmtMDY(delivered)}, but its ${photos.length} photo${photos.length === 1 ? "" : "s"} were too large to store.`
+          : `Saved — ${pull.pro} charged to ${drv.name} under ${fmtMDY(delivered)} (${photos.length} photo${photos.length === 1 ? "" : "s"}).`,
+      );
       // Jump the log view to the date just logged so the new entry is visible.
       if (feedEnabled) setFeedDate(delivered);
       setPull(null);

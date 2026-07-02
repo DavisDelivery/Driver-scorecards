@@ -111,7 +111,9 @@ export async function fetchStopData(pro, { company = "ULINE" } = {}) {
 
         if (!res.ok) {
           lastError = `track ${res.status}`;
-          if (attempt < 2) {
+          // 404 = stop/PRO genuinely not found; retrying can't help, so bail now
+          // instead of burning 3 attempts (× a whole batch of dead PROs).
+          if (res.status !== 404 && attempt < 2) {
             await delay(700);
             continue;
           }
