@@ -5,7 +5,10 @@
 const SOURCE_URL =
   process.env.REVIEWS_SOURCE_URL ||
   "https://davisdeliverytracking.netlify.app/.netlify/functions/review";
-const SOURCE_KEY = process.env.REVIEWS_SOURCE_KEY || process.env.DASHBOARD_KEY || "davis2026";
+// No literal fallback here on purpose: a hardcoded key committed to source is a
+// leaked credential (visible in git history forever, even after removal). Fail
+// loudly instead — set REVIEWS_SOURCE_KEY (or DASHBOARD_KEY) as a Netlify env var.
+const SOURCE_KEY = process.env.REVIEWS_SOURCE_KEY || process.env.DASHBOARD_KEY;
 
 exports.handler = async (event) => {
   const headers = {
@@ -16,6 +19,16 @@ exports.handler = async (event) => {
   if (event.httpMethod === "OPTIONS") return { statusCode: 200, headers, body: "" };
   if (event.httpMethod !== "GET") {
     return { statusCode: 405, headers, body: JSON.stringify({ error: "Method not allowed" }) };
+  }
+  if (!SOURCE_KEY) {
+    return {
+      statusCode: 500,
+      headers,
+      body: JSON.stringify({
+        error: "Reviews source not configured",
+        required: ["REVIEWS_SOURCE_KEY"],
+      }),
+    };
   }
   try {
     const res = await fetch(`${SOURCE_URL}?key=${encodeURIComponent(SOURCE_KEY)}`);
