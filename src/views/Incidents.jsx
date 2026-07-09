@@ -457,12 +457,16 @@ function IncidentList({
                                 </option>
                                 {drivers
                                   .slice()
-                                  .sort((a, b) =>
-                                    (a.name || "").localeCompare(b.name || "")
+                                  .sort(
+                                    (a, b) =>
+                                      (a.active === false ? 1 : 0) -
+                                        (b.active === false ? 1 : 0) ||
+                                      (a.name || "").localeCompare(b.name || "")
                                   )
                                   .map((d) => (
                                     <option key={d.id} value={d.id}>
                                       {d.name}
+                                      {d.active === false ? " (inactive)" : ""}
                                     </option>
                                   ))}
                               </select>
