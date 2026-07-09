@@ -119,6 +119,20 @@ export const FAULT_CODES = [
   { id: "unknown", label: "Unknown", color: "#6b7891" },
 ];
 
+// Roster roles, shared by the Drivers roster editor and every "assign to
+// driver" picker.
+export const ROLES = [
+  { id: "driver", label: "Driver" },
+  { id: "loader", label: "Loader" },
+  { id: "non-driver", label: "Non-Driver" },
+];
+
+// Stable, collision-free id for a driver added through the roster editor
+// (seeded drivers use drv_{index}_{slug} instead; see buildSeededDrivers).
+export function newDriverId() {
+  return `drv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
 // Uline source reports an incident physically came in on (distinct from the
 // derived fault category). One incident can carry more than one of these.
 export const ULINE_SOURCES = [

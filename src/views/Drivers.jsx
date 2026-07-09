@@ -1,5 +1,6 @@
 import React from "react";
-import { getHistory } from "../data/firebase.js";
+import { getHistory, saveDrivers } from "../data/firebase.js";
+import { ROLES, newDriverId } from "../data/drivers.js";
 import DriverModal, { ymKey } from "./DriverModal.jsx";
 
 // Categories that count against a driver (negative events). Compliments are
@@ -16,6 +17,13 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
   const [search, setSearch] = React.useState("");
   const [roleFilter, setRoleFilter] = React.useState("all");
   const [history, setHistory] = React.useState([]);
+  const [showInactive, setShowInactive] = React.useState(false);
+  // Roster editor: "add" | the driver object being edited | null.
+  const [formOpen, setFormOpen] = React.useState(null);
+  const [formName, setFormName] = React.useState("");
+  const [formRole, setFormRole] = React.useState("driver");
+  const [formError, setFormError] = React.useState("");
+  const [savingRoster, setSavingRoster] = React.useState(false);
 
   React.useEffect(() => {
     let alive = true;
@@ -86,6 +94,7 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
 
   const filtered = React.useMemo(() => {
     let list = enriched;
+    if (!showInactive) list = list.filter((d) => d.active !== false);
     if (roleFilter !== "all") list = list.filter((d) => d.role === roleFilter);
     if (search) {
       const q = search.toLowerCase();
@@ -97,7 +106,106 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
         b.againstTotal - a.againstTotal ||
         a.name.localeCompare(b.name),
     );
-  }, [enriched, search, roleFilter]);
+  }, [enriched, search, roleFilter, showInactive]);
+
+  const hasRecords = (driverId) =>
+    incidents.some((i) => i.driver_id === driverId) ||
+    history.some((r) => r.driver_id === driverId);
+
+  function openAdd() {
+    setFormOpen("add");
+    setFormName("");
+    setFormRole("driver");
+    setFormError("");
+  }
+  function openEdit(driver) {
+    setFormOpen(driver);
+    setFormName(driver.name);
+    setFormRole(driver.role || "driver");
+    setFormError("");
+  }
+  function closeForm() {
+    setFormOpen(null);
+    setFormError("");
+  }
+
+  async function submitForm() {
+    const name = formName.trim();
+    if (!name) {
+      setFormError("Name is required.");
+      return;
+    }
+    const isEdit = formOpen !== "add";
+    const dupe = drivers.find(
+      (d) =>
+        d.name.trim().toLowerCase() === name.toLowerCase() &&
+        (!isEdit || d.id !== formOpen.id),
+    );
+    if (dupe) {
+      setFormError(
+        dupe.active === false
+          ? `${dupe.name} already exists but is inactive — reactivate them instead of adding a duplicate.`
+          : `${dupe.name} is already on the roster.`,
+      );
+      return;
+    }
+    setSavingRoster(true);
+    try {
+      const next = isEdit
+        ? drivers.map((d) =>
+            d.id === formOpen.id ? { ...d, name, role: formRole } : d,
+          )
+        : [...drivers, { id: newDriverId(), name, role: formRole, active: true }];
+      await saveDrivers(next);
+      onUpdate && onUpdate();
+      closeForm();
+    } catch (err) {
+      setFormError(`Save failed: ${err.message}`);
+    } finally {
+      setSavingRoster(false);
+    }
+  }
+
+  async function removeDriver(driver) {
+    const hasHistory = hasRecords(driver.id);
+    if (hasHistory) {
+      if (
+        !confirm(
+          `${driver.name} has incident history on record. Removing will DEACTIVATE them (hidden from new assignments) rather than delete them, so their history stays intact. Continue?`,
+        )
+      )
+        return;
+    } else if (
+      !confirm(
+        `Permanently remove ${driver.name}? They have no incidents on record, so this can't be undone.`,
+      )
+    ) {
+      return;
+    }
+    setSavingRoster(true);
+    try {
+      const next = hasHistory
+        ? drivers.map((d) => (d.id === driver.id ? { ...d, active: false } : d))
+        : drivers.filter((d) => d.id !== driver.id);
+      await saveDrivers(next);
+      onUpdate && onUpdate();
+    } finally {
+      setSavingRoster(false);
+    }
+  }
+
+  async function reactivateDriver(driver) {
+    setSavingRoster(true);
+    try {
+      const next = drivers.map((d) =>
+        d.id === driver.id ? { ...d, active: true } : d,
+      );
+      await saveDrivers(next);
+      onUpdate && onUpdate();
+    } finally {
+      setSavingRoster(false);
+    }
+  }
 
   return (
     <div>
@@ -124,6 +232,28 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
             </button>
           ))}
         </div>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            fontFamily: "var(--mono)",
+            fontSize: 11,
+            color: "var(--text-2)",
+            cursor: "pointer",
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={showInactive}
+            onChange={(e) => setShowInactive(e.target.checked)}
+          />
+          Show inactive
+        </label>
+        <div className="toolbar-spacer" />
+        <button className="btn" onClick={openAdd}>
+          + Add Driver/Loader
+        </button>
       </div>
       <div className="driver-list">
         {filtered.map((driver) => (
@@ -131,8 +261,16 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
             key={driver.id}
             className={`driver-card ${driver.heat}`}
             onClick={() => setSelected(driver)}
+            style={driver.active === false ? { opacity: 0.55 } : undefined}
           >
-            <div className="driver-name">{driver.name}</div>
+            <div className="driver-name">
+              {driver.name}
+              {driver.active === false && (
+                <span className="meta" style={{ marginLeft: 6 }}>
+                  · inactive
+                </span>
+              )}
+            </div>
             <div className="driver-role">{driver.role}</div>
             <div className="driver-stats">
               <div className="driver-stat">
@@ -165,6 +303,32 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
               <span className="src-badge src-returns">R {driver.srcVol.returns}</span>
               <span className="src-badge src-laters">L {driver.srcVol.laters}</span>
             </div>
+            <div
+              style={{ display: "flex", gap: 6, marginTop: 8 }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button className="btn ghost sm" onClick={() => openEdit(driver)}>
+                ✎ Edit
+              </button>
+              {driver.active === false ? (
+                <button
+                  className="btn ghost sm"
+                  onClick={() => reactivateDriver(driver)}
+                  disabled={savingRoster}
+                >
+                  Reactivate
+                </button>
+              ) : (
+                <button
+                  className="btn ghost sm"
+                  onClick={() => removeDriver(driver)}
+                  disabled={savingRoster}
+                  style={{ color: "var(--accent-red)" }}
+                >
+                  Remove
+                </button>
+              )}
+            </div>
           </div>
         ))}
       </div>
@@ -174,6 +338,75 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
           incidents={incidents.filter((inc) => inc.driver_id === selected.id)}
           onClose={() => setSelected(null)}
         />
+      )}
+      {formOpen && (
+        <div className="modal-backdrop" onClick={closeForm}>
+          <div
+            className="modal"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: 420 }}
+          >
+            <div className="modal-header">
+              <div className="modal-title">
+                {formOpen === "add" ? "Add Driver / Loader" : "Edit Driver"}
+              </div>
+              <button className="close-x" onClick={closeForm}>
+                ×
+              </button>
+            </div>
+            <div className="modal-body">
+              <label className="field">
+                <span>Name</span>
+                <input
+                  type="text"
+                  value={formName}
+                  onChange={(e) => setFormName(e.target.value)}
+                  autoFocus
+                  onKeyDown={(e) => e.key === "Enter" && submitForm()}
+                />
+              </label>
+              <label className="field" style={{ marginTop: 10 }}>
+                <span>Role</span>
+                <select value={formRole} onChange={(e) => setFormRole(e.target.value)}>
+                  {ROLES.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {formError && (
+                <div
+                  className="note-block"
+                  style={{ marginTop: 10, color: "var(--accent-red)", fontSize: 12 }}
+                >
+                  {formError}
+                </div>
+              )}
+            </div>
+            <div
+              style={{
+                padding: "14px 20px",
+                borderTop: "1px solid var(--border)",
+                background: "var(--bg-2)",
+                display: "flex",
+                gap: 8,
+                justifyContent: "flex-end",
+              }}
+            >
+              <button className="btn ghost" onClick={closeForm}>
+                Cancel
+              </button>
+              <button className="btn" onClick={submitForm} disabled={savingRoster}>
+                {savingRoster
+                  ? "Saving..."
+                  : formOpen === "add"
+                    ? "Add"
+                    : "Save Changes"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -498,10 +498,16 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
 
   const driverOptions = drivers
     .slice()
-    .sort((a, b) => a.name.localeCompare(b.name))
+    .sort(
+      (a, b) =>
+        (a.active === false ? 1 : 0) - (b.active === false ? 1 : 0) ||
+        a.name.localeCompare(b.name),
+    )
     .map((d) => (
       <option key={d.id} value={d.id}>
-        {d.name}{d.role === "loader" ? " (loader)" : ""}
+        {d.name}
+        {d.role === "loader" ? " (loader)" : ""}
+        {d.active === false ? " (inactive)" : ""}
       </option>
     ));
 
