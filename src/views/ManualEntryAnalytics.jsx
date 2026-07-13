@@ -8,140 +8,16 @@ import {
   Tooltip,
   CartesianGrid,
 } from "recharts";
+import { PERIODS, periodWindow, periodLabel, toYMD, mondayOf } from "../data/period.js";
 
 // Analytics panel for a manual-entry category (Forgotten Freight / Mis-Deliveries
 // / Attempts). Tracks the work week (Mon–Fri) plus a trend, over a period that
 // defaults to the current month and can go back further. Built for an operator
 // who wants more than a flat list — counts by weekday, a trend, and quick KPIs.
-const PERIODS = [
-  ["lastWeek", "Last Week"],
-  ["30d", "Last 30 Days"],
-  ["this", "This Mo"],
-  ["last", "Last Mo"],
-  ["3", "3M"],
-  ["6", "6M"],
-  ["12", "12M"],
-  ["range", "Range"],
-];
+// The period selector lives here but its resolved window is reported up via
+// onPeriodChange so the parent's detail log can follow the same period.
 const WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-const ymKey = (y, m) => `${y}-${String(m).padStart(2, "0")}`;
-
-// YYYY-MM strings covered by the selected period (relative to the current month).
-function periodMonths(sel) {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = now.getMonth() + 1; // 1-12
-  if (sel === "this") return [ymKey(y, m)];
-  if (sel === "last") {
-    const d = new Date(Date.UTC(y, m - 2, 1));
-    return [ymKey(d.getUTCFullYear(), d.getUTCMonth() + 1)];
-  }
-  const n = Number(sel) || 1;
-  const out = [];
-  for (let i = 0; i < n; i++) {
-    const d = new Date(Date.UTC(y, m - 1 - i, 1));
-    out.push(ymKey(d.getUTCFullYear(), d.getUTCMonth() + 1));
-  }
-  return out;
-}
-
-const pad2 = (n) => String(n).padStart(2, "0");
-const toYMD = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-
-// Inclusive day count between two local YYYY-MM-DD strings, built from explicit
-// y/m/d components rather than Date.parse(string), so a DST transition can't
-// shift the count.
-function daysBetween(startYMD, endYMD) {
-  const [sy, sm, sd] = startYMD.split("-").map(Number);
-  const [ey, em, ed] = endYMD.split("-").map(Number);
-  const a = new Date(sy, sm - 1, sd);
-  const b = new Date(ey, em - 1, ed);
-  return Math.round((b - a) / 86400000) + 1;
-}
-
-// Calendar-month keys (YYYY-MM) touched by [start, end], inclusive. Mirrors
-// Dashboard.jsx's own "custom" period while-loop, including a sanity cap so a
-// typo'd year can't spin out an unbounded array.
-function monthsBetween(startYMD, endYMD) {
-  let [y, m] = startYMD.split("-").map(Number);
-  const [ey, em] = endYMD.split("-").map(Number);
-  const out = [];
-  while (y < ey || (y === ey && m <= em)) {
-    out.push(ymKey(y, m));
-    m++;
-    if (m > 12) { m = 1; y++; }
-    if (out.length >= 400) break; // sanity cap (~33 years)
-  }
-  return out;
-}
-
-// Monday (local) of the week containing ymd, as a YYYY-MM-DD string.
-function mondayOf(ymd) {
-  const [y, m, d] = ymd.split("-").map(Number);
-  const dt = new Date(y, m - 1, d);
-  dt.setDate(dt.getDate() - ((dt.getDay() + 6) % 7));
-  return toYMD(dt);
-}
-
-// Resolve the selected period into an inclusive [start, end] YYYY-MM-DD window
-// plus how to render the trend (day / week / month bucket) and, for calendar-
-// month windows, the month keys. "30d" and "lastWeek" are rolling/calendar-week
-// windows; "range" is a user-picked span bucketed by size; every other option is
-// whole calendar months, matching the existing behavior.
-function periodWindow(sel, rangeFrom, rangeTo) {
-  if (sel === "30d") {
-    const now = new Date();
-    const start = new Date(now);
-    start.setDate(start.getDate() - 29); // trailing 30 days, inclusive of today
-    return { start: toYMD(start), end: toYMD(now), bucket: "day", months: [] };
-  }
-  if (sel === "lastWeek") {
-    // Previous calendar week, Monday-Sunday — follows this file's own "Last Mo"
-    // convention (previous calendar unit) rather than "Last 30 Days"'s explicit
-    // trailing-N-days convention.
-    const now = new Date();
-    const sinceMonday = (now.getDay() + 6) % 7; // days since *this* week's Monday
-    const thisMonday = new Date(now);
-    thisMonday.setDate(thisMonday.getDate() - sinceMonday);
-    const start = new Date(thisMonday);
-    start.setDate(start.getDate() - 7);
-    const end = new Date(thisMonday);
-    end.setDate(end.getDate() - 1);
-    return { start: toYMD(start), end: toYMD(end), bucket: "day", months: [] };
-  }
-  if (sel === "range") {
-    // Require both endpoints, exactly Dashboard.jsx's own custom-range fallback
-    // rule. Incomplete range silently uses this component's ordinary default.
-    if (!rangeFrom || !rangeTo) {
-      const now = new Date();
-      const start = new Date(now);
-      start.setDate(start.getDate() - 29);
-      return { start: toYMD(start), end: toYMD(now), bucket: "day", months: [] };
-    }
-    // Auto-swap a reversed pick rather than blocking — every downstream consumer
-    // assumes start <= end, and honoring whatever two dates were picked (in
-    // either order) is less surprising than silently discarding the input.
-    const start = rangeFrom <= rangeTo ? rangeFrom : rangeTo;
-    const end = rangeFrom <= rangeTo ? rangeTo : rangeFrom;
-    const span = daysBetween(start, end);
-    if (span <= 60) return { start, end, bucket: "day", months: [] };
-    if (span <= 180) return { start, end, bucket: "week", months: [] };
-    return { start, end, bucket: "month", months: monthsBetween(start, end) };
-  }
-  const months = [...periodMonths(sel)].sort();
-  const first = months[0];
-  const last = months[months.length - 1];
-  const [ly, lm] = last.split("-").map(Number);
-  const lastDay = new Date(ly, lm, 0).getDate(); // day 0 of next month = last day
-  return {
-    start: `${first}-01`,
-    end: `${last}-${pad2(lastDay)}`,
-    bucket: months.length <= 1 ? "day" : "month",
-    months,
-  };
-}
 
 // Weekday (0=Sun..6=Sat) from a YYYY-MM-DD string, parsed as UTC (no tz shift).
 function weekdayOf(ymd) {
@@ -159,7 +35,7 @@ function Stat({ label, value, color }) {
   );
 }
 
-export default function ManualEntryAnalytics({ title, color, records, drivers }) {
+export default function ManualEntryAnalytics({ title, color, records, drivers, onPeriodChange }) {
   const [periodSel, setPeriodSel] = React.useState("30d");
   // Day-precision (YYYY-MM-DD) custom range, distinct from Dashboard.jsx's
   // month-precision customFrom/customTo — different formats, deliberately
@@ -179,6 +55,12 @@ export default function ManualEntryAnalytics({ title, color, records, drivers })
     () => periodWindow(periodSel, rangeFrom, rangeTo),
     [periodSel, rangeFrom, rangeTo],
   );
+
+  // Report the resolved window + label up so the parent's detail log can scope
+  // itself to the same period the charts are showing.
+  React.useEffect(() => {
+    onPeriodChange?.({ win, label: periodLabel(periodSel, rangeFrom, rangeTo) });
+  }, [win, periodSel, rangeFrom, rangeTo, onPeriodChange]);
 
   const inPeriod = React.useMemo(
     () =>
