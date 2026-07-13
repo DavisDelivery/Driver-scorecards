@@ -7,6 +7,7 @@ import {
 } from "../data/firebase.js";
 import { matchDriver } from "../data/driverMatch.js";
 import { fetchAttempts, deleteAttempt, todayET } from "../data/attemptsFeed.js";
+import { periodWindow } from "../data/period.js";
 import DriverModal from "./DriverModal.jsx";
 import ManualEntryAnalytics from "./ManualEntryAnalytics.jsx";
 
@@ -134,6 +135,18 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   const [savedMsg, setSavedMsg] = React.useState("");
   const [focus, setFocus] = React.useState(null);
   const [logSearch, setLogSearch] = React.useState("");
+  // The window + label the analytics panel is currently showing; the detail log
+  // scopes itself to this so the log matches the charts (non-feed tabs). Seeded
+  // with the analytics default (30d) to avoid a first-render flash before the
+  // panel's onPeriodChange fires.
+  const [logPeriod, setLogPeriod] = React.useState(() => ({
+    win: periodWindow("30d"),
+    label: "Last 30 Days",
+  }));
+  // Log view controls: group rows under driver headers, and/or filter to one
+  // driver (set by clicking a driver in the By-Driver summary).
+  const [groupByDriver, setGroupByDriver] = React.useState(false);
+  const [driverFilter, setDriverFilter] = React.useState(null);
 
   // Automated attempts feed (only when config.feed). It has its OWN date picker so
   // you can browse auto attempts for any day independent of the manual log date.
@@ -330,31 +343,80 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
 
   // Manual rows for the log. Reassignment overrides (attempt_stop_nbr set) are
   // shown on their auto row, not duplicated here (they still count in analytics).
-  // On the feed-backed tab (Attempts), the log is a per-day view: manual rows are
-  // scoped to the selected feed date so it matches the auto rows shown for that day.
+  // On the feed-backed tab (Attempts), the log is a per-day view scoped to the
+  // selected feed date. Elsewhere the log follows the analytics period selector
+  // (logPeriod.win) so it matches the charts above it.
   const manualForView = React.useMemo(() => {
     const base = logIncidents.filter((i) => !i.attempt_stop_nbr);
-    if (!feedEnabled) return base;
-    return base.filter(
-      (i) => (i.delivered_date || i.created_at || "").slice(0, 10) === feedDate,
-    );
-  }, [logIncidents, feedEnabled, feedDate]);
+    if (feedEnabled) {
+      return base.filter(
+        (i) => (i.delivered_date || i.created_at || "").slice(0, 10) === feedDate,
+      );
+    }
+    const { start, end } = logPeriod.win;
+    return base.filter((i) => {
+      const d = (i.delivered_date || i.created_at || "").slice(0, 10);
+      return d && d >= start && d <= end;
+    });
+  }, [logIncidents, feedEnabled, feedDate, logPeriod.win]);
 
-  // Free-text filter over the manual rows (PRO/driver/customer/item/notes/date).
+  // Which driver a manual row belongs to, for grouping / the summary.
+  const driverNameOf = React.useCallback(
+    (i) =>
+      i.driver_name ||
+      drivers.find((d) => d.id === i.driver_id)?.name ||
+      i.driver_raw ||
+      "Unassigned",
+    [drivers],
+  );
+
+  // Per-driver rollup for the current period: who made mistakes, and how many.
+  const byDriver = React.useMemo(() => {
+    const m = new Map();
+    for (const i of manualForView) {
+      const name = driverNameOf(i);
+      const key = i.driver_id || `name:${name}`;
+      if (!m.has(key)) m.set(key, { key, id: i.driver_id || null, name, count: 0 });
+      m.get(key).count += 1;
+    }
+    return [...m.values()].sort(
+      (a, b) => b.count - a.count || a.name.localeCompare(b.name),
+    );
+  }, [manualForView, driverNameOf]);
+
+  // Free-text + optional single-driver filter over the manual rows.
   const filteredLog = React.useMemo(() => {
     const q = logSearch.trim().toLowerCase();
-    if (!q) return manualForView;
-    return manualForView.filter((i) =>
-      [
+    return manualForView.filter((i) => {
+      if (driverFilter) {
+        const key = i.driver_id || `name:${driverNameOf(i)}`;
+        if (key !== driverFilter) return false;
+      }
+      if (!q) return true;
+      return [
         i.pro_number,
         i.driver_name,
         i.customer,
         classifyField ? i[classifyField] : "",
         i.notes,
         fmtMDY(i.delivered_date || i.created_at),
-      ].some((f) => String(f || "").toLowerCase().includes(q)),
-    );
-  }, [manualForView, logSearch, classifyField]);
+        fmtMDY(i.created_at),
+      ].some((f) => String(f || "").toLowerCase().includes(q));
+    });
+  }, [manualForView, logSearch, classifyField, driverFilter, driverNameOf]);
+
+  // filteredLog grouped under driver-name headers (only used when groupByDriver).
+  const logGroups = React.useMemo(() => {
+    const m = new Map();
+    for (const i of filteredLog) {
+      const name = driverNameOf(i);
+      if (!m.has(name)) m.set(name, []);
+      m.get(name).push(i);
+    }
+    return [...m.entries()]
+      .map(([name, rows]) => ({ name, rows }))
+      .sort((a, b) => b.rows.length - a.rows.length || a.name.localeCompare(b.name));
+  }, [filteredLog, driverNameOf]);
 
   // Same search applied to the auto (feed) rows — by PRO/driver/customer/route/stop.
   const filteredFeed = React.useMemo(() => {
@@ -511,6 +573,124 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       </option>
     ));
 
+  // Inline edit form for a log entry (shared by the feed and non-feed layouts).
+  const renderEditRow = (inc) =>
+    editingId === inc.id ? (
+      <div className="ff-edit-row" onClick={(e) => e.stopPropagation()}>
+        <div>
+          <div className="dd-k">Charge to driver</div>
+          <select value={editDriverId} onChange={(e) => setEditDriverId(e.target.value)}>
+            <option value="">— Select driver —</option>
+            {driverOptions}
+          </select>
+        </div>
+        <div>
+          <div className="dd-k">Incident date</div>
+          <input
+            type="date"
+            value={editDate}
+            onChange={(e) => setEditDate(e.target.value)}
+            style={{ fontFamily: "var(--mono)" }}
+          />
+        </div>
+        {config.classify && (
+          <div>
+            <div className="dd-k">{config.classify.label}</div>
+            <select value={editClassify} onChange={(e) => setEditClassify(e.target.value)}>
+              <option value="">{config.classify.placeholder}</option>
+              {config.classify.options.map((it) => (
+                <option key={it} value={it}>
+                  {it}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+        <div style={{ flex: 1 }}>
+          <div className="dd-k">Notes</div>
+          <input
+            type="text"
+            placeholder="Optional notes…"
+            value={editNotes}
+            onChange={(e) => setEditNotes(e.target.value)}
+          />
+        </div>
+        <button
+          className="btn primary"
+          onClick={() => saveEdit(inc)}
+          disabled={!editDriverId || rowBusy}
+        >
+          {rowBusy ? "Saving…" : "Save Changes"}
+        </button>
+        <button className="btn ghost" onClick={cancelEdit} disabled={rowBusy}>
+          Cancel
+        </button>
+      </div>
+    ) : null;
+
+  // Actions cell (Edit / Delete), shared by both layouts.
+  const renderRowActions = (inc) => (
+    <span className="ff-row-actions" onClick={(e) => e.stopPropagation()}>
+      <button
+        className="btn ghost sm"
+        onClick={() => (editingId === inc.id ? cancelEdit() : startEdit(inc))}
+        title="Edit this entry"
+      >
+        {editingId === inc.id ? "Close" : "Edit"}
+      </button>
+      <button
+        className="btn ghost sm"
+        onClick={() => deleteEntry(inc)}
+        disabled={rowBusy}
+        title="Delete this entry"
+        style={{ color: "var(--accent-red)" }}
+      >
+        Delete
+      </button>
+    </span>
+  );
+
+  const openDriver = (inc) =>
+    setFocus(
+      drivers.find((d) => d.id === inc.driver_id) || {
+        id: inc.driver_id,
+        name: inc.driver_name || "(unknown)",
+        role: "driver",
+      },
+    );
+
+  // Aligned, column-headed row for the non-feed log (Forgotten Freight, etc.).
+  const gridClass = `ff-log-grid ${classifyField ? "has-item" : ""}`;
+  const renderManualRow = (inc) => (
+    <div key={inc.id} className="ff-log-entry">
+      <div className={`${gridClass} ff-log-row`} onClick={() => openDriver(inc)}>
+        <span className="pro-num">{inc.pro_number}</span>
+        <span className="ff-cell-ellipsis" title={driverNameOf(inc)}>
+          {inc.driver_name || inc.driver_raw || "—"}
+        </span>
+        <span className="ff-cell-ellipsis ff-cell-muted" title={inc.customer || ""}>
+          {inc.customer || "—"}
+        </span>
+        {classifyField && (
+          <span>
+            {inc[classifyField] ? (
+              <span className="ff-item-chip">{inc[classifyField]}</span>
+            ) : (
+              <span className="ff-cell-muted">—</span>
+            )}
+          </span>
+        )}
+        <span className="ff-cell-date">{fmtMDY(inc.delivered_date || inc.created_at)}</span>
+        <span className="ff-cell-date">{fmtMDY(inc.created_at)}</span>
+        <span className="ff-cell-photo" title={inc.has_photos ? "Has photo" : ""}>
+          {inc.has_photos ? "📸" : ""}
+        </span>
+        {renderRowActions(inc)}
+      </div>
+      {renderEditRow(inc)}
+    </div>
+  );
+
   return (
     <div>
       <div className="page-title">Manual Entry</div>
@@ -519,7 +699,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         <span className="meta">
           {feedEnabled
             ? ` · ${totalOnRecord} on ${fmtMDY(feedDate)} (${feedRows.length} auto, ${manualForView.length} manual) · ${allTimeManual} logged all-time`
-            : ` · ${allTimeManual} on record`}
+            : ` · ${manualForView.length} in ${logPeriod.label} · ${allTimeManual} all-time`}
         </span>
       </h1>
 
@@ -701,9 +881,54 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         color={config.color || "var(--davis-blue)"}
         records={logIncidents}
         drivers={drivers}
+        onPeriodChange={setLogPeriod}
       />
 
-      <div className="section-head">{config.logTitle}</div>
+      {!feedEnabled && byDriver.length > 0 && (
+        <div className="card ff-bydriver-card">
+          <div className="card-body">
+            <div className="ff-bydriver-head">
+              Drivers · {logPeriod.label}
+              <span className="meta">
+                {" "}· {byDriver.length} driver{byDriver.length === 1 ? "" : "s"},{" "}
+                {manualForView.length} entr{manualForView.length === 1 ? "y" : "ies"}
+              </span>
+            </div>
+            <div className="ff-bydriver-chips">
+              {byDriver.map((d) => (
+                <button
+                  key={d.key}
+                  type="button"
+                  className={`ff-driver-chip ${driverFilter === d.key ? "active" : ""}`}
+                  onClick={() =>
+                    setDriverFilter(driverFilter === d.key ? null : d.key)
+                  }
+                  title={
+                    driverFilter === d.key
+                      ? "Clear filter"
+                      : `Show only ${d.name}'s entries`
+                  }
+                >
+                  <span className="ff-driver-chip-name">{d.name}</span>
+                  <span className="ff-driver-chip-count">{d.count}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="section-head">
+        {config.logTitle}
+        {!feedEnabled && (
+          <span className="meta">
+            {" "}· {logPeriod.label} ·{" "}
+            {driverFilter || logSearch.trim()
+              ? `${filteredLog.length} of ${manualForView.length}`
+              : manualForView.length}
+          </span>
+        )}
+      </div>
       <div className="card">
         <div className="card-body" style={{ padding: "4px 14px" }}>
           <div className="ff-log-search-wrap">
@@ -737,6 +962,26 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
               value={logSearch}
               onChange={(e) => setLogSearch(e.target.value)}
             />
+            {!feedEnabled && (
+              <button
+                type="button"
+                className={`btn ghost sm ${groupByDriver ? "active" : ""}`}
+                onClick={() => setGroupByDriver((g) => !g)}
+                title="Group the log under each driver"
+              >
+                {groupByDriver ? "☑ Grouped by driver" : "Group by driver"}
+              </button>
+            )}
+            {!feedEnabled && driverFilter && (
+              <button
+                type="button"
+                className="btn ghost sm"
+                onClick={() => setDriverFilter(null)}
+                title="Clear the driver filter"
+              >
+                ✕ {byDriver.find((d) => d.key === driverFilter)?.name || "driver"}
+              </button>
+            )}
           </div>
           {feedEnabled && feed.status === "loading" && (
             <div className="empty-state">Loading attempts for {fmtMDY(feedDate)}…</div>
@@ -751,14 +996,20 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
               <div className="empty-state">
                 {feedEnabled
                   ? `No attempts (auto or manual) for ${fmtMDY(feedDate)}.`
-                  : "Nothing logged yet."}
+                  : `Nothing logged in ${logPeriod.label}.`}
               </div>
             )}
-          {totalOnRecord > 0 && totalShown === 0 && logSearch.trim() && (
-            <div className="empty-state">
-              No entries match “{logSearch.trim()}”.
-            </div>
-          )}
+          {totalOnRecord > 0 &&
+            totalShown === 0 &&
+            (logSearch.trim() || driverFilter) && (
+              <div className="empty-state">
+                No entries match{logSearch.trim() ? ` “${logSearch.trim()}”` : ""}
+                {driverFilter
+                  ? ` for ${byDriver.find((d) => d.key === driverFilter)?.name || "that driver"}`
+                  : ""}
+                .
+              </div>
+            )}
 
           {/* Auto-detected attempts from the dispatch feed (selected date). */}
           {filteredFeed.map((a) => (
@@ -818,107 +1069,53 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
             </div>
           ))}
 
-          {/* Manually-logged entries. */}
-          {filteredLog.map((inc) => (
-            <div key={inc.id} className="ff-log-entry">
-              <div
-                className="dd-incident-head"
-                onClick={() =>
-                  setFocus(drivers.find((d) => d.id === inc.driver_id) || {
-                    id: inc.driver_id,
-                    name: inc.driver_name || "(unknown)",
-                    role: "driver",
-                  })
-                }
-              >
-                {feedEnabled && <span className="ff-src-chip manual">MANUAL</span>}
-                <span className="pro-num">{inc.pro_number}</span>
-                <span className="lb-name" style={{ width: "auto" }}>{inc.driver_name}</span>
-                <span className="meta">{inc.customer || ""}</span>
-                {classifyField && inc[classifyField] && (
-                  <span className="ff-item-chip">{inc[classifyField]}</span>
-                )}
-                <span className="meta" style={{ marginLeft: "auto" }}>
-                  {fmtMDY(inc.delivered_date || inc.created_at)}
-                  {inc.has_photos ? " · 📸" : ""}
-                </span>
-                <span className="ff-row-actions" onClick={(e) => e.stopPropagation()}>
-                  <button
-                    className="btn ghost sm"
-                    onClick={() => (editingId === inc.id ? cancelEdit() : startEdit(inc))}
-                    title="Edit this entry"
-                  >
-                    {editingId === inc.id ? "Close" : "Edit"}
-                  </button>
-                  <button
-                    className="btn ghost sm"
-                    onClick={() => deleteEntry(inc)}
-                    disabled={rowBusy}
-                    title="Delete this entry"
-                    style={{ color: "var(--accent-red)" }}
-                  >
-                    Delete
-                  </button>
-                </span>
-              </div>
-
-              {editingId === inc.id && (
-                <div className="ff-edit-row" onClick={(e) => e.stopPropagation()}>
-                  <div>
-                    <div className="dd-k">Charge to driver</div>
-                    <select
-                      value={editDriverId}
-                      onChange={(e) => setEditDriverId(e.target.value)}
-                    >
-                      <option value="">— Select driver —</option>
-                      {driverOptions}
-                    </select>
+          {/* Manually-logged entries. Feed tab keeps the compact flat rows;
+              elsewhere they render as a column-headed, optionally grouped table. */}
+          {feedEnabled
+            ? filteredLog.map((inc) => (
+                <div key={inc.id} className="ff-log-entry">
+                  <div className="dd-incident-head" onClick={() => openDriver(inc)}>
+                    <span className="ff-src-chip manual">MANUAL</span>
+                    <span className="pro-num">{inc.pro_number}</span>
+                    <span className="lb-name" style={{ width: "auto" }}>{inc.driver_name}</span>
+                    <span className="meta">{inc.customer || ""}</span>
+                    {classifyField && inc[classifyField] && (
+                      <span className="ff-item-chip">{inc[classifyField]}</span>
+                    )}
+                    <span className="meta" style={{ marginLeft: "auto" }}>
+                      {fmtMDY(inc.delivered_date || inc.created_at)}
+                      {inc.has_photos ? " · 📸" : ""}
+                    </span>
+                    {renderRowActions(inc)}
                   </div>
-                  <div>
-                    <div className="dd-k">Incident date</div>
-                    <input
-                      type="date"
-                      value={editDate}
-                      onChange={(e) => setEditDate(e.target.value)}
-                      style={{ fontFamily: "var(--mono)" }}
-                    />
-                  </div>
-                  {config.classify && (
-                    <div>
-                      <div className="dd-k">{config.classify.label}</div>
-                      <select value={editClassify} onChange={(e) => setEditClassify(e.target.value)}>
-                        <option value="">{config.classify.placeholder}</option>
-                        {config.classify.options.map((it) => (
-                          <option key={it} value={it}>
-                            {it}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
-                  <div style={{ flex: 1 }}>
-                    <div className="dd-k">Notes</div>
-                    <input
-                      type="text"
-                      placeholder="Optional notes…"
-                      value={editNotes}
-                      onChange={(e) => setEditNotes(e.target.value)}
-                    />
-                  </div>
-                  <button
-                    className="btn primary"
-                    onClick={() => saveEdit(inc)}
-                    disabled={!editDriverId || rowBusy}
-                  >
-                    {rowBusy ? "Saving…" : "Save Changes"}
-                  </button>
-                  <button className="btn ghost" onClick={cancelEdit} disabled={rowBusy}>
-                    Cancel
-                  </button>
+                  {renderEditRow(inc)}
                 </div>
+              ))
+            : filteredLog.length > 0 && (
+                <>
+                  <div className={`${gridClass} ff-log-head`}>
+                    <span>PRO#</span>
+                    <span>Driver</span>
+                    <span>Customer</span>
+                    {classifyField && <span>{config.classify?.label || "Item"}</span>}
+                    <span>Incident</span>
+                    <span>Entered</span>
+                    <span />
+                    <span />
+                  </div>
+                  {groupByDriver
+                    ? logGroups.map((g) => (
+                        <React.Fragment key={g.name}>
+                          <div className="ff-log-group">
+                            {g.name}
+                            <span className="meta"> · {g.rows.length}</span>
+                          </div>
+                          {g.rows.map(renderManualRow)}
+                        </React.Fragment>
+                      ))
+                    : filteredLog.map(renderManualRow)}
+                </>
               )}
-            </div>
-          ))}
         </div>
       </div>
 
