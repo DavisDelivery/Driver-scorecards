@@ -153,6 +153,8 @@ export const LATE_REASONS = [
   { id: "closed_mondays", label: "Closed Mondays" },
   { id: "closed_fridays", label: "Closed Fridays" },
   { id: "forgot_close_out", label: "Forgot Close Out" },
+  { id: "hold_per_uline", label: "Hold per Uline" },
+  { id: "hold_vet_equip", label: "Hold Vet Equip" },
 ];
 export const LATE_REASON_LABELS = Object.fromEntries(
   LATE_REASONS.map((r) => [r.id, r.label]),
