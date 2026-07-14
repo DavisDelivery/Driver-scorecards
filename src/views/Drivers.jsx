@@ -166,16 +166,38 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
     }
   }
 
-  async function removeDriver(driver) {
-    const hasHistory = hasRecords(driver.id);
-    if (hasHistory) {
-      if (
-        !confirm(
-          `${driver.name} has incident history on record. Removing will DEACTIVATE them (hidden from new assignments) rather than delete them, so their history stays intact. Continue?`,
-        )
+  // Mark a driver inactive: hidden from new assignments and pickers, but their
+  // history stays intact and they can be reactivated anytime. This is the normal
+  // way to retire a driver — permanent removal is reserved for zero-history rows.
+  async function deactivateDriver(driver) {
+    if (
+      !confirm(
+        `Deactivate ${driver.name}? They'll be hidden from new assignments and driver pickers. Their history stays intact and you can reactivate them anytime.`,
       )
-        return;
-    } else if (
+    )
+      return;
+    setSavingRoster(true);
+    try {
+      const next = drivers.map((d) =>
+        d.id === driver.id ? { ...d, active: false } : d,
+      );
+      await saveDrivers(next);
+      onUpdate && onUpdate();
+    } finally {
+      setSavingRoster(false);
+    }
+  }
+
+  // Permanently delete a driver. Only offered for rows with no incident history,
+  // so nothing is lost; drivers with history are deactivated instead.
+  async function removeDriver(driver) {
+    if (hasRecords(driver.id)) {
+      // Safety net — the UI only shows Remove on zero-history rows, but never
+      // hard-delete a driver whose incidents would be orphaned.
+      await deactivateDriver(driver);
+      return;
+    }
+    if (
       !confirm(
         `Permanently remove ${driver.name}? They have no incidents on record, so this can't be undone.`,
       )
@@ -184,9 +206,7 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
     }
     setSavingRoster(true);
     try {
-      const next = hasHistory
-        ? drivers.map((d) => (d.id === driver.id ? { ...d, active: false } : d))
-        : drivers.filter((d) => d.id !== driver.id);
+      const next = drivers.filter((d) => d.id !== driver.id);
       await saveDrivers(next);
       onUpdate && onUpdate();
     } finally {
@@ -321,9 +341,20 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
               ) : (
                 <button
                   className="btn ghost sm"
+                  onClick={() => deactivateDriver(driver)}
+                  disabled={savingRoster}
+                  style={{ color: "var(--accent-amber)" }}
+                >
+                  Deactivate
+                </button>
+              )}
+              {!hasRecords(driver.id) && (
+                <button
+                  className="btn ghost sm"
                   onClick={() => removeDriver(driver)}
                   disabled={savingRoster}
                   style={{ color: "var(--accent-red)" }}
+                  title="No history on record — permanently delete this entry"
                 >
                   Remove
                 </button>
