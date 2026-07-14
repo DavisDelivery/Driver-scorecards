@@ -322,6 +322,7 @@ function drawCardHeader(doc, inc, x, y, w, h) {
     attempted: "attempted", unable_to_locate: "unable to locate",
     forgotten_freight: "forgotten freight", closed_mondays: "closed mondays",
     closed_fridays: "closed fridays", forgot_close_out: "forgot close out",
+    hold_per_uline: "hold per uline", hold_vet_equip: "hold vet equip",
   };
   const SOURCE_PDF = { laters: "LATE", returns: "RETURN", traces: "TRACE" };
   let badgeRight = x + w - 10;
@@ -417,6 +418,7 @@ async function drawIncidentCard(doc, inc, x, y, w, h, photos) {
     attempted: "Attempted", unable_to_locate: "Unable to Locate",
     forgotten_freight: "Forgotten Freight", closed_mondays: "Closed Mondays",
     closed_fridays: "Closed Fridays", forgot_close_out: "Forgot Close Out",
+    hold_per_uline: "Hold per Uline", hold_vet_equip: "Hold Vet Equip",
   };
   const metaParts = [
     inc.late_reason && `Late Reason: ${LATE_META[inc.late_reason] || inc.late_reason}`,
