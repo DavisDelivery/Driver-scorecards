@@ -155,6 +155,7 @@ export const LATE_REASONS = [
   { id: "forgot_close_out", label: "Forgot Close Out" },
   { id: "hold_per_uline", label: "Hold per Uline" },
   { id: "hold_vet_equip", label: "Hold Vet Equip" },
+  { id: "holiday", label: "Holiday" },
 ];
 export const LATE_REASON_LABELS = Object.fromEntries(
   LATE_REASONS.map((r) => [r.id, r.label]),
