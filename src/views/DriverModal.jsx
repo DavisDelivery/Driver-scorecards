@@ -4,6 +4,15 @@ import { SOURCE_LABELS, LATE_REASON_LABELS, FAULT_CODES } from "../data/drivers.
 
 const FAULT_LABEL = Object.fromEntries(FAULT_CODES.map((f) => [f.id, f.label]));
 
+// Categories that count "against" a driver — must match the roster card
+// (Drivers.jsx) so the modal header reconciles with the card's totals.
+const NEG_CATS = ["damage","late","missing","misdelivery","forgotten_freight","attempts","complaint"];
+const CAT_LABEL = {
+  damage: "Damage", late: "Late", missing: "Missing", misdelivery: "Misdelivery",
+  forgotten_freight: "Forgotten Freight", attempts: "Attempts", complaint: "Complaint",
+  compliment: "Compliment", return: "Return", trace: "Trace",
+};
+
 export const ymKey = (inc) =>
   (inc.delivered_date || inc.ship_date || inc.return_date || inc.trace_date || "").slice(0, 7);
 
@@ -88,22 +97,80 @@ function IncidentDetailRow({ inc }) {
   );
 }
 
+// A month's imported-history aggregate: category count with no per-incident
+// detail (PRO/photos), so it's rendered as a summary line, not an expandable row.
+function HistoryAggRow({ row }) {
+  return (
+    <div className="dd-incident dd-incident-agg">
+      <div className="dd-incident-head" style={{ cursor: "default" }}>
+        <span className="row-caret" style={{ visibility: "hidden" }}>▸</span>
+        <span className={`chip ${row.category}`}>{CAT_LABEL[row.category] || row.category}</span>
+        <span className="dd-agg-count">× {row.count}</span>
+        <span className="dd-agg-note">imported history</span>
+      </div>
+    </div>
+  );
+}
+
 // Per-driver scorecard modal — clickable incident history with photos.
-// `driver` = { name, role }; `incidents` = that driver's live incidents.
-export default function DriverModal({ driver, incidents, onClose }) {
+// `driver` = { name, role }; `incidents` = that driver's live incidents;
+// `history` = that driver's imported monthly aggregates ({year,month,category,count}).
+// Both sources are merged with the SAME dedup rule the roster card uses (history
+// is ignored for any month that already has live detail), so the modal's counts
+// reconcile with the card instead of showing only the live subset.
+export default function DriverModal({ driver, incidents, history = [], onClose }) {
+  // Months with live detail — history for these is dropped to avoid double count,
+  // exactly as Drivers.jsx does (uses every live row, including no-fault ones).
+  const ymsWithLive = React.useMemo(() => {
+    const s = new Set();
+    for (const inc of incidents) s.add(ymKey(inc) || "unknown");
+    return s;
+  }, [incidents]);
+
+  // History aggregates for months WITHOUT live data.
+  const histRows = React.useMemo(
+    () =>
+      (history || [])
+        .map((r) => ({
+          ym: `${r.year}-${String(r.month).padStart(2, "0")}`,
+          category: r.category,
+          count: r.count || 0,
+        }))
+        .filter((r) => r.count > 0 && !ymsWithLive.has(r.ym)),
+    [history, ymsWithLive],
+  );
+
+  // Merge live incidents + history aggregates into month buckets.
   const grouped = React.useMemo(() => {
     const map = new Map();
     for (const inc of incidents) {
       const ym = ymKey(inc) || "unknown";
-      if (!map.has(ym)) map.set(ym, []);
-      map.get(ym).push(inc);
+      if (!map.has(ym)) map.set(ym, { live: [], hist: [] });
+      map.get(ym).live.push(inc);
+    }
+    for (const r of histRows) {
+      if (!map.has(r.ym)) map.set(r.ym, { live: [], hist: [] });
+      map.get(r.ym).hist.push(r);
     }
     return Array.from(map.entries()).sort((a, b) => b[0].localeCompare(a[0]));
-  }, [incidents]);
+  }, [incidents, histRows]);
 
-  const faulted = incidents.filter((i) => !i.no_fault).length;
-  const curYear = new Date().getFullYear().toString();
-  const ytd = incidents.filter((i) => !i.no_fault && (ymKey(i) || "").startsWith(curYear)).length;
+  // Header stats — negative categories only, live (non-no-fault) + deduped
+  // history, matching the card's All-Time and YTD numbers.
+  const { faulted, ytd } = React.useMemo(() => {
+    const curYear = new Date().getFullYear().toString();
+    // Require a real date (matches the card, which skips ym==="unknown").
+    const liveNeg = incidents.filter(
+      (i) => !i.no_fault && NEG_CATS.includes(i.category) && ymKey(i),
+    );
+    const histNeg = histRows.filter((r) => NEG_CATS.includes(r.category));
+    const all =
+      liveNeg.length + histNeg.reduce((a, r) => a + r.count, 0);
+    const ytdN =
+      liveNeg.filter((i) => (ymKey(i) || "").startsWith(curYear)).length +
+      histNeg.filter((r) => r.ym.startsWith(curYear)).reduce((a, r) => a + r.count, 0);
+    return { faulted: all, ytd: ytdN };
+  }, [incidents, histRows]);
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -121,11 +188,14 @@ export default function DriverModal({ driver, incidents, onClose }) {
           {grouped.length === 0 && (
             <div className="empty-state">No detailed incidents on file for this driver.</div>
           )}
-          {grouped.map(([ym, list]) => (
+          {grouped.map(([ym, { live, hist }]) => (
             <div key={ym} style={{ marginBottom: 18 }}>
               <div className="section-divider">{fmtMonth(ym)}</div>
-              {list.map((inc, idx) => (
+              {live.map((inc, idx) => (
                 <IncidentDetailRow key={inc.id || idx} inc={inc} />
+              ))}
+              {hist.map((row, idx) => (
+                <HistoryAggRow key={`h-${idx}`} row={row} />
               ))}
             </div>
           ))}

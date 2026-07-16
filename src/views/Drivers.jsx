@@ -367,6 +367,7 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
         <DriverModal
           driver={selected}
           incidents={incidents.filter((inc) => inc.driver_id === selected.id)}
+          history={history.filter((r) => r.driver_id === selected.id)}
           onClose={() => setSelected(null)}
         />
       )}
