@@ -8,6 +8,7 @@
 //   - months      : YYYY-MM keys, only for the "month" bucket
 
 export const PERIODS = [
+  ["thisWeek", "This Week"],
   ["lastWeek", "Last Week"],
   ["30d", "Last 30 Days"],
   ["this", "This Mo"],
@@ -90,6 +91,14 @@ export function periodWindow(sel, rangeFrom, rangeTo) {
     const now = new Date();
     const start = new Date(now);
     start.setDate(start.getDate() - 29); // trailing 30 days, inclusive of today
+    return { start: toYMD(start), end: toYMD(now), bucket: "day", months: [] };
+  }
+  if (sel === "thisWeek") {
+    // Current calendar week so far: this Monday through today, inclusive.
+    const now = new Date();
+    const sinceMonday = (now.getDay() + 6) % 7;
+    const start = new Date(now);
+    start.setDate(start.getDate() - sinceMonday);
     return { start: toYMD(start), end: toYMD(now), bucket: "day", months: [] };
   }
   if (sel === "lastWeek") {

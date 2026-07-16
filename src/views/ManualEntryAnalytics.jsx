@@ -35,7 +35,7 @@ function Stat({ label, value, color }) {
   );
 }
 
-export default function ManualEntryAnalytics({ title, color, records, drivers, onPeriodChange }) {
+export default function ManualEntryAnalytics({ title, color, records, drivers, onPeriodChange, leaderLabel = "Top driver" }) {
   const [periodSel, setPeriodSel] = React.useState("30d");
   // Day-precision (YYYY-MM-DD) custom range, distinct from Dashboard.jsx's
   // month-precision customFrom/customTo — different formats, deliberately
@@ -192,7 +192,7 @@ export default function ManualEntryAnalytics({ title, color, records, drivers, o
             <Stat label="Total this period" value={total} color={color} />
             <Stat label="Busiest workday" value={topWeekday.count > 0 ? topWeekday.label : "—"} />
             <Stat label="Avg / active day" value={avg} />
-            <Stat label="Top driver" value={topDriver} />
+            <Stat label={leaderLabel} value={topDriver} />
           </div>
 
           {total === 0 ? (

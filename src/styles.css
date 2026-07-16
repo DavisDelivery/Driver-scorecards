@@ -1891,6 +1891,11 @@ table.data.analytics-subtable th {
   flex-wrap: wrap;
 }
 .ff-charge-row select, .ff-charge-row input { margin-top: 4px; }
+/* Driver select + its match note (Auto-matched / Manual override) sit side by
+   side, so the note doesn't stack under the dropdown and unbalance the row. */
+.ff-charge-driver { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.ff-charge-driver select { margin-top: 0; }
+.ff-charge-note { white-space: nowrap; }
 /* Lookup preview: meta grid on the left, order-contents stats filling the right. */
 .ff-preview-top {
   display: flex;
@@ -2048,6 +2053,12 @@ table.data.analytics-subtable th {
   letter-spacing: 0;
 }
 .ff-bydriver-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.ff-bydriver-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #94a3b8;
+  font-family: var(--mono);
+}
 .ff-driver-chip {
   display: inline-flex;
   align-items: center;

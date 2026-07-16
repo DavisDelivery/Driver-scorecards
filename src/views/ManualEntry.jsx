@@ -10,6 +10,17 @@ import { fetchAttempts, deleteAttempt, todayET } from "../data/attemptsFeed.js";
 import { periodWindow } from "../data/period.js";
 import DriverModal from "./DriverModal.jsx";
 import ManualEntryAnalytics from "./ManualEntryAnalytics.jsx";
+import {
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  Cell,
+  XAxis,
+  YAxis,
+  Tooltip,
+  CartesianGrid,
+  LabelList,
+} from "recharts";
 
 const pad9 = (p) => String(p || "").replace(/\D/g, "").padStart(9, "0");
 
@@ -56,6 +67,8 @@ export const FF_CONFIG = {
   color: "#f97316",
   heading: "Forgotten Freight",
   logTitle: "Forgotten Freight Log",
+  // The driver with the most of these is the worst offender, not a top performer.
+  leaderLabel: "Most forgottens",
   addLabel: "Add Forgotten Freight",
   recordNoun: "forgotten freight", // "…already logged as forgotten freight for…"
   deleteNoun: "forgotten-freight", // "Delete forgotten-freight entry…"
@@ -73,6 +86,7 @@ export const MISDELIVERY_CONFIG = {
   color: "#f472b6",
   heading: "Mis-Deliveries",
   logTitle: "Mis-Delivery Log",
+  leaderLabel: "Most mis-deliveries",
   addLabel: "Add Mis-Delivery",
   recordNoun: "a mis-delivery",
   deleteNoun: "mis-delivery",
@@ -93,6 +107,8 @@ export const COMPLIMENTS_CONFIG = {
   fault: "",
   heading: "Compliments",
   logTitle: "Compliments Log",
+  // Compliments are positive, so the most-credited driver really is the top one.
+  leaderLabel: "Top driver",
   addLabel: "Add Compliment",
   recordNoun: "a compliment",
   deleteNoun: "compliment",
@@ -105,6 +121,7 @@ export const ATTEMPTS_CONFIG = {
   color: "#14b8a6",
   heading: "Attempts",
   logTitle: "Attempts Log",
+  leaderLabel: "Most attempts",
   addLabel: "Add Attempt",
   recordNoun: "an attempt",
   deleteNoun: "attempt",
@@ -840,17 +857,19 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                 )}
                 <div>
                   <div className="dd-k">Charge to driver</div>
-                  <select value={driverId} onChange={(e) => setDriverId(e.target.value)}>
-                    <option value="">— Select driver —</option>
-                    {driverOptions}
-                  </select>
-                  {matched && s.driverName && (
-                    <div className="meta" style={{ marginTop: 4 }}>
-                      {matchDriver(s.driverName, drivers)?.id === matched.id
-                        ? "Auto-matched from NuVizz"
-                        : "Manual override"}
-                    </div>
-                  )}
+                  <div className="ff-charge-driver">
+                    <select value={driverId} onChange={(e) => setDriverId(e.target.value)}>
+                      <option value="">— Select driver —</option>
+                      {driverOptions}
+                    </select>
+                    {matched && s.driverName && (
+                      <span className="meta ff-charge-note">
+                        {matchDriver(s.driverName, drivers)?.id === matched.id
+                          ? "Auto-matched from NuVizz"
+                          : "Manual override"}
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div style={{ flex: 1 }}>
                   <div className="dd-k">Notes</div>
@@ -882,6 +901,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         records={logIncidents}
         drivers={drivers}
         onPeriodChange={setLogPeriod}
+        leaderLabel={config.leaderLabel}
       />
 
       {!feedEnabled && byDriver.length > 0 && (
@@ -894,25 +914,67 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                 {manualForView.length} entr{manualForView.length === 1 ? "y" : "ies"}
               </span>
             </div>
-            <div className="ff-bydriver-chips">
-              {byDriver.map((d) => (
-                <button
-                  key={d.key}
-                  type="button"
-                  className={`ff-driver-chip ${driverFilter === d.key ? "active" : ""}`}
-                  onClick={() =>
+            <ResponsiveContainer
+              width="100%"
+              height={Math.max(120, byDriver.length * 30 + 16)}
+            >
+              <BarChart
+                data={byDriver}
+                layout="vertical"
+                margin={{ top: 4, right: 30, left: 8, bottom: 4 }}
+                barCategoryGap={7}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="#eef1f5" horizontal={false} />
+                <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
+                <YAxis
+                  type="category"
+                  dataKey="name"
+                  width={132}
+                  tick={{ fontSize: 12 }}
+                  interval={0}
+                />
+                <Tooltip
+                  cursor={{ fill: "rgba(0,0,0,0.04)" }}
+                  formatter={(v) => [v, "Entries"]}
+                />
+                <Bar
+                  dataKey="count"
+                  radius={[0, 3, 3, 0]}
+                  cursor="pointer"
+                  onClick={(d) =>
                     setDriverFilter(driverFilter === d.key ? null : d.key)
                   }
-                  title={
-                    driverFilter === d.key
-                      ? "Clear filter"
-                      : `Show only ${d.name}'s entries`
-                  }
                 >
-                  <span className="ff-driver-chip-name">{d.name}</span>
-                  <span className="ff-driver-chip-count">{d.count}</span>
+                  <LabelList
+                    dataKey="count"
+                    position="right"
+                    style={{ fontSize: 11, fill: "#475569", fontFamily: "var(--mono)" }}
+                  />
+                  {byDriver.map((d) => (
+                    <Cell
+                      key={d.key}
+                      fill={
+                        driverFilter && driverFilter !== d.key
+                          ? "#cbd5e1"
+                          : config.color || "var(--davis-blue)"
+                      }
+                    />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+            <div className="ff-bydriver-hint">
+              {driverFilter ? (
+                <button
+                  type="button"
+                  className="btn ghost sm"
+                  onClick={() => setDriverFilter(null)}
+                >
+                  ✕ Clear filter · {byDriver.find((d) => d.key === driverFilter)?.name || "driver"}
                 </button>
-              ))}
+              ) : (
+                "Click a bar to filter the log to that driver."
+              )}
             </div>
           </div>
         </div>
