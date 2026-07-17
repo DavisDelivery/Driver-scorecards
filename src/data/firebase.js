@@ -1,284 +1,160 @@
-// Data client for the Davis Driver Scorecard.
+// Data client for the Davis Driver Scorecard — now backed by Google Firestore.
 //
-// NOTE: despite the filename, this does NOT talk to Firebase. It talks to the
-// Netlify serverless functions backed by Netlify Blobs. The name is historical.
+// (The filename stays "firebase.js" because every view imports from it; this IS
+// Firebase now, unlike the previous Netlify-Blobs implementation that carried
+// the same name historically.)
 //
-// Storage model (server side):
-//   - Incidents use SPLIT-PHOTO storage: a light metadata blob (inc:{id}) plus a
-//     separate photo-bytes blob (photos:{id}). The list endpoint returns light
-//     records only (has_photos + photo_count, no photo bytes). Photos are fetched
-//     lazily per incident via getIncidentPhotos(id).
-//   - History uses a single blob (history:all) with optional query filtering.
+// Why Firestore: its offline persistence queues writes made while offline / on a
+// flaky connection and syncs them automatically, and all devices converge on the
+// same data. That removes the old failure mode where a write silently fell back
+// to one browser's localStorage and never reached anyone else.
 //
-// Every call mirrors results into localStorage (dds_* keys) as an offline cache /
-// fallback so the UI degrades gracefully when the network or functions are down.
+// Document model (mirrors the old split-storage so nothing else had to change):
+//   incidents/{id}         → light incident (NO photo bytes)
+//   incident_photos/{id}   → { photo_urls, photo_meta }        (large; size-guarded)
+//   reports/{id}           → report metadata (NO pdf bytes)
+//   report_pdfs/{id}       → { pdf_data }                       (large; size-guarded)
+//   app_meta/drivers       → { drivers: [...] }                 (whole roster)
+//   app_meta/history       → { records, source_records, report_contrib, updated_at }
+//
+// Reviews are NOT here — they come from an external source (see data/reviews.js).
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  setDoc,
+  deleteDoc,
+  query,
+  where,
+  writeBatch,
+} from "firebase/firestore";
+import { db } from "./firebaseApp.js";
 
-const API = {
-  incidents: "/.netlify/functions/data-incidents",
-  incidentsBatch: "/.netlify/functions/data-incidents/batch",
-  incidentsPhotos: "/.netlify/functions/data-incidents/photos",
-  drivers: "/.netlify/functions/data-drivers",
-  reports: "/.netlify/functions/data-reports",
-  history: "/.netlify/functions/data-history",
-  historyBatch: "/.netlify/functions/data-history/batch",
-  historyRollup: "/.netlify/functions/data-history/rollup-report",
-  historyAll: "/.netlify/functions/data-history/all",
-};
+const INCIDENTS = "incidents";
+const INCIDENT_PHOTOS = "incident_photos";
+const REPORTS = "reports";
+const REPORT_PDFS = "report_pdfs";
+const META = "app_meta";
 
-// ---- local cache helpers -------------------------------------------------
-const CACHE_PREFIX = "dds_";
-const cacheKey = (k) => `${CACHE_PREFIX}${k}`;
+// Firestore hard-caps a document at ~1 MiB. Photo/PDF payloads that exceed this
+// are dropped (flagged, mirroring the old oversize behavior) rather than crash
+// the write. Real fix later: move binaries to Firebase Storage.
+const DOC_MAX = 1_000_000;
+const jsonSize = (o) => JSON.stringify(o).length;
+const rand = () => Math.random().toString(36).slice(2, 8);
+const nowISO = () => new Date().toISOString();
 
-const readCache = (k) => {
-  try {
-    return JSON.parse(localStorage.getItem(cacheKey(k)) || "[]");
-  } catch {
-    return [];
-  }
-};
-const writeCache = (k, v) => {
-  try {
-    localStorage.setItem(cacheKey(k), JSON.stringify(v));
-  } catch {
-    /* quota / private mode — ignore */
-  }
-};
-
-async function apiFetch(url, opts = {}) {
-  const res = await fetch(url, {
-    ...opts,
-    headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
-  });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(
-      `${opts.method || "GET"} ${url} → ${res.status}: ${body.slice(0, 200)}`,
-    );
-  }
-  return res.json();
-}
-
-// Strip photo bytes from an incident to produce a light record for the cache.
-function stripPhotos(incident) {
-  if (!incident) return incident;
+// Split an incident into its light doc (no photo bytes). has_photos/photo_count
+// are only set when photos are actually supplied, so a metadata-only edit can't
+// clobber an existing incident's photo flags (they're preserved by merge).
+function lightIncident(incident, id) {
   const { photo_urls, photo_meta, ...rest } = incident;
-  return {
+  const light = {
     ...rest,
-    has_photos: Array.isArray(photo_urls) && photo_urls.length > 0,
-    photo_count: Array.isArray(photo_urls) ? photo_urls.length : 0,
+    id,
+    updated_at: nowISO(),
+    created_at: incident.created_at || nowISO(),
   };
+  if (Array.isArray(photo_urls)) {
+    light.has_photos = photo_urls.length > 0;
+    light.photo_count = photo_urls.length;
+  }
+  return { light, photo_urls, photo_meta };
 }
-
-// Netlify request bodies must stay well under the function payload limit.
-const MAX_BODY = 4 * 1024 * 1024;
 
 // ---- incidents -----------------------------------------------------------
 
 export async function saveIncident(incident) {
-  try {
-    const serialized = JSON.stringify(incident);
-    // If the incident (with inline photos) is too large, persist metadata only;
-    // photo bytes are managed separately by the batch / enrich paths.
-    if (serialized.length > MAX_BODY) {
-      // Strip ALL photo payload (bytes + meta) — keeping photo_urls here used
-      // to push the body right back over the function payload limit.
-      const { photo_meta, photo_urls, ...rest } = incident;
-      const light = {
-        ...rest,
+  const id = incident.id || `i_${Date.now()}_${rand()}`;
+  const { light, photo_urls, photo_meta } = lightIncident(incident, id);
+  await setDoc(doc(db, INCIDENTS, id), light, { merge: true });
+  if (Array.isArray(photo_urls) && photo_urls.length) {
+    const payload = { photo_urls, photo_meta: photo_meta || [] };
+    if (jsonSize(payload) <= DOC_MAX) {
+      await setDoc(doc(db, INCIDENT_PHOTOS, id), payload);
+    } else {
+      const dropped = {
         has_photos: false,
         photo_count: 0,
         photos_dropped_oversize: true,
       };
-      const { incident: saved } = await apiFetch(API.incidents, {
-        method: "PUT",
-        body: JSON.stringify(light),
-      });
-      const cache = readCache("incidents");
-      const i = cache.findIndex((x) => x.id === saved.id);
-      if (i >= 0) cache[i] = saved;
-      else cache.push(saved);
-      writeCache("incidents", cache);
-      return saved;
+      await setDoc(doc(db, INCIDENTS, id), dropped, { merge: true });
+      return { ...light, ...dropped };
     }
-    const { incident: saved } = await apiFetch(API.incidents, {
-      method: "PUT",
-      body: serialized,
-    });
-    const cache = readCache("incidents");
-    const i = cache.findIndex((x) => x.id === saved.id);
-    if (i >= 0) cache[i] = saved;
-    else cache.push(saved);
-    writeCache("incidents", cache);
-    return saved;
-  } catch (err) {
-    console.warn("saveIncident cloud failed, falling back to local:", err.message);
-    // The write never reached the server. Keep the row on this device but TAG it
-    // as unsynced (_pendingSync) so (a) the UI can warn the user instead of
-    // showing a false "Saved", (b) a later cloud read won't silently wipe it, and
-    // (c) flushPendingIncidents() can retry it automatically. Returning it as if
-    // it saved is exactly what hid a week of entries from other viewers.
-    const local = {
-      ...incident,
-      id:
-        incident.id ||
-        `i_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      updated_at: new Date().toISOString(),
-      created_at: incident.created_at || new Date().toISOString(),
-      _pendingSync: true,
-    };
-    const light = stripPhotos(local); // _pendingSync rides along in ...rest
-    const cache = readCache("incidents");
-    const i = cache.findIndex((x) => x.id === light.id);
-    if (i >= 0) cache[i] = light;
-    else cache.push(light);
-    writeCache("incidents", cache);
-    return local;
   }
+  return light;
 }
 
-// Number of incidents on this device that have not yet reached the server.
+// Firestore manages its own offline write queue + retry, so there is no manual
+// pending-sync bookkeeping to do here. Kept as no-op stubs so callers (App) keep
+// working; the SDK guarantees queued writes reach the server once reconnected.
 export function countPendingIncidents() {
-  return readCache("incidents").filter((x) => x && x._pendingSync).length;
+  return 0;
 }
-
-// Retry every write that fell back to local-only (device was offline, blocked,
-// or on an unreachable/preview origin when the entry was filed). Safe to call on
-// every load/refresh; it re-PUTs each pending row and, on success, replaces it
-// with the clean server record. Metadata always re-syncs; photo BYTES are not
-// re-sent (they are stripped from the device cache), so a photo entered while
-// offline keeps its has_photos flag but may need re-attaching. Returns
-// { flushed, remaining }.
 export async function flushPendingIncidents() {
-  const pending = readCache("incidents").filter((x) => x && x._pendingSync);
-  if (!pending.length) return { flushed: 0, remaining: 0 };
-  let flushed = 0;
-  for (const rec of pending) {
-    const { _pendingSync, ...clean } = rec;
-    try {
-      const { incident: saved } = await apiFetch(API.incidents, {
-        method: "PUT",
-        body: JSON.stringify(clean),
-      });
-      const cur = readCache("incidents");
-      const i = cur.findIndex((x) => x.id === saved.id);
-      if (i >= 0) cur[i] = saved;
-      else cur.push(saved);
-      writeCache("incidents", cur);
-      flushed++;
-    } catch (e) {
-      console.warn("flushPendingIncidents: still cannot sync", rec.id, e.message);
-      // Leave it tagged; it retries on the next load/refresh.
-    }
-  }
-  return { flushed, remaining: countPendingIncidents() };
-}
-
-// Pack incidents into chunks that each stay under the body limit. Any single
-// incident that exceeds the limit on its own gets its own chunk.
-function chunkIncidents(incidents) {
-  const chunks = [];
-  let current = [];
-  let size = 2; // brackets
-  for (const inc of incidents) {
-    const incSize = JSON.stringify(inc).length + 1;
-    if (incSize > MAX_BODY) {
-      if (current.length > 0) {
-        chunks.push(current);
-        current = [];
-        size = 2;
-      }
-      chunks.push([inc]);
-      continue;
-    }
-    if (size + incSize > MAX_BODY && current.length > 0) {
-      chunks.push(current);
-      current = [inc];
-      size = 2 + incSize;
-    } else {
-      current.push(inc);
-      size += incSize;
-    }
-  }
-  if (current.length > 0) chunks.push(current);
-  return chunks;
+  return { flushed: 0, remaining: 0 };
 }
 
 export async function saveIncidentsBatch(incidents, onProgress = null) {
-  if (!incidents.length) return [];
-  const chunks = chunkIncidents(incidents);
   const saved = [];
   let done = 0;
-  for (let i = 0; i < chunks.length; i++) {
-    const chunk = chunks[i];
-    try {
-      const { incidents: out } = await apiFetch(API.incidentsBatch, {
-        method: "POST",
-        body: JSON.stringify({ incidents: chunk }),
-      });
-      saved.push(...out);
-      done += chunk.length;
-      onProgress?.({ done, total: incidents.length });
-    } catch (err) {
-      console.warn(
-        `Batch chunk ${i + 1}/${chunks.length} failed (${chunk.length} incidents):`,
-        err.message,
-      );
-      // Per-incident fallback so one bad record doesn't sink the whole chunk.
-      for (const inc of chunk) {
-        try {
-          saved.push(await saveIncident(inc));
-        } catch (e) {
-          console.error(
-            `Failed to save incident ${inc.pro_number || inc.id}:`,
-            e.message,
-          );
-        }
-        done++;
-        onProgress?.({ done, total: incidents.length });
+  const CHUNK = 200; // ≤500 writes per Firestore batch; light docs only here
+  for (let i = 0; i < incidents.length; i += CHUNK) {
+    const slice = incidents.slice(i, i + CHUNK);
+    const batch = writeBatch(db);
+    const photoWrites = [];
+    const lights = [];
+    for (const inc of slice) {
+      const id = inc.id || `i_${Date.now()}_${rand()}`;
+      const { light, photo_urls, photo_meta } = lightIncident(inc, id);
+      batch.set(doc(db, INCIDENTS, id), light, { merge: true });
+      lights.push(light);
+      if (Array.isArray(photo_urls) && photo_urls.length) {
+        photoWrites.push([id, { photo_urls, photo_meta: photo_meta || [] }]);
       }
     }
-  }
-  if (saved.length) {
-    const cache = readCache("incidents");
-    for (const s of saved) {
-      const i = cache.findIndex((x) => x.id === s.id);
-      if (i >= 0) cache[i] = s;
-      else cache.push(s);
+    await batch.commit();
+    // Photo docs are large — write them one at a time, outside the batch.
+    for (const [id, payload] of photoWrites) {
+      try {
+        if (jsonSize(payload) <= DOC_MAX) {
+          await setDoc(doc(db, INCIDENT_PHOTOS, id), payload);
+        } else {
+          await setDoc(
+            doc(db, INCIDENTS, id),
+            { has_photos: false, photo_count: 0, photos_dropped_oversize: true },
+            { merge: true },
+          );
+        }
+      } catch (e) {
+        console.warn(`photo write failed for ${id}:`, e.message);
+      }
     }
-    writeCache("incidents", cache);
+    saved.push(...lights);
+    done += slice.length;
+    onProgress?.({ done, total: incidents.length });
   }
   return saved;
 }
 
 export async function getIncidents() {
   try {
-    const { incidents } = await apiFetch(API.incidents);
-    // Never let a successful cloud read drop unsynced local rows on the floor:
-    // carry over any _pendingSync entries the server doesn't have yet, so an
-    // entry a flaky write left on this device survives until it flushes.
-    const pending = readCache("incidents").filter((x) => x && x._pendingSync);
-    const cloudIds = new Set(incidents.map((x) => x.id));
-    const merged = pending.length
-      ? [...incidents, ...pending.filter((p) => !cloudIds.has(p.id))]
-      : incidents;
-    writeCache("incidents", merged);
-    return merged;
+    const snap = await getDocs(collection(db, INCIDENTS));
+    return snap.docs.map((d) => ({ ...d.data(), id: d.id }));
   } catch (err) {
-    console.warn("getIncidents cloud failed, using cache:", err.message);
-    return readCache("incidents");
+    console.warn("getIncidents failed:", err.message);
+    return [];
   }
 }
 
 export async function getIncidentPhotos(id) {
   if (!id) return { photo_urls: [], photo_meta: [] };
   try {
-    const data = await apiFetch(
-      `${API.incidentsPhotos}?id=${encodeURIComponent(id)}`,
-    );
-    return {
-      photo_urls: data.photo_urls || [],
-      photo_meta: data.photo_meta || [],
-    };
+    const s = await getDoc(doc(db, INCIDENT_PHOTOS, id));
+    if (!s.exists()) return { photo_urls: [], photo_meta: [] };
+    const d = s.data();
+    return { photo_urls: d.photo_urls || [], photo_meta: d.photo_meta || [] };
   } catch (err) {
     console.warn(`getIncidentPhotos(${id}) failed:`, err.message);
     return { photo_urls: [], photo_meta: [] };
@@ -306,218 +182,338 @@ export async function getIncidentPhotosBatch(ids, onProgress = () => {}) {
 
 export async function getIncidentsForReport(reportId) {
   try {
-    const { incidents } = await apiFetch(
-      `${API.incidents}?report_id=${encodeURIComponent(reportId)}`,
+    const q = query(
+      collection(db, INCIDENTS),
+      where("report_id", "==", reportId),
     );
-    return incidents;
+    const snap = await getDocs(q);
+    return snap.docs.map((d) => ({ ...d.data(), id: d.id }));
   } catch (err) {
-    console.warn("getIncidentsForReport cloud failed, using cache:", err.message);
-    return readCache("incidents").filter((x) => x.report_id === reportId);
+    console.warn("getIncidentsForReport failed:", err.message);
+    return [];
   }
 }
 
+// Delete every incident (and its photo doc) tied to a report.
 export async function deleteIncidentsForReport(reportId) {
   try {
-    await apiFetch(`${API.incidents}?report_id=${encodeURIComponent(reportId)}`, {
-      method: "DELETE",
-    });
+    const q = query(
+      collection(db, INCIDENTS),
+      where("report_id", "==", reportId),
+    );
+    const snap = await getDocs(q);
+    await deleteIdsWithPhotos(snap.docs.map((d) => d.id));
   } catch (err) {
-    console.warn("deleteIncidentsForReport cloud failed:", err.message);
+    console.warn("deleteIncidentsForReport failed:", err.message);
   }
-  writeCache(
-    "incidents",
-    readCache("incidents").filter((x) => x.report_id !== reportId),
-  );
 }
 
 export async function deleteIncident(id) {
   try {
-    await apiFetch(`${API.incidents}?id=${encodeURIComponent(id)}`, {
-      method: "DELETE",
-    });
+    await deleteDoc(doc(db, INCIDENTS, id));
+    await deleteDoc(doc(db, INCIDENT_PHOTOS, id)).catch(() => {});
   } catch (err) {
-    console.warn("deleteIncident cloud failed:", err.message);
+    console.warn("deleteIncident failed:", err.message);
   }
-  writeCache(
-    "incidents",
-    readCache("incidents").filter((x) => x.id !== id),
-  );
 }
 
 export async function deleteIncidentsBatch(ids) {
   try {
-    await apiFetch(API.incidentsBatch, {
-      method: "DELETE",
-      body: JSON.stringify({ ids }),
-    });
+    await deleteIdsWithPhotos(ids);
   } catch (err) {
-    console.warn("deleteIncidentsBatch cloud failed:", err.message);
+    console.warn("deleteIncidentsBatch failed:", err.message);
   }
-  const set = new Set(ids);
-  writeCache(
-    "incidents",
-    readCache("incidents").filter((x) => !set.has(x.id)),
-  );
+}
+
+// Batch-delete incident docs plus their sibling photo docs (2 deletes each,
+// chunked under the 500-op batch cap).
+async function deleteIdsWithPhotos(ids) {
+  const CHUNK = 200;
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const slice = ids.slice(i, i + CHUNK);
+    const batch = writeBatch(db);
+    for (const id of slice) {
+      batch.delete(doc(db, INCIDENTS, id));
+      batch.delete(doc(db, INCIDENT_PHOTOS, id));
+    }
+    await batch.commit();
+  }
 }
 
 // ---- drivers -------------------------------------------------------------
 
 export async function saveDrivers(drivers) {
   try {
-    await apiFetch(API.drivers, {
-      method: "PUT",
-      body: JSON.stringify({ drivers }),
-    });
-    writeCache("drivers", drivers);
+    await setDoc(doc(db, META, "drivers"), { drivers });
   } catch (err) {
-    console.warn("saveDrivers cloud failed:", err.message);
-    writeCache("drivers", drivers);
+    console.warn("saveDrivers failed:", err.message);
   }
 }
 
 export async function getDrivers() {
   try {
-    const { drivers } = await apiFetch(API.drivers);
-    if (drivers && drivers.length > 0) {
-      writeCache("drivers", drivers);
-      return drivers;
-    }
-    return readCache("drivers");
+    const s = await getDoc(doc(db, META, "drivers"));
+    return s.exists() ? s.data().drivers || [] : [];
   } catch (err) {
-    console.warn("getDrivers cloud failed, using cache:", err.message);
-    return readCache("drivers");
+    console.warn("getDrivers failed:", err.message);
+    return [];
   }
 }
 
 // ---- reports -------------------------------------------------------------
 
 export async function saveReport(report) {
-  try {
-    const { report: saved } = await apiFetch(API.reports, {
-      method: "PUT",
-      body: JSON.stringify(report),
-    });
-    return saved;
-  } catch (err) {
-    console.warn("saveReport cloud failed, falling back to local:", err.message);
-    const local = {
-      ...report,
-      id:
-        report.id || `r_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      updated_at: new Date().toISOString(),
-      created_at: report.created_at || new Date().toISOString(),
-    };
-    const cache = readCache("reports");
-    const i = cache.findIndex((x) => x.id === local.id);
-    if (i >= 0) cache[i] = local;
-    else cache.push(local);
-    writeCache("reports", cache);
-    return local;
+  const id = report.id || `r_${Date.now()}_${rand()}`;
+  const { pdf_data, pdf, ...rest } = report;
+  const meta = {
+    ...rest,
+    id,
+    updated_at: nowISO(),
+    created_at: report.created_at || nowISO(),
+  };
+  await setDoc(doc(db, REPORTS, id), meta, { merge: true });
+  const bytes = pdf_data || pdf;
+  if (bytes) {
+    const payload = { pdf_data: bytes };
+    if (jsonSize(payload) <= DOC_MAX) {
+      await setDoc(doc(db, REPORT_PDFS, id), payload);
+    } else {
+      await setDoc(
+        doc(db, REPORTS, id),
+        { pdf_dropped_oversize: true },
+        { merge: true },
+      );
+    }
   }
+  return meta;
 }
 
 export async function getReports() {
   try {
-    const { reports } = await apiFetch(API.reports);
-    return reports;
+    const snap = await getDocs(collection(db, REPORTS));
+    return snap.docs.map((d) => ({ ...d.data(), id: d.id }));
   } catch (err) {
-    console.warn("getReports cloud failed, using cache:", err.message);
-    return readCache("reports");
+    console.warn("getReports failed:", err.message);
+    return [];
   }
 }
 
 export async function getReportWithPdf(id) {
   try {
-    const { report } = await apiFetch(`${API.reports}?id=${encodeURIComponent(id)}`);
+    const [metaSnap, pdfSnap] = await Promise.all([
+      getDoc(doc(db, REPORTS, id)),
+      getDoc(doc(db, REPORT_PDFS, id)),
+    ]);
+    if (!metaSnap.exists()) return null;
+    const report = { ...metaSnap.data(), id };
+    if (pdfSnap.exists()) report.pdf_data = pdfSnap.data().pdf_data;
     return report;
   } catch (err) {
-    console.warn("getReportWithPdf cloud failed, using cache:", err.message);
-    return readCache("reports").find((r) => r.id === id) || null;
+    console.warn("getReportWithPdf failed:", err.message);
+    return null;
   }
 }
 
 export async function deleteReport(id) {
   try {
-    await apiFetch(`${API.reports}?id=${encodeURIComponent(id)}`, {
-      method: "DELETE",
-    });
+    await deleteDoc(doc(db, REPORTS, id));
+    await deleteDoc(doc(db, REPORT_PDFS, id)).catch(() => {});
   } catch (err) {
-    console.warn("deleteReport cloud failed:", err.message);
+    console.warn("deleteReport failed:", err.message);
   }
-  writeCache(
-    "reports",
-    readCache("reports").filter((r) => r.id !== id),
-  );
 }
 
 // ---- history -------------------------------------------------------------
+// Ported verbatim from the old data-history Netlify function so the aggregation
+// (per driver/month/category counts, per-source counts, and idempotent per-report
+// contribution snapshots) behaves identically. Stored as ONE doc, app_meta/history.
+
+const TRACKED = new Set([
+  "forgotten_freight",
+  "damage",
+  "missing",
+  "misdelivery",
+  "attempts",
+  "late",
+  "complaint",
+  "compliment",
+]);
+
+const compositeKey = (year, month, driverId, category) =>
+  `${year}:${String(month).padStart(2, "0")}:${driverId}:${category}`;
+const srcKey = (year, month, driverId, source) =>
+  `${year}:${String(month).padStart(2, "0")}:${driverId}:${source}`;
+
+function incidentYearMonth(inc) {
+  const d =
+    inc.delivered_date ||
+    inc.actual_delivery ||
+    inc.return_date ||
+    inc.trace_date ||
+    inc.ship_date ||
+    inc.week_ending ||
+    inc.ingested_at ||
+    "";
+  if (!d || d.length < 7) return null;
+  return { year: Number(d.slice(0, 4)), month: Number(d.slice(5, 7)) };
+}
+
+function computeContribution(incidents) {
+  const cat = {};
+  const src = {};
+  for (const inc of incidents) {
+    if (!inc.driver_id || inc.no_fault) continue;
+    const ym = incidentYearMonth(inc);
+    if (!ym) continue;
+    if (TRACKED.has(inc.category)) {
+      const k = compositeKey(ym.year, ym.month, inc.driver_id, inc.category);
+      cat[k] = (cat[k] || 0) + 1;
+    }
+    for (const s of Array.isArray(inc.sources) ? inc.sources : []) {
+      const k = srcKey(ym.year, ym.month, inc.driver_id, s);
+      src[k] = (src[k] || 0) + 1;
+    }
+  }
+  return { cat, src };
+}
+
+const parseCatKey = (k) => {
+  const [year, month, driver_id, category] = k.split(":");
+  return { year: Number(year), month: Number(month), driver_id, category };
+};
+const parseSrcKey = (k) => {
+  const [year, month, driver_id, source] = k.split(":");
+  return { year: Number(year), month: Number(month), driver_id, source };
+};
+
+function applyContribution(data, contrib, sign, meta = {}) {
+  const stamp = nowISO();
+  for (const [k, n] of Object.entries(contrib.cat || {})) {
+    const f = parseCatKey(k);
+    const ex = data.records[k];
+    if (!ex && sign < 0) continue;
+    data.records[k] = {
+      driver_id: f.driver_id,
+      driver_name: meta[f.driver_id]?.name || ex?.driver_name || "",
+      driver_raw: meta[f.driver_id]?.raw || ex?.driver_raw || "",
+      year: f.year,
+      month: f.month,
+      category: f.category,
+      count: Math.max(0, (ex?.count || 0) + sign * n),
+      source: ex?.source || "report",
+      updated_at: stamp,
+    };
+  }
+  for (const [k, n] of Object.entries(contrib.src || {})) {
+    const f = parseSrcKey(k);
+    const ex = data.source_records[k];
+    if (!ex && sign < 0) continue;
+    data.source_records[k] = {
+      driver_id: f.driver_id,
+      driver_name: meta[f.driver_id]?.name || ex?.driver_name || "",
+      year: f.year,
+      month: f.month,
+      source: f.source,
+      count: Math.max(0, (ex?.count || 0) + sign * n),
+      updated_at: stamp,
+    };
+  }
+}
+
+function driverMeta(incidents) {
+  const m = {};
+  for (const inc of incidents) {
+    if (inc.driver_id && !m[inc.driver_id]) {
+      m[inc.driver_id] = {
+        name: inc.driver_name || "",
+        raw: inc.driver_raw || "",
+      };
+    }
+  }
+  return m;
+}
+
+function upsertHistory(data, rec) {
+  if (!rec || !rec.driver_id || !rec.year || !rec.month || !rec.category)
+    return null;
+  const key = compositeKey(rec.year, rec.month, rec.driver_id, rec.category);
+  const record = {
+    driver_id: rec.driver_id,
+    driver_name: rec.driver_name || "",
+    driver_raw: rec.driver_raw || "",
+    year: Number(rec.year),
+    month: Number(rec.month),
+    category: rec.category,
+    count: Number(rec.count) || 0,
+    source: rec.source || "import",
+    updated_at: nowISO(),
+  };
+  data.records[key] = record;
+  return record;
+}
+
+async function loadHistory() {
+  const s = await getDoc(doc(db, META, "history"));
+  const d = s.exists() ? s.data() : {};
+  return {
+    records: d.records || {},
+    source_records: d.source_records || {},
+    report_contrib: d.report_contrib || {},
+  };
+}
+async function saveHistoryDoc(data) {
+  await setDoc(doc(db, META, "history"), { ...data, updated_at: nowISO() });
+}
 
 export async function getHistory({ driverId, year, month } = {}) {
-  const params = new URLSearchParams();
-  if (driverId) params.set("driver_id", driverId);
-  if (year) params.set("year", String(year));
-  if (month) params.set("month", String(month));
-  const qs = params.toString() ? `?${params}` : "";
   try {
-    const { records } = await apiFetch(`${API.history}${qs}`);
-    return records || [];
+    const data = await loadHistory();
+    let list = Object.values(data.records);
+    if (driverId) list = list.filter((r) => r.driver_id === driverId);
+    if (year) list = list.filter((r) => r.year === Number(year));
+    if (month) list = list.filter((r) => r.month === Number(month));
+    return list;
   } catch (err) {
-    console.warn("getHistory cloud failed:", err.message);
+    console.warn("getHistory failed:", err.message);
     return [];
   }
 }
 
-export async function saveHistoryBatch(
-  records,
-  { replace = false, onProgress } = {},
-) {
+export async function saveHistoryBatch(records, { replace = false, onProgress } = {}) {
   if (!records.length) return [];
-  const CHUNK = 150;
+  const data = replace
+    ? { ...(await loadHistory()), records: {} }
+    : await loadHistory();
   const saved = [];
   let done = 0;
-  for (let i = 0; i < records.length; i += CHUNK) {
-    const slice = records.slice(i, i + CHUNK);
-    try {
-      const { records: out } = await apiFetch(API.historyBatch, {
-        method: "POST",
-        body: JSON.stringify({ records: slice, replace }),
-      });
-      saved.push(...(out || []));
-      done += slice.length;
-      onProgress?.({ done, total: records.length });
-    } catch (err) {
-      console.warn(
-        `History batch chunk ${i / CHUNK + 1} failed (${slice.length} records):`,
-        err.message,
-      );
-      for (const rec of slice) {
-        try {
-          const { record } = await apiFetch(API.history, {
-            method: "PUT",
-            body: JSON.stringify(rec),
-          });
-          if (record) saved.push(record);
-        } catch (e) {
-          console.error(
-            `Failed to save history record for ${rec.driver_name} ${rec.year}-${rec.month} ${rec.category}:`,
-            e.message,
-          );
-        }
-        done++;
-        onProgress?.({ done, total: records.length });
-      }
-    }
+  for (const rec of records) {
+    const r = upsertHistory(data, rec);
+    if (r) saved.push(r);
+    done++;
+    if (done % 150 === 0) onProgress?.({ done, total: records.length });
   }
+  await saveHistoryDoc(data);
+  onProgress?.({ done: records.length, total: records.length });
   return saved;
 }
 
 export async function rollupReportToHistory(incidents, reportId) {
   if (!incidents.length) return { updated: 0 };
   try {
-    return await apiFetch(API.historyRollup, {
-      method: "POST",
-      body: JSON.stringify({ incidents, report_id: reportId }),
-    });
+    const data = await loadHistory();
+    // Idempotent per report: reverse any prior contribution before re-applying,
+    // so re-dropping a report can never double-count.
+    if (reportId && data.report_contrib[reportId]) {
+      applyContribution(data, data.report_contrib[reportId], -1);
+    }
+    const contrib = computeContribution(incidents);
+    applyContribution(data, contrib, +1, driverMeta(incidents));
+    if (reportId) data.report_contrib[reportId] = contrib;
+    await saveHistoryDoc(data);
+    return {
+      updated: Object.keys(contrib.cat).length,
+      source_updated: Object.keys(contrib.src).length,
+    };
   } catch (err) {
     console.warn("rollupReportToHistory failed:", err.message);
     return { updated: 0, error: err.message };
@@ -526,7 +522,13 @@ export async function rollupReportToHistory(incidents, reportId) {
 
 export async function deleteAllHistory() {
   try {
-    return await apiFetch(API.historyAll, { method: "DELETE" });
+    const data = await loadHistory();
+    const deleted = Object.keys(data.records).length;
+    await setDoc(doc(db, META, "history"), {
+      records: {},
+      updated_at: nowISO(),
+    });
+    return { deleted };
   } catch (err) {
     console.warn("deleteAllHistory failed:", err.message);
     return { deleted: 0, error: err.message };
