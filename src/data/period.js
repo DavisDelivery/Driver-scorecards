@@ -24,6 +24,28 @@ export const toYMD = (d) =>
   `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 const ymKey = (y, m) => `${y}-${pad2(m)}`;
 
+// "Now" anchored to the business timezone (America/New_York), returned as a
+// local Date whose year/month/day equal the ET calendar day. Entries are dated
+// in ET (todayET), so windows MUST be computed in ET too — otherwise a viewer
+// in another timezone resolves "today"/"this week" to a different day than the
+// day an entry was filed under, and the entry falls outside the window. Using
+// this everywhere makes the period identical for every viewer, anywhere on
+// earth. (Falls back to local time only if Intl timezone data is unavailable.)
+export function nowET() {
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/New_York",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(new Date());
+    const get = (t) => Number(parts.find((p) => p.type === t)?.value);
+    return new Date(get("year"), get("month") - 1, get("day"));
+  } catch {
+    return new Date();
+  }
+}
+
 // US MM/DD/YYYY from a YYYY-MM-DD string, parsed directly (no tz shift).
 const fmtMDY = (s) => {
   const m = String(s || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
@@ -32,7 +54,7 @@ const fmtMDY = (s) => {
 
 // YYYY-MM strings covered by a calendar-month selection (relative to now).
 function periodMonths(sel) {
-  const now = new Date();
+  const now = nowET();
   const y = now.getFullYear();
   const m = now.getMonth() + 1; // 1-12
   if (sel === "this") return [ymKey(y, m)];
@@ -88,14 +110,14 @@ export function mondayOf(ymd) {
 // bucketed by size; every other option is whole calendar months.
 export function periodWindow(sel, rangeFrom, rangeTo) {
   if (sel === "30d") {
-    const now = new Date();
+    const now = nowET();
     const start = new Date(now);
     start.setDate(start.getDate() - 29); // trailing 30 days, inclusive of today
     return { start: toYMD(start), end: toYMD(now), bucket: "day", months: [] };
   }
   if (sel === "thisWeek") {
     // Current calendar week so far: this Monday through today, inclusive.
-    const now = new Date();
+    const now = nowET();
     const sinceMonday = (now.getDay() + 6) % 7;
     const start = new Date(now);
     start.setDate(start.getDate() - sinceMonday);
@@ -103,7 +125,7 @@ export function periodWindow(sel, rangeFrom, rangeTo) {
   }
   if (sel === "lastWeek") {
     // Previous calendar week, Monday-Sunday.
-    const now = new Date();
+    const now = nowET();
     const sinceMonday = (now.getDay() + 6) % 7;
     const thisMonday = new Date(now);
     thisMonday.setDate(thisMonday.getDate() - sinceMonday);
@@ -116,7 +138,7 @@ export function periodWindow(sel, rangeFrom, rangeTo) {
   if (sel === "range") {
     // Require both endpoints; otherwise fall back to the default (30d).
     if (!rangeFrom || !rangeTo) {
-      const now = new Date();
+      const now = nowET();
       const start = new Date(now);
       start.setDate(start.getDate() - 29);
       return { start: toYMD(start), end: toYMD(now), bucket: "day", months: [] };

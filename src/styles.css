@@ -1616,6 +1616,17 @@ table.data.analytics-subtable th {
 }
 .dd-incident-head:hover { background: #f7f9fc; }
 .dd-photo-flag { margin-left: auto; font-size: 11px; color: #64748b; }
+/* Imported-history aggregate rows (no per-incident detail to expand). */
+.dd-incident-agg .dd-incident-head:hover { background: transparent; }
+.dd-agg-count { font-family: var(--mono); font-size: 12px; color: #475569; }
+.dd-agg-note {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #94a3b8;
+}
 .dd-incident-body { padding: 4px 6px 12px 24px; }
 .dd-meta-grid {
   display: grid;
@@ -1776,6 +1787,19 @@ table.data.analytics-subtable th {
   color: #15803d;
   font-size: 13px;
   font-weight: 600;
+}
+/* Save landed on the device only — not synced to the server. */
+.ff-saved.warn { color: #b45309; }
+/* App-wide banner: entries pending sync to the server. */
+.sync-banner {
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: #fff7ed;
+  border: 1px solid #fdba74;
+  color: #9a3412;
+  font-size: 13px;
+  line-height: 1.45;
 }
 .ff-dup-warning {
   margin-bottom: 4px;
@@ -1985,13 +2009,13 @@ table.data.analytics-subtable th {
 .ff-log-grid {
   display: grid;
   grid-template-columns:
-    96px minmax(96px, 1.1fr) minmax(120px, 1.6fr) 88px 88px 26px auto;
+    96px minmax(96px, 1.1fr) minmax(120px, 1.6fr) 88px 88px 26px 124px;
   align-items: center;
   gap: 10px;
 }
 .ff-log-grid.has-item {
   grid-template-columns:
-    96px minmax(96px, 1.1fr) minmax(120px, 1.6fr) 92px 88px 88px 26px auto;
+    96px minmax(96px, 1.1fr) minmax(120px, 1.6fr) 92px 88px 88px 26px 124px;
 }
 .ff-log-head {
   font-family: var(--mono);
@@ -2102,7 +2126,7 @@ table.data.analytics-subtable th {
 .ff-row-actions {
   display: flex;
   gap: 4px;
-  margin-left: 14px;
+  justify-content: flex-end;
   flex-shrink: 0;
 }
 .ff-edit-row {
