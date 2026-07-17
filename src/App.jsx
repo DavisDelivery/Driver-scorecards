@@ -5,6 +5,8 @@ import {
   saveDrivers,
   getIncidents,
   getReports,
+  flushPendingIncidents,
+  countPendingIncidents,
 } from "./data/firebase.js";
 import Dashboard from "./views/Dashboard.jsx";
 import Ingest from "./views/Ingest.jsx";
@@ -21,7 +23,12 @@ import ManualEntry, {
   COMPLIMENTS_CONFIG,
 } from "./views/ManualEntry.jsx";
 
-export const APP_VERSION = "0.10.2";
+export const APP_VERSION = "0.11.0";
+// Host the app is actually served from — shown in the footer so two people can
+// instantly confirm they're on the SAME deploy/store (a mismatch is a common
+// reason one person's entries never reach another's view).
+const APP_HOST =
+  typeof window !== "undefined" && window.location ? window.location.host : "";
 
 const TABS = [
   { id: "dashboard", label: "Scorecard", icon: "◫", shortcut: "d" },
@@ -46,6 +53,7 @@ export default function App() {
   const [reports, setReports] = useState([]);
   const [loading, setLoading] = useState(true);
   const [initialReportId, setInitialReportId] = useState(null);
+  const [pendingSync, setPendingSync] = useState(0); // entries not yet on server
   const gPressed = useRef(false);
   const gTimer = useRef(null);
 
@@ -62,6 +70,11 @@ export default function App() {
       setIncidents(inc);
       setReports(reps);
       setLoading(false);
+      // Retry any entries a flaky/offline write left stranded on this device so
+      // they reach the server (and every other viewer) without re-typing.
+      const { flushed, remaining } = await flushPendingIncidents();
+      if (flushed > 0) setIncidents(await getIncidents());
+      setPendingSync(remaining);
     })();
   }, []);
 
@@ -141,6 +154,7 @@ export default function App() {
     } else if (change.type === "delete" && change.id) {
       setIncidents((prev) => prev.filter((x) => x.id !== change.id));
     }
+    setPendingSync(countPendingIncidents());
   };
 
   // Cross-device freshness: the app used to fetch once per page load, so a
@@ -152,11 +166,13 @@ export default function App() {
       if (document.visibilityState !== "visible") return;
       if (Date.now() - lastRefreshRef.current < 60_000) return;
       lastRefreshRef.current = Date.now();
-      Promise.all([getIncidents(), getReports(), getDrivers()])
+      flushPendingIncidents()
+        .then(() => Promise.all([getIncidents(), getReports(), getDrivers()]))
         .then(([inc, reps, roster]) => {
           setIncidents(inc);
           setReports(reps);
           if (roster && roster.length) setDrivers(roster);
+          setPendingSync(countPendingIncidents());
         })
         .catch(() => {}); // offline — keep showing what we have
     };
@@ -228,7 +244,10 @@ export default function App() {
             <div className="brand-mark">D</div>
             <div className="brand-text">
               <div className="brand-name">DRIVER SCORECARD</div>
-              <div className="brand-sub">Davis Delivery · v{APP_VERSION}</div>
+              <div className="brand-sub" title={APP_HOST}>
+                Davis Delivery · v{APP_VERSION}
+                {APP_HOST ? ` · ${APP_HOST}` : ""}
+              </div>
             </div>
           </div>
         </div>
@@ -275,6 +294,15 @@ export default function App() {
       )}
 
       <main className="content">
+        {pendingSync > 0 && (
+          <div className="sync-banner" role="status">
+            ⚠ {pendingSync} {pendingSync === 1 ? "entry" : "entries"} saved on this
+            device only — not yet synced to the server. Others won't see{" "}
+            {pendingSync === 1 ? "it" : "them"} until this device reconnects.
+            Retrying automatically; keep this tab open, or reload once you're back
+            online.
+          </div>
+        )}
         {loading ? (
           <div className="empty-state">Loading...</div>
         ) : (

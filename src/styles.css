@@ -1788,6 +1788,19 @@ table.data.analytics-subtable th {
   font-size: 13px;
   font-weight: 600;
 }
+/* Save landed on the device only — not synced to the server. */
+.ff-saved.warn { color: #b45309; }
+/* App-wide banner: entries pending sync to the server. */
+.sync-banner {
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: #fff7ed;
+  border: 1px solid #fdba74;
+  color: #9a3412;
+  font-size: 13px;
+  line-height: 1.45;
+}
 .ff-dup-warning {
   margin-bottom: 4px;
   padding: 8px 12px;

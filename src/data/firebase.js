@@ -112,6 +112,11 @@ export async function saveIncident(incident) {
     return saved;
   } catch (err) {
     console.warn("saveIncident cloud failed, falling back to local:", err.message);
+    // The write never reached the server. Keep the row on this device but TAG it
+    // as unsynced (_pendingSync) so (a) the UI can warn the user instead of
+    // showing a false "Saved", (b) a later cloud read won't silently wipe it, and
+    // (c) flushPendingIncidents() can retry it automatically. Returning it as if
+    // it saved is exactly what hid a week of entries from other viewers.
     const local = {
       ...incident,
       id:
@@ -119,8 +124,9 @@ export async function saveIncident(incident) {
         `i_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       updated_at: new Date().toISOString(),
       created_at: incident.created_at || new Date().toISOString(),
+      _pendingSync: true,
     };
-    const light = stripPhotos(local);
+    const light = stripPhotos(local); // _pendingSync rides along in ...rest
     const cache = readCache("incidents");
     const i = cache.findIndex((x) => x.id === light.id);
     if (i >= 0) cache[i] = light;
@@ -128,6 +134,43 @@ export async function saveIncident(incident) {
     writeCache("incidents", cache);
     return local;
   }
+}
+
+// Number of incidents on this device that have not yet reached the server.
+export function countPendingIncidents() {
+  return readCache("incidents").filter((x) => x && x._pendingSync).length;
+}
+
+// Retry every write that fell back to local-only (device was offline, blocked,
+// or on an unreachable/preview origin when the entry was filed). Safe to call on
+// every load/refresh; it re-PUTs each pending row and, on success, replaces it
+// with the clean server record. Metadata always re-syncs; photo BYTES are not
+// re-sent (they are stripped from the device cache), so a photo entered while
+// offline keeps its has_photos flag but may need re-attaching. Returns
+// { flushed, remaining }.
+export async function flushPendingIncidents() {
+  const pending = readCache("incidents").filter((x) => x && x._pendingSync);
+  if (!pending.length) return { flushed: 0, remaining: 0 };
+  let flushed = 0;
+  for (const rec of pending) {
+    const { _pendingSync, ...clean } = rec;
+    try {
+      const { incident: saved } = await apiFetch(API.incidents, {
+        method: "PUT",
+        body: JSON.stringify(clean),
+      });
+      const cur = readCache("incidents");
+      const i = cur.findIndex((x) => x.id === saved.id);
+      if (i >= 0) cur[i] = saved;
+      else cur.push(saved);
+      writeCache("incidents", cur);
+      flushed++;
+    } catch (e) {
+      console.warn("flushPendingIncidents: still cannot sync", rec.id, e.message);
+      // Leave it tagged; it retries on the next load/refresh.
+    }
+  }
+  return { flushed, remaining: countPendingIncidents() };
 }
 
 // Pack incidents into chunks that each stay under the body limit. Any single
@@ -210,8 +253,16 @@ export async function saveIncidentsBatch(incidents, onProgress = null) {
 export async function getIncidents() {
   try {
     const { incidents } = await apiFetch(API.incidents);
-    writeCache("incidents", incidents);
-    return incidents;
+    // Never let a successful cloud read drop unsynced local rows on the floor:
+    // carry over any _pendingSync entries the server doesn't have yet, so an
+    // entry a flaky write left on this device survives until it flushes.
+    const pending = readCache("incidents").filter((x) => x && x._pendingSync);
+    const cloudIds = new Set(incidents.map((x) => x.id));
+    const merged = pending.length
+      ? [...incidents, ...pending.filter((p) => !cloudIds.has(p.id))]
+      : incidents;
+    writeCache("incidents", merged);
+    return merged;
   } catch (err) {
     console.warn("getIncidents cloud failed, using cache:", err.message);
     return readCache("incidents");

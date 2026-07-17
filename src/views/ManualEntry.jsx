@@ -150,6 +150,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   const [incidentDate, setIncidentDate] = React.useState(todayET);
   const [saving, setSaving] = React.useState(false);
   const [savedMsg, setSavedMsg] = React.useState("");
+  const [savedWarn, setSavedWarn] = React.useState(false);
   const [focus, setFocus] = React.useState(null);
   const [logSearch, setLogSearch] = React.useState("");
   // The window + label the analytics panel is currently showing; the detail log
@@ -538,11 +539,21 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     if (classifyField) incident[classifyField] = classifyValue;
     try {
       const saved = await saveIncident(incident);
-      setSavedMsg(
-        saved?.photos_dropped_oversize
-          ? `Saved — ${pull.pro} charged to ${drv.name} under ${fmtMDY(delivered)}, but its ${photos.length} photo${photos.length === 1 ? "" : "s"} were too large to store.`
-          : `Saved — ${pull.pro} charged to ${drv.name} under ${fmtMDY(delivered)} (${photos.length} photo${photos.length === 1 ? "" : "s"}).`,
-      );
+      if (saved && saved._pendingSync) {
+        // The write never reached the server — say so plainly instead of a
+        // false green "Saved", so it can't silently go missing for others.
+        setSavedWarn(true);
+        setSavedMsg(
+          `⚠ ${pull.pro} saved on THIS DEVICE only — not synced to the server. Check your connection and that you're on the real site URL. It will retry automatically; other people won't see it until it syncs.`,
+        );
+      } else {
+        setSavedWarn(false);
+        setSavedMsg(
+          saved?.photos_dropped_oversize
+            ? `Saved — ${pull.pro} charged to ${drv.name} under ${fmtMDY(delivered)}, but its ${photos.length} photo${photos.length === 1 ? "" : "s"} were too large to store.`
+            : `Saved — ${pull.pro} charged to ${drv.name} under ${fmtMDY(delivered)} (${photos.length} photo${photos.length === 1 ? "" : "s"}).`,
+        );
+      }
       // Jump the log view to the date just logged so the new entry is visible.
       if (feedEnabled) setFeedDate(delivered);
       setPull(null);
@@ -552,6 +563,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       setClassifyValue("");
       onSaved && onSaved({ type: "upsert", incident: saved || incident });
     } catch (err) {
+      setSavedWarn(true);
       setSavedMsg(`Save failed: ${err.message}`);
     } finally {
       setSaving(false);
@@ -740,6 +752,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
               <input
                 type="date"
                 value={incidentDate}
+                max={todayET()}
                 onChange={(e) => setIncidentDate(e.target.value)}
                 style={{ fontFamily: "var(--mono)" }}
                 title="Every new entry is logged under this date"
@@ -750,6 +763,13 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
             All new entries are logged under this date (defaults to today). Change it
             once and the whole batch follows.
           </div>
+          {incidentDate && incidentDate !== todayET() && (
+            <div className="ff-error" style={{ marginTop: 6 }}>
+              ⚠ Logging under {fmtMDY(incidentDate)}, not today ({fmtMDY(todayET())}).
+              Entries dated outside the view's period won't show until you widen the
+              range — set this back to today unless you're intentionally back-dating.
+            </div>
+          )}
 
           {pull?.error && !s && (
             <div className="ff-error">NuVizz: {pull.error}</div>
@@ -891,7 +911,9 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
             </div>
           )}
 
-          {savedMsg && <div className="ff-saved">{savedMsg}</div>}
+          {savedMsg && (
+            <div className={`ff-saved ${savedWarn ? "warn" : ""}`}>{savedMsg}</div>
+          )}
         </div>
       </div>
 
