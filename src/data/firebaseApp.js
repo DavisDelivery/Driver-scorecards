@@ -20,25 +20,27 @@ import {
 // database itself. Both are safe to commit. Values can be overridden by Vite env
 // vars (VITE_FIREBASE_*) for previews, but default to the production project.
 //
-// TODO(project): set PROJECT_ID to the real Firebase project id. The api key
-// alone does not identify the database, so Firestore cannot connect until this
-// is filled in (looks like "davis-driver-scorecard" or similar).
-const PROJECT_ID =
-  import.meta.env.VITE_FIREBASE_PROJECT_ID || "REPLACE_WITH_PROJECT_ID";
-
+// NOTE: davismarginiq is a shared Davis Firebase project, so this app namespaces
+// all of its collections with a dds_ prefix (see firebase.js) to stay clear of
+// any other app's data in the same Firestore.
 const firebaseConfig = {
   apiKey:
     import.meta.env.VITE_FIREBASE_API_KEY ||
     "AIzaSyDyRyjuiP_UD8T_2xmW2xLjvqx9RLCYCmo",
-  projectId: PROJECT_ID,
   authDomain:
-    import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || `${PROJECT_ID}.firebaseapp.com`,
+    import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "davismarginiq.firebaseapp.com",
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "davismarginiq",
   storageBucket:
-    import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || `${PROJECT_ID}.appspot.com`,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID || undefined,
+    import.meta.env.VITE_FIREBASE_STORAGE_BUCKET ||
+    "davismarginiq.firebasestorage.app",
+  messagingSenderId:
+    import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "131773007635",
+  appId:
+    import.meta.env.VITE_FIREBASE_APP_ID ||
+    "1:131773007635:web:be408aab03d843333afce6",
 };
 
-export const firebaseReady = PROJECT_ID !== "REPLACE_WITH_PROJECT_ID";
+export const firebaseReady = true;
 
 export const app = initializeApp(firebaseConfig);
 

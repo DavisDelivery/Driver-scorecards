@@ -10,12 +10,12 @@
 // to one browser's localStorage and never reached anyone else.
 //
 // Document model (mirrors the old split-storage so nothing else had to change):
-//   incidents/{id}         → light incident (NO photo bytes)
-//   incident_photos/{id}   → { photo_urls, photo_meta }        (large; size-guarded)
-//   reports/{id}           → report metadata (NO pdf bytes)
-//   report_pdfs/{id}       → { pdf_data }                       (large; size-guarded)
-//   app_meta/drivers       → { drivers: [...] }                 (whole roster)
-//   app_meta/history       → { records, source_records, report_contrib, updated_at }
+//   dds_incidents/{id}       → light incident (NO photo bytes)
+//   dds_incident_photos/{id} → { photo_urls, photo_meta }      (large; size-guarded)
+//   dds_reports/{id}         → report metadata (NO pdf bytes)
+//   dds_report_pdfs/{id}     → { pdf_data }                     (large; size-guarded)
+//   dds_app_meta/drivers     → { drivers: [...] }               (whole roster)
+//   dds_app_meta/history     → { records, source_records, report_contrib, updated_at }
 //
 // Reviews are NOT here — they come from an external source (see data/reviews.js).
 import {
@@ -31,11 +31,14 @@ import {
 } from "firebase/firestore";
 import { db } from "./firebaseApp.js";
 
-const INCIDENTS = "incidents";
-const INCIDENT_PHOTOS = "incident_photos";
-const REPORTS = "reports";
-const REPORT_PDFS = "report_pdfs";
-const META = "app_meta";
+// All collections are dds_-prefixed: davismarginiq is a shared Davis Firebase
+// project, and the prefix guarantees this app can never collide with another
+// app's collections in the same Firestore.
+const INCIDENTS = "dds_incidents";
+const INCIDENT_PHOTOS = "dds_incident_photos";
+const REPORTS = "dds_reports";
+const REPORT_PDFS = "dds_report_pdfs";
+const META = "dds_app_meta";
 
 // Firestore hard-caps a document at ~1 MiB. Photo/PDF payloads that exceed this
 // are dropped (flagged, mirroring the old oversize behavior) rather than crash
