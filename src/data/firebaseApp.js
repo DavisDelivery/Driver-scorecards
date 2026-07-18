@@ -48,11 +48,19 @@ export const app = initializeApp(firebaseConfig);
 // persistentMultipleTabManager: keep multiple tabs of the app consistent.
 // If IndexedDB is unavailable (private mode, old browser), Firestore degrades to
 // an in-memory cache on its own — no crash.
-export const db = initializeFirestore(app, {
-  // Incident/report objects carry optional fields that are sometimes undefined;
-  // Firestore rejects undefined unless we tell it to skip them.
-  ignoreUndefinedProperties: true,
-  localCache: persistentLocalCache({
-    tabManager: persistentMultipleTabManager(),
-  }),
-});
+// This app's data lives in the NAMED Firestore database "scorecard" inside the
+// shared davismarginiq project (not the project's (default) database).
+const DATABASE_ID = import.meta.env.VITE_FIREBASE_DATABASE_ID || "scorecard";
+
+export const db = initializeFirestore(
+  app,
+  {
+    // Incident/report objects carry optional fields that are sometimes undefined;
+    // Firestore rejects undefined unless we tell it to skip them.
+    ignoreUndefinedProperties: true,
+    localCache: persistentLocalCache({
+      tabManager: persistentMultipleTabManager(),
+    }),
+  },
+  DATABASE_ID,
+);
