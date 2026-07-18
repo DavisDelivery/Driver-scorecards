@@ -22,8 +22,9 @@ import ManualEntry, {
   ATTEMPTS_CONFIG,
   COMPLIMENTS_CONFIG,
 } from "./views/ManualEntry.jsx";
+import { migrateBlobsToFirestore } from "./data/migrateFromBlobs.js";
 
-export const APP_VERSION = "0.11.0";
+export const APP_VERSION = "0.12.0";
 // Host the app is actually served from — shown in the footer so two people can
 // instantly confirm they're on the SAME deploy/store (a mismatch is a common
 // reason one person's entries never reach another's view).
@@ -121,6 +122,16 @@ export default function App() {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  // One-time Blobs→Firestore migration, runnable from the browser console as
+  // `await window.__ddsMigrate(console.log)` on the live site. Not wired to any
+  // button so it can't be triggered by accident.
+  useEffect(() => {
+    window.__ddsMigrate = migrateBlobsToFirestore;
+    return () => {
+      delete window.__ddsMigrate;
+    };
   }, []);
 
   const reloadIncidents = async () => setIncidents(await getIncidents());
