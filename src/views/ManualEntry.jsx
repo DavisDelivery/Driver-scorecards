@@ -22,7 +22,17 @@ import {
   LabelList,
 } from "recharts";
 
-const pad9 = (p) => String(p || "").replace(/\D/g, "").padStart(9, "0");
+// Normalize what's typed into "Pull Order". Uline PROs are numeric and
+// zero-padded to 9 digits, so a purely-numeric entry gets that treatment
+// (unchanged behavior). Every other carrier Davis delivers for lives in the
+// SAME NuVizz account/company, but uses its own alphanumeric tracking number
+// (e.g. an Averitt or Estes PRO) — stripping those down to digits and zero-
+// padding mangles them into a bogus all-zero id NuVizz can never find, so
+// anything containing a letter is passed through as-is (just trimmed/cased).
+const normalizeOrderId = (raw) => {
+  const cleaned = String(raw || "").trim().replace(/[\s-]/g, "");
+  return /^\d+$/.test(cleaned) ? cleaned.padStart(9, "0") : cleaned.toUpperCase();
+};
 
 // Format an ISO date (YYYY-MM-DD…) as US month/day/year (MM/DD/YYYY). Parsed from
 // the string directly so it never shifts a day from new Date() timezone handling.
@@ -456,9 +466,9 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   }, [feedEnabled, feed.attempts, logSearch]);
 
   async function doPull() {
-    const p = pad9(pro);
-    if (p.length !== 9) {
-      setPull({ error: "Enter a PRO number (digits only — it will be zero-padded to 9)." });
+    const p = normalizeOrderId(pro);
+    if (!p) {
+      setPull({ error: "Enter a PRO or tracking number." });
       return;
     }
     setPulling(true);
@@ -737,12 +747,12 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
           <div className="ff-input-row">
             <input
               type="text"
-              inputMode="numeric"
-              placeholder="PRO number…"
+              placeholder="PRO or tracking #…"
               value={pro}
               onChange={(e) => setPro(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && !pulling && doPull()}
               style={{ maxWidth: 220, fontFamily: "var(--mono)" }}
+              title="Uline PRO (digits) or another carrier's tracking number — same NuVizz account"
             />
             <button className="btn primary" onClick={doPull} disabled={pulling}>
               {pulling ? "Pulling from NuVizz…" : "Pull Order"}
