@@ -23,6 +23,7 @@ import ManualEntry, {
   COMPLIMENTS_CONFIG,
 } from "./views/ManualEntry.jsx";
 import { migrateBlobsToFirestore } from "./data/migrateFromBlobs.js";
+import { rescueLocalEntries } from "./data/rescueLocal.js";
 
 export const APP_VERSION = "0.12.0";
 // Host the app is actually served from — shown in the footer so two people can
@@ -129,8 +130,13 @@ export default function App() {
   // button so it can't be triggered by accident.
   useEffect(() => {
     window.__ddsMigrate = migrateBlobsToFirestore;
+    // Rescue entries stranded in THIS browser's pre-Firestore localStorage cache
+    // (writes that silently failed to sync): dry-run lists them, {commit:true}
+    // imports. See src/data/rescueLocal.js.
+    window.__ddsRescueLocal = rescueLocalEntries;
     return () => {
       delete window.__ddsMigrate;
+      delete window.__ddsRescueLocal;
     };
   }, []);
 
