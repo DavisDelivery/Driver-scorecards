@@ -50,6 +50,53 @@ function setColor(doc, rgb, mode = "text") {
   else if (mode === "fill") doc.setFillColor(rgb[0], rgb[1], rgb[2]);
 }
 
+// Human labels for the category section headers.
+const CATEGORY_LABEL = {
+  damage: "Damage",
+  late: "Late",
+  missing: "Lost / Missing",
+  misdelivery: "Mis-Delivery",
+  forgotten_freight: "Forgotten Freight",
+  complaint: "Complaint",
+  compliment: "Compliment",
+  return: "Return",
+  trace: "Trace",
+  attempts: "Attempts",
+};
+
+// Section header marking the start of a category run: a colored rule with the
+// category name and how many incidents it covers, so a reader flipping through
+// the cards always knows which section they're in.
+function drawCategoryHeader(doc, category, count, x, y, w) {
+  const color = categoryColor(category);
+  const label = (CATEGORY_LABEL[category] || category || "Other").toUpperCase();
+  const baseline = y + 12;
+
+  // Accent rule across the full width, with the label sitting on the left.
+  doc.setFontSize(9);
+  doc.setFont("helvetica", "bold");
+  const labelW = doc.getTextWidth(label);
+  setColor(doc, color, "text");
+  doc.text(label, x, baseline);
+
+  const countText = `${count} ${count === 1 ? "incident" : "incidents"}`;
+  doc.setFontSize(7.5);
+  doc.setFont("helvetica", "normal");
+  setColor(doc, TEXT_MUTED, "text");
+  const countW = doc.getTextWidth(countText);
+  doc.text(countText, x + w - countW, baseline);
+
+  setColor(doc, color, "draw");
+  doc.setLineWidth(1.2);
+  const ruleY = baseline + 4;
+  doc.line(x, ruleY, x + labelW + 8, ruleY);
+  setColor(doc, LINE, "draw");
+  doc.setLineWidth(0.6);
+  doc.line(x + labelW + 12, ruleY, x + w - countW - 8, ruleY);
+  doc.setLineWidth(0.5);
+}
+const CATEGORY_HEADER_H = 24;
+
 // Draw a rounded pill badge with uppercase text; returns its width.
 function drawBadge(doc, text, x, y, color, opts = {}) {
   const fontSize = opts.fontSize || 7;
@@ -526,14 +573,26 @@ export async function generatePhotoReport(incidents, meta = {}) {
 
   drawCover(doc, hydrated, meta);
 
-  // Flatten into a list of cards: each incident -> one incident card (first up to
-  // 2 photos) plus continuation cards for any overflow photos (2 per card).
-  const cards = [];
-  for (const inc of hydrated) {
+  // Flatten into a stream of items: a category header wherever the category
+  // changes (incidents arrive grouped by category), then each incident card
+  // (first up to 2 photos) plus continuation cards for overflow photos.
+  const items = [];
+  let currentCat = null;
+  for (let i = 0; i < hydrated.length; i++) {
+    const inc = hydrated[i];
+    if (inc.category !== currentCat) {
+      currentCat = inc.category;
+      // Length of this contiguous run, so the header can state its own count.
+      let runLen = 0;
+      for (let j = i; j < hydrated.length && hydrated[j].category === currentCat; j++) {
+        runLen++;
+      }
+      items.push({ type: "header", category: currentCat, count: runLen });
+    }
     const urls = inc.photo_urls || [];
-    cards.push({ type: "incident", inc, photos: urls.slice(0, 2) });
-    for (let i = 2; i < urls.length; i += 2) {
-      cards.push({ type: "continuation", inc, photos: urls.slice(i, i + 2) });
+    items.push({ type: "incident", inc, photos: urls.slice(0, 2) });
+    for (let k = 2; k < urls.length; k += 2) {
+      items.push({ type: "continuation", inc, photos: urls.slice(k, k + 2) });
     }
   }
 
@@ -546,20 +605,38 @@ export async function generatePhotoReport(incidents, meta = {}) {
   const gap = 12;
   const cardH = (pageH - topOffset - bottomOffset - gap * (perPage - 1)) / perPage;
   const cardW = pageW - 2 * margin;
-  const pages = Math.ceil(cards.length / perPage);
+  const usableBottom = pageH - bottomOffset;
+
+  // Layout pass: items have two heights now, so place them before drawing —
+  // that fixes the page count for the "Page X of Y" header.
+  const placed = [];
+  let page = 0;
+  let y = topOffset;
+  for (const item of items) {
+    const h = item.type === "header" ? CATEGORY_HEADER_H : cardH;
+    // Keep a header with at least one card so it never dangles alone at the
+    // bottom of a page.
+    const need = item.type === "header" ? h + gap + cardH : h;
+    if (y + need > usableBottom && y > topOffset) {
+      page++;
+      y = topOffset;
+    }
+    placed.push({ item, page, y });
+    y += h + gap;
+  }
+  const pages = page + 1;
 
   for (let p = 0; p < pages; p++) {
     doc.addPage();
     drawPageHeader(doc, meta, p + 2, pages + 1);
-    for (let i = 0; i < perPage; i++) {
-      const idx = p * perPage + i;
-      if (idx >= cards.length) break;
-      const card = cards[idx];
-      const cardY = topOffset + i * (cardH + gap);
-      if (card.type === "continuation") {
-        await drawContinuationCard(doc, card.inc, margin, cardY, cardW, cardH, card.photos);
+    for (const { item, page: itemPage, y: itemY } of placed) {
+      if (itemPage !== p) continue;
+      if (item.type === "header") {
+        drawCategoryHeader(doc, item.category, item.count, margin, itemY, cardW);
+      } else if (item.type === "continuation") {
+        await drawContinuationCard(doc, item.inc, margin, itemY, cardW, cardH, item.photos);
       } else {
-        await drawIncidentCard(doc, card.inc, margin, cardY, cardW, cardH, card.photos);
+        await drawIncidentCard(doc, item.inc, margin, itemY, cardW, cardH, item.photos);
       }
     }
   }
