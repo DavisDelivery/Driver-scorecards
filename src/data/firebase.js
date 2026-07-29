@@ -50,6 +50,13 @@ const META = "dds_app_meta";
 const DOC_MAX = 1_000_000;
 // Leave headroom for the doc's other fields + Firestore overhead.
 const PHOTO_MAX = 900_000;
+// A generated photo report runs several MB, so its data URI is split across
+// chunk documents (dds_report_pdfs/{reportId}__{idx}) and rejoined on read.
+const PDF_CHUNK = 700_000;
+// History lives in ONE document, so it has a hard ceiling. Warn well before the
+// cap and fail loudly at it — silently losing a month of history is far worse
+// than a visible error.
+const HISTORY_WARN = 700_000;
 const jsonSize = (o) => JSON.stringify(o).length;
 const rand = () => Math.random().toString(36).slice(2, 8);
 const nowISO = () => new Date().toISOString();
@@ -315,12 +322,11 @@ async function deleteIdsWithPhotos(ids) {
 
 // ---- drivers -------------------------------------------------------------
 
+// Throws on failure — a swallowed error here meant an add/edit/deactivate looked
+// like it worked while the roster was never written, which is exactly the class
+// of silent data loss this app has been bitten by. Callers must surface it.
 export async function saveDrivers(drivers) {
-  try {
-    await setDoc(doc(db, META, "drivers"), { drivers });
-  } catch (err) {
-    console.warn("saveDrivers failed:", err.message);
-  }
+  await setDoc(doc(db, META, "drivers"), { drivers });
 }
 
 export async function getDrivers() {
@@ -335,6 +341,19 @@ export async function getDrivers() {
 
 // ---- reports -------------------------------------------------------------
 
+// Every PDF doc belonging to a report: the chunk docs plus any legacy
+// single-doc PDF stored before chunking existed.
+async function pdfDocRefs(reportId) {
+  const refs = [];
+  const legacy = await getDoc(doc(db, REPORT_PDFS, reportId));
+  if (legacy.exists()) refs.push(legacy.ref);
+  const snap = await getDocs(
+    query(collection(db, REPORT_PDFS), where("report_id", "==", reportId)),
+  );
+  snap.forEach((d) => refs.push(d.ref));
+  return refs;
+}
+
 export async function saveReport(report) {
   const id = report.id || `r_${Date.now()}_${rand()}`;
   const { pdf_data, pdf, ...rest } = report;
@@ -347,16 +366,27 @@ export async function saveReport(report) {
   await setDoc(doc(db, REPORTS, id), meta, { merge: true });
   const bytes = pdf_data || pdf;
   if (bytes) {
-    const payload = { pdf_data: bytes };
-    if (jsonSize(payload) <= DOC_MAX) {
-      await setDoc(doc(db, REPORT_PDFS, id), payload);
-    } else {
-      await setDoc(
-        doc(db, REPORTS, id),
-        { pdf_dropped_oversize: true },
-        { merge: true },
-      );
+    // A photo report runs several MB, so the data URI is split across chunk
+    // documents; storing it whole silently exceeded the 1 MB document cap and
+    // the PDF was thrown away (see PHOTO/PDF note at the top of this file).
+    for (const ref of await pdfDocRefs(id)) {
+      await deleteDoc(ref).catch(() => {});
     }
+    const total = Math.ceil(bytes.length / PDF_CHUNK);
+    for (let i = 0; i < total; i++) {
+      await setDoc(doc(db, REPORT_PDFS, `${id}__${i}`), {
+        report_id: id,
+        idx: i,
+        chunks: total,
+        data: bytes.slice(i * PDF_CHUNK, (i + 1) * PDF_CHUNK),
+      });
+    }
+    await setDoc(
+      doc(db, REPORTS, id),
+      { pdf_chunks: total, pdf_dropped_oversize: false },
+      { merge: true },
+    );
+    return { ...meta, pdf_chunks: total };
   }
   return meta;
 }
@@ -373,13 +403,30 @@ export async function getReports() {
 
 export async function getReportWithPdf(id) {
   try {
-    const [metaSnap, pdfSnap] = await Promise.all([
-      getDoc(doc(db, REPORTS, id)),
-      getDoc(doc(db, REPORT_PDFS, id)),
-    ]);
+    const metaSnap = await getDoc(doc(db, REPORTS, id));
     if (!metaSnap.exists()) return null;
     const report = { ...metaSnap.data(), id };
-    if (pdfSnap.exists()) report.pdf_data = pdfSnap.data().pdf_data;
+    // Current shape: chunk docs reassembled in order.
+    const snap = await getDocs(
+      query(collection(db, REPORT_PDFS), where("report_id", "==", id)),
+    );
+    if (!snap.empty) {
+      const parts = snap.docs
+        .map((d) => d.data())
+        .sort((a, b) => (a.idx ?? 0) - (b.idx ?? 0));
+      const expected = parts[0]?.chunks ?? parts.length;
+      if (parts.length === expected) {
+        report.pdf_data = parts.map((p) => p.data || "").join("");
+        return report;
+      }
+      console.warn(
+        `report ${id}: PDF is incomplete (${parts.length}/${expected} chunks) — regenerate it`,
+      );
+      return report;
+    }
+    // Legacy shape: whole PDF in one doc.
+    const legacy = await getDoc(doc(db, REPORT_PDFS, id));
+    if (legacy.exists()) report.pdf_data = legacy.data().pdf_data;
     return report;
   } catch (err) {
     console.warn("getReportWithPdf failed:", err.message);
@@ -390,7 +437,9 @@ export async function getReportWithPdf(id) {
 export async function deleteReport(id) {
   try {
     await deleteDoc(doc(db, REPORTS, id));
-    await deleteDoc(doc(db, REPORT_PDFS, id)).catch(() => {});
+    for (const ref of await pdfDocRefs(id)) {
+      await deleteDoc(ref).catch(() => {});
+    }
   } catch (err) {
     console.warn("deleteReport failed:", err.message);
   }
@@ -535,7 +584,25 @@ async function loadHistory() {
   };
 }
 async function saveHistoryDoc(data) {
-  await setDoc(doc(db, META, "history"), { ...data, updated_at: nowISO() });
+  const payload = { ...data, updated_at: nowISO() };
+  // All history is one document, and Firestore caps a document at 1 MB. Without
+  // this check the write just throws deep inside a caller that logs and moves
+  // on, so history would silently stop updating. Surface it early instead.
+  const size = jsonSize(payload);
+  if (size > DOC_MAX) {
+    throw new Error(
+      `History is too large to save (${Math.round(size / 1024)} KB, limit ${Math.round(DOC_MAX / 1024)} KB). ` +
+        `It must be split across multiple documents before more history can be recorded.`,
+    );
+  }
+  if (size > HISTORY_WARN) {
+    console.warn(
+      `History document is at ${Math.round((size / DOC_MAX) * 100)}% of the Firestore 1 MB limit ` +
+        `(${Math.round(size / 1024)} KB, ${Object.keys(data.records || {}).length} records). ` +
+        `Plan to shard it before it fills.`,
+    );
+  }
+  await setDoc(doc(db, META, "history"), payload);
 }
 
 export async function getHistory({ driverId, year, month } = {}) {
