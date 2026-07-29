@@ -40,10 +40,16 @@ const REPORTS = "dds_reports";
 const REPORT_PDFS = "dds_report_pdfs";
 const META = "dds_app_meta";
 
-// Firestore hard-caps a document at ~1 MiB. Photo/PDF payloads that exceed this
-// are dropped (flagged, mirroring the old oversize behavior) rather than crash
-// the write. Real fix later: move binaries to Firebase Storage.
+// Firestore hard-caps a document at ~1 MiB. Delivery photos are base64 data URIs
+// of roughly 100-300 KB each, so a stop with several POD photos blows past that
+// as a single blob. Photos are therefore stored ONE PER DOCUMENT
+// (dds_incident_photos/{incidentId}__{idx}), which keeps every write far under
+// the cap no matter how many photos a stop has. Only a single photo that is
+// itself oversize gets skipped. Legacy docs written before this change kept all
+// photos in one doc keyed by incident id — getIncidentPhotos still reads those.
 const DOC_MAX = 1_000_000;
+// Leave headroom for the doc's other fields + Firestore overhead.
+const PHOTO_MAX = 900_000;
 const jsonSize = (o) => JSON.stringify(o).length;
 const rand = () => Math.random().toString(36).slice(2, 8);
 const nowISO = () => new Date().toISOString();
@@ -68,23 +74,64 @@ function lightIncident(incident, id) {
 
 // ---- incidents -----------------------------------------------------------
 
+// Every photo doc belonging to one incident (new per-photo shape + the legacy
+// all-in-one doc keyed by the incident id).
+async function photoDocRefs(incidentId) {
+  const refs = [];
+  const legacy = await getDoc(doc(db, INCIDENT_PHOTOS, incidentId));
+  if (legacy.exists()) refs.push(legacy.ref);
+  const q = query(
+    collection(db, INCIDENT_PHOTOS),
+    where("incident_id", "==", incidentId),
+  );
+  const snap = await getDocs(q);
+  snap.forEach((d) => refs.push(d.ref));
+  return refs;
+}
+
+// Write an incident's photos as one document per photo. Returns how many were
+// stored and how many single photos were too large to store at all.
+async function savePhotosFor(incidentId, photoUrls, photoMeta) {
+  // Clear any previous photo docs (including a legacy combined one) so a re-pull
+  // can't leave orphaned or duplicated images behind.
+  for (const ref of await photoDocRefs(incidentId)) {
+    await deleteDoc(ref).catch(() => {});
+  }
+  let stored = 0;
+  let oversize = 0;
+  for (let i = 0; i < photoUrls.length; i++) {
+    const url = photoUrls[i];
+    if (!url) continue;
+    if (url.length > PHOTO_MAX) {
+      oversize++;
+      continue;
+    }
+    await setDoc(doc(db, INCIDENT_PHOTOS, `${incidentId}__${i}`), {
+      incident_id: incidentId,
+      idx: i,
+      url,
+      meta: photoMeta?.[i] ?? null,
+    });
+    stored++;
+  }
+  return { stored, oversize };
+}
+
 export async function saveIncident(incident) {
   const id = incident.id || `i_${Date.now()}_${rand()}`;
   const { light, photo_urls, photo_meta } = lightIncident(incident, id);
   await setDoc(doc(db, INCIDENTS, id), light, { merge: true });
   if (Array.isArray(photo_urls) && photo_urls.length) {
-    const payload = { photo_urls, photo_meta: photo_meta || [] };
-    if (jsonSize(payload) <= DOC_MAX) {
-      await setDoc(doc(db, INCIDENT_PHOTOS, id), payload);
-    } else {
-      const dropped = {
-        has_photos: false,
-        photo_count: 0,
-        photos_dropped_oversize: true,
-      };
-      await setDoc(doc(db, INCIDENTS, id), dropped, { merge: true });
-      return { ...light, ...dropped };
-    }
+    const { stored, oversize } = await savePhotosFor(id, photo_urls, photo_meta);
+    // Reflect what actually persisted, and clear any stale oversize flag from
+    // the era when a whole photo set was dropped for being too big together.
+    const flags = {
+      has_photos: stored > 0,
+      photo_count: stored,
+      photos_dropped_oversize: oversize > 0,
+    };
+    await setDoc(doc(db, INCIDENTS, id), flags, { merge: true });
+    return { ...light, ...flags };
   }
   return light;
 }
@@ -118,18 +165,23 @@ export async function saveIncidentsBatch(incidents, onProgress = null) {
       }
     }
     await batch.commit();
-    // Photo docs are large — write them one at a time, outside the batch.
+    // Photo docs are large — write them one photo at a time, outside the batch.
     for (const [id, payload] of photoWrites) {
       try {
-        if (jsonSize(payload) <= DOC_MAX) {
-          await setDoc(doc(db, INCIDENT_PHOTOS, id), payload);
-        } else {
-          await setDoc(
-            doc(db, INCIDENTS, id),
-            { has_photos: false, photo_count: 0, photos_dropped_oversize: true },
-            { merge: true },
-          );
-        }
+        const { stored, oversize } = await savePhotosFor(
+          id,
+          payload.photo_urls,
+          payload.photo_meta,
+        );
+        await setDoc(
+          doc(db, INCIDENTS, id),
+          {
+            has_photos: stored > 0,
+            photo_count: stored,
+            photos_dropped_oversize: oversize > 0,
+          },
+          { merge: true },
+        );
       } catch (e) {
         console.warn(`photo write failed for ${id}:`, e.message);
       }
@@ -154,6 +206,20 @@ export async function getIncidents() {
 export async function getIncidentPhotos(id) {
   if (!id) return { photo_urls: [], photo_meta: [] };
   try {
+    // Current shape: one doc per photo, keyed by incident_id.
+    const snap = await getDocs(
+      query(collection(db, INCIDENT_PHOTOS), where("incident_id", "==", id)),
+    );
+    if (!snap.empty) {
+      const rows = snap.docs
+        .map((d) => d.data())
+        .sort((a, b) => (a.idx ?? 0) - (b.idx ?? 0));
+      return {
+        photo_urls: rows.map((r) => r.url).filter(Boolean),
+        photo_meta: rows.map((r) => r.meta ?? null),
+      };
+    }
+    // Legacy shape: all photos in a single doc keyed by the incident id.
     const s = await getDoc(doc(db, INCIDENT_PHOTOS, id));
     if (!s.exists()) return { photo_urls: [], photo_meta: [] };
     const d = s.data();
@@ -214,7 +280,9 @@ export async function deleteIncidentsForReport(reportId) {
 export async function deleteIncident(id) {
   try {
     await deleteDoc(doc(db, INCIDENTS, id));
-    await deleteDoc(doc(db, INCIDENT_PHOTOS, id)).catch(() => {});
+    for (const ref of await photoDocRefs(id)) {
+      await deleteDoc(ref).catch(() => {});
+    }
   } catch (err) {
     console.warn("deleteIncident failed:", err.message);
   }
@@ -228,18 +296,20 @@ export async function deleteIncidentsBatch(ids) {
   }
 }
 
-// Batch-delete incident docs plus their sibling photo docs (2 deletes each,
-// chunked under the 500-op batch cap).
+// Batch-delete incident docs plus every photo doc that belongs to them (the
+// per-photo docs and any legacy combined doc), chunked under the 500-op cap.
 async function deleteIdsWithPhotos(ids) {
   const CHUNK = 200;
   for (let i = 0; i < ids.length; i += CHUNK) {
     const slice = ids.slice(i, i + CHUNK);
     const batch = writeBatch(db);
-    for (const id of slice) {
-      batch.delete(doc(db, INCIDENTS, id));
-      batch.delete(doc(db, INCIDENT_PHOTOS, id));
-    }
+    for (const id of slice) batch.delete(doc(db, INCIDENTS, id));
     await batch.commit();
+    for (const id of slice) {
+      for (const ref of await photoDocRefs(id)) {
+        await deleteDoc(ref).catch(() => {});
+      }
+    }
   }
 }
 
