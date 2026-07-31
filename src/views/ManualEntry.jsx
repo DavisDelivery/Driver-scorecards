@@ -1,5 +1,6 @@
 import React from "react";
 import { fetchStopData } from "../parsers/nuvizzClient.js";
+import { hiddenDriverIds } from "../data/drivers.js";
 import {
   saveIncident,
   deleteIncident,
@@ -399,9 +400,13 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   );
 
   // Per-driver rollup for the current period: who made mistakes, and how many.
+  // Deactivated drivers are left out — this chart is "who am I managing", not a
+  // record of the period. Their rows stay in the log and in every count below.
   const byDriver = React.useMemo(() => {
+    const hidden = hiddenDriverIds(drivers);
     const m = new Map();
     for (const i of manualForView) {
+      if (i.driver_id && hidden.has(i.driver_id)) continue;
       const name = driverNameOf(i);
       const key = i.driver_id || `name:${name}`;
       if (!m.has(key)) m.set(key, { key, id: i.driver_id || null, name, count: 0 });
@@ -410,7 +415,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     return [...m.values()].sort(
       (a, b) => b.count - a.count || a.name.localeCompare(b.name),
     );
-  }, [manualForView, driverNameOf]);
+  }, [manualForView, driverNameOf, drivers]);
 
   // Free-text + optional single-driver filter over the manual rows.
   const filteredLog = React.useMemo(() => {

@@ -214,3 +214,18 @@ export function classifyFault(reason = "", notes = "") {
   if (/RIDICULOUS/.test(s)) return "exonerated";
   return "unknown";
 }
+
+// Deactivating a driver retires them from the operational views: they drop out
+// of driver charts, leaderboards and scorecards so those show only the people
+// currently being managed. Their incidents are NOT deleted and still count in
+// company totals and logs — deactivating someone must never retroactively
+// change a number that has already been reported.
+//
+// Returns the ids to hide. A driver_id with no roster row is deliberately NOT
+// hidden: unknown ids (legacy imports, since-removed drivers) would otherwise
+// vanish silently, which is the failure mode this app has been bitten by.
+export function hiddenDriverIds(drivers) {
+  return new Set(
+    (drivers || []).filter((d) => d && d.active === false).map((d) => d.id),
+  );
+}
