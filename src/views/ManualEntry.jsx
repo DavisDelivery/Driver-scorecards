@@ -993,11 +993,57 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       {!feedEnabled && byDriver.length > 0 && (
         <div className="card ff-bydriver-card">
           <div className="card-body">
-            <div className="ff-bydriver-head">
-              Drivers · {logPeriod.label}
-              <span className="meta">
-                {" "}· {byDriver.length} driver{byDriver.length === 1 ? "" : "s"},{" "}
-                {manualForView.length} entr{manualForView.length === 1 ? "y" : "ies"}
+            <div
+              className="ff-bydriver-head"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+                flexWrap: "wrap",
+              }}
+            >
+              <span>
+                Drivers · {logPeriod.label}
+                <span className="meta">
+                  {" "}· {byDriver.length} driver{byDriver.length === 1 ? "" : "s"},{" "}
+                  {manualForView.length} entr{manualForView.length === 1 ? "y" : "ies"}
+                </span>
+              </span>
+              {/* Always-visible way to print one driver's report. Bound to the
+                  same driverFilter the chart sets, so clicking a bar and picking
+                  from here are the same selection. */}
+              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <select
+                  value={driverFilter || ""}
+                  onChange={(e) => setDriverFilter(e.target.value || null)}
+                  style={{ maxWidth: 230 }}
+                  aria-label="Driver to print a report for"
+                >
+                  <option value="">— Select a driver —</option>
+                  {byDriver.map((d) => (
+                    <option key={d.key} value={d.key}>
+                      {d.name} ({d.count})
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="btn primary sm"
+                  onClick={printDriverReport}
+                  disabled={!driverFilter || printing}
+                  title={
+                    driverFilter
+                      ? "Build a PDF of this driver's entries for the selected period"
+                      : "Pick a driver first"
+                  }
+                >
+                  {printing
+                    ? printProgress.total
+                      ? `Building PDF… ${printProgress.done}/${printProgress.total}`
+                      : "Building PDF…"
+                    : "📄 Print driver report"}
+                </button>
               </span>
             </div>
             <ResponsiveContainer
@@ -1051,29 +1097,15 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
             </ResponsiveContainer>
             <div className="ff-bydriver-hint">
               {driverFilter ? (
-                <>
-                  <button
-                    type="button"
-                    className="btn ghost sm"
-                    onClick={() => setDriverFilter(null)}
-                  >
-                    ✕ Clear filter · {byDriver.find((d) => d.key === driverFilter)?.name || "driver"}
-                  </button>{" "}
-                  <button
-                    type="button"
-                    className="btn primary sm"
-                    onClick={printDriverReport}
-                    disabled={printing}
-                  >
-                    {printing
-                      ? printProgress.total
-                        ? `Building PDF… ${printProgress.done}/${printProgress.total}`
-                        : "Building PDF…"
-                      : `📄 Print ${byDriver.find((d) => d.key === driverFilter)?.name || "driver"}'s report`}
-                  </button>
-                </>
+                <button
+                  type="button"
+                  className="btn ghost sm"
+                  onClick={() => setDriverFilter(null)}
+                >
+                  ✕ Clear filter · {byDriver.find((d) => d.key === driverFilter)?.name || "driver"}
+                </button>
               ) : (
-                "Click a bar to filter the log to that driver, then print their report."
+                "Click a bar to filter the log to that driver, or pick one above to print their report."
               )}
             </div>
           </div>
