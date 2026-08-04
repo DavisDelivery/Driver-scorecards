@@ -2,6 +2,10 @@ import React from "react";
 import { fetchStopData } from "../parsers/nuvizzClient.js";
 import { hiddenDriverIds } from "../data/drivers.js";
 import {
+  generateDriverReport,
+  driverReportFilename,
+} from "../reports/driverReport.js";
+import {
   saveIncident,
   deleteIncident,
   getIncidentPhotos,
@@ -176,6 +180,9 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   // driver (set by clicking a driver in the By-Driver summary).
   const [groupByDriver, setGroupByDriver] = React.useState(false);
   const [driverFilter, setDriverFilter] = React.useState(null);
+  // Per-driver handout PDF build state.
+  const [printing, setPrinting] = React.useState(false);
+  const [printProgress, setPrintProgress] = React.useState({ done: 0, total: 0 });
 
   // Automated attempts feed (only when config.feed). It has its OWN date picker so
   // you can browse auto attempts for any day independent of the manual log date.
@@ -416,6 +423,48 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       (a, b) => b.count - a.count || a.name.localeCompare(b.name),
     );
   }, [manualForView, driverNameOf, drivers]);
+
+  // Build a handout PDF for the currently selected driver, covering exactly the
+  // period the charts and log are showing. Uses the same driver key the chart
+  // filters on, so what prints is what's on screen.
+  async function printDriverReport() {
+    if (!driverFilter) return;
+    const row = byDriver.find((d) => d.key === driverFilter);
+    const entries = manualForView.filter(
+      (i) => (i.driver_id || `name:${driverNameOf(i)}`) === driverFilter,
+    );
+    if (!entries.length) {
+      alert("No entries for that driver in this period.");
+      return;
+    }
+    setPrinting(true);
+    setPrintProgress({ done: 0, total: 0 });
+    try {
+      const { win } = logPeriod;
+      const rangeText =
+        win?.start && win?.end ? `${fmtMDY(win.start)} – ${fmtMDY(win.end)}` : "";
+      const doc = await generateDriverReport({
+        driverName: row?.name || driverNameOf(entries[0]),
+        entries,
+        config,
+        periodLabel: logPeriod.label,
+        rangeText,
+        onProgress: ({ done, total }) => setPrintProgress({ done, total }),
+      });
+      doc.save(
+        driverReportFilename(
+          row?.name || "driver",
+          config.heading,
+          logPeriod.label,
+        ),
+      );
+    } catch (err) {
+      alert("Could not build the report: " + (err?.message || err));
+    } finally {
+      setPrinting(false);
+      setPrintProgress({ done: 0, total: 0 });
+    }
+  }
 
   // Free-text + optional single-driver filter over the manual rows.
   const filteredLog = React.useMemo(() => {
@@ -1002,15 +1051,29 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
             </ResponsiveContainer>
             <div className="ff-bydriver-hint">
               {driverFilter ? (
-                <button
-                  type="button"
-                  className="btn ghost sm"
-                  onClick={() => setDriverFilter(null)}
-                >
-                  ✕ Clear filter · {byDriver.find((d) => d.key === driverFilter)?.name || "driver"}
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="btn ghost sm"
+                    onClick={() => setDriverFilter(null)}
+                  >
+                    ✕ Clear filter · {byDriver.find((d) => d.key === driverFilter)?.name || "driver"}
+                  </button>{" "}
+                  <button
+                    type="button"
+                    className="btn primary sm"
+                    onClick={printDriverReport}
+                    disabled={printing}
+                  >
+                    {printing
+                      ? printProgress.total
+                        ? `Building PDF… ${printProgress.done}/${printProgress.total}`
+                        : "Building PDF…"
+                      : `📄 Print ${byDriver.find((d) => d.key === driverFilter)?.name || "driver"}'s report`}
+                  </button>
+                </>
               ) : (
-                "Click a bar to filter the log to that driver."
+                "Click a bar to filter the log to that driver, then print their report."
               )}
             </div>
           </div>
