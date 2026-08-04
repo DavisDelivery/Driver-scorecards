@@ -62,21 +62,37 @@ export default function App() {
   // Initial load: seed drivers if the store is empty, then load everything.
   useEffect(() => {
     (async () => {
-      let roster = await getDrivers();
-      if (!roster || roster.length === 0) {
-        roster = buildSeededDrivers();
-        await saveDrivers(roster);
+      try {
+        let roster = await getDrivers();
+        if (!roster || roster.length === 0) {
+          roster = buildSeededDrivers();
+          // saveDrivers throws on failure (so roster edits can report it), but a
+          // failed seed must never block startup — show the seeded roster and
+          // let the user retry, rather than hanging the app on "Loading…".
+          try {
+            await saveDrivers(roster);
+          } catch (err) {
+            console.warn("Seeding the driver roster failed:", err.message);
+          }
+        }
+        const [inc, reps] = await Promise.all([getIncidents(), getReports()]);
+        setDrivers(roster);
+        setIncidents(inc);
+        setReports(reps);
+      } catch (err) {
+        console.warn("Initial load failed:", err.message);
+      } finally {
+        setLoading(false);
       }
-      const [inc, reps] = await Promise.all([getIncidents(), getReports()]);
-      setDrivers(roster);
-      setIncidents(inc);
-      setReports(reps);
-      setLoading(false);
       // Retry any entries a flaky/offline write left stranded on this device so
       // they reach the server (and every other viewer) without re-typing.
-      const { flushed, remaining } = await flushPendingIncidents();
-      if (flushed > 0) setIncidents(await getIncidents());
-      setPendingSync(remaining);
+      try {
+        const { flushed, remaining } = await flushPendingIncidents();
+        if (flushed > 0) setIncidents(await getIncidents());
+        setPendingSync(remaining);
+      } catch (err) {
+        console.warn("Pending-sync flush failed:", err.message);
+      }
     })();
   }, []);
 

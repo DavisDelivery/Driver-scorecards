@@ -6,13 +6,13 @@ import { jsPDF } from "jspdf";
 import { getIncidentPhotosBatch } from "../data/firebase.js";
 
 // Palette (RGB triples) matching the app theme.
-const DAVIS_BLUE = [30, 91, 146];
+export const DAVIS_BLUE = [30, 91, 146];
 const AMBER = [212, 160, 23];
 const RED = [220, 53, 69];
 const GREEN = [34, 170, 92];
-const TEXT_DARK = [55, 65, 81];
-const TEXT_MUTED = [107, 114, 128];
-const LINE = [229, 231, 235];
+export const TEXT_DARK = [55, 65, 81];
+export const TEXT_MUTED = [107, 114, 128];
+export const LINE = [229, 231, 235];
 
 function categoryColor(cat) {
   return (
@@ -44,7 +44,7 @@ function faultColor(fault) {
   );
 }
 
-function setColor(doc, rgb, mode = "text") {
+export function setColor(doc, rgb, mode = "text") {
   if (mode === "text") doc.setTextColor(rgb[0], rgb[1], rgb[2]);
   else if (mode === "draw") doc.setDrawColor(rgb[0], rgb[1], rgb[2]);
   else if (mode === "fill") doc.setFillColor(rgb[0], rgb[1], rgb[2]);
@@ -98,7 +98,7 @@ function drawCategoryHeader(doc, category, count, x, y, w) {
 const CATEGORY_HEADER_H = 24;
 
 // Draw a rounded pill badge with uppercase text; returns its width.
-function drawBadge(doc, text, x, y, color, opts = {}) {
+export function drawBadge(doc, text, x, y, color, opts = {}) {
   const fontSize = opts.fontSize || 7;
   doc.setFontSize(fontSize);
   doc.setFont("helvetica", "bold");
@@ -117,7 +117,7 @@ function drawBadge(doc, text, x, y, color, opts = {}) {
 // 16-bit / unusual color types) and renders a solid black rectangle. The browser
 // decodes anything reliably, and the white fill flattens transparency so nothing
 // comes out black. Awaited so the bytes are fully decoded before addImage runs.
-function loadImage(src) {
+export function loadImage(src) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = "anonymous";
@@ -197,7 +197,7 @@ async function drawPhotos(doc, photos, px, py, pw, ph, opts = {}) {
 }
 
 // Fit (w,h) into (maxW,maxH) preserving aspect ratio.
-function fitDims(w, h, maxW, maxH) {
+export function fitDims(w, h, maxW, maxH) {
   const scale = Math.min(maxW / w, maxH / h);
   return { w: w * scale, h: h * scale };
 }

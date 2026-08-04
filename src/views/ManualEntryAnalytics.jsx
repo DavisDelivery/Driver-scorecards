@@ -9,6 +9,7 @@ import {
   CartesianGrid,
 } from "recharts";
 import { PERIODS, periodWindow, periodLabel, toYMD, mondayOf } from "../data/period.js";
+import { hiddenDriverIds } from "../data/drivers.js";
 
 // Analytics panel for a manual-entry category (Forgotten Freight / Mis-Deliveries
 // / Attempts). Tracks the work week (Mon–Fri) plus a trend, over a period that
@@ -132,9 +133,14 @@ export default function ManualEntryAnalytics({ title, color, records, drivers, o
     weekday.reduce((a, b) => (b.count > a.count ? b : a), { label: "—", count: -1 });
   const activeDays = bucket === "day" ? trend.length : new Set(inPeriod.map((r) => dateOf(r))).size;
   const avg = activeDays ? (total / activeDays).toFixed(1) : "0";
+  // Excludes deactivated drivers — a retired driver should not be named as the
+  // current worst offender. `total` above is untouched, so the period count is
+  // still the true number of entries.
   const topDriver = React.useMemo(() => {
+    const hidden = hiddenDriverIds(drivers);
     const m = new Map();
     for (const r of inPeriod) {
+      if (r.driver_id && hidden.has(r.driver_id)) continue;
       const n = driverName(r);
       m.set(n, (m.get(n) || 0) + 1);
     }

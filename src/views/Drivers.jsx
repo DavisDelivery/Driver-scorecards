@@ -183,6 +183,8 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
       );
       await saveDrivers(next);
       onUpdate && onUpdate();
+    } catch (err) {
+      alert(`Could not deactivate ${driver.name} — the change was NOT saved.\n\n${err.message}`);
     } finally {
       setSavingRoster(false);
     }
@@ -209,6 +211,8 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
       const next = drivers.filter((d) => d.id !== driver.id);
       await saveDrivers(next);
       onUpdate && onUpdate();
+    } catch (err) {
+      alert(`Could not remove ${driver.name} — the change was NOT saved.\n\n${err.message}`);
     } finally {
       setSavingRoster(false);
     }
@@ -222,6 +226,8 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
       );
       await saveDrivers(next);
       onUpdate && onUpdate();
+    } catch (err) {
+      alert(`Could not reactivate ${driver.name} — the change was NOT saved.\n\n${err.message}`);
     } finally {
       setSavingRoster(false);
     }

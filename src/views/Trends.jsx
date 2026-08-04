@@ -145,9 +145,12 @@ export default function Trends({ drivers, incidents = [] }) {
   }, [cube, year]);
 
   // ---- Per-driver: pick driver → monthly trend + category rows ----
+  // Deactivated drivers are not offered here — this picker is for reviewing
+  // people currently being managed.
   const filteredDrivers = React.useMemo(() => {
     const q = driverQuery.toLowerCase();
     return drivers
+      .filter((d) => d.active !== false)
       .filter((d) => !q || d.name.toLowerCase().includes(q))
       .slice(0, 30);
   }, [drivers, driverQuery]);

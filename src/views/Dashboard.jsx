@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { INCIDENT_CATEGORIES } from "../data/drivers.js";
+import { INCIDENT_CATEGORIES, hiddenDriverIds } from "../data/drivers.js";
 import { getHistory } from "../data/firebase.js";
 import DriverModal from "./DriverModal.jsx";
 import { CategoryLeaderboard } from "./leaderboard.jsx";
@@ -241,10 +241,16 @@ export default function Dashboard({ incidents, drivers }) {
     return Array.from(map.values());
   }, [drivers, incidents, history, selectedMonth, periodSel, customFrom, customTo, faultFilter]);
 
-  // Build sorted chart data for a single category.
+  const hiddenDrivers = useMemo(() => hiddenDriverIds(drivers), [drivers]);
+
+  // Build sorted chart data for a single category. Deactivated drivers are
+  // filtered out HERE, at the display layer, rather than out of driverTotals —
+  // totalYtd is derived from driverTotals, and retiring a driver must not
+  // retroactively change a reported total.
   const chartDataFor = (categoryId, roleGroup) =>
     driverTotals
       .filter((e) => {
+        if (hiddenDrivers.has(e.driver.id)) return false;
         const role = e.driver.role || "driver";
         const inGroup =
           roleGroup === "loader" ? role === "loader" : role !== "loader";

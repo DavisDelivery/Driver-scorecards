@@ -15,7 +15,8 @@
 //   dds_reports/{id}         → report metadata (NO pdf bytes)
 //   dds_report_pdfs/{id}     → { pdf_data }                     (large; size-guarded)
 //   dds_app_meta/drivers     → { drivers: [...] }               (whole roster)
-//   dds_app_meta/history     → { records, source_records, report_contrib, updated_at }
+//   dds_history/{YYYY-MM}    → { month, records, source_records }  (one per month)
+//   dds_report_contrib/{id}  → { report_id, cat, src }   (idempotent rollup snapshot)
 //
 // Reviews are NOT here — they come from an external source (see data/reviews.js).
 import {
@@ -39,6 +40,10 @@ const INCIDENT_PHOTOS = "dds_incident_photos";
 const REPORTS = "dds_reports";
 const REPORT_PDFS = "dds_report_pdfs";
 const META = "dds_app_meta";
+// History is sharded one document per calendar month, and each report's
+// contribution snapshot is its own document (see the history section below).
+const HISTORY = "dds_history";
+const REPORT_CONTRIB = "dds_report_contrib";
 
 // Firestore hard-caps a document at ~1 MiB. Delivery photos are base64 data URIs
 // of roughly 100-300 KB each, so a stop with several POD photos blows past that
@@ -50,6 +55,12 @@ const META = "dds_app_meta";
 const DOC_MAX = 1_000_000;
 // Leave headroom for the doc's other fields + Firestore overhead.
 const PHOTO_MAX = 900_000;
+// A generated photo report runs several MB, so its data URI is split across
+// chunk documents (dds_report_pdfs/{reportId}__{idx}) and rejoined on read.
+const PDF_CHUNK = 700_000;
+// History is sharded per month so no single document can fill up, but never let
+// a write fail silently: warn well before the cap and throw at it.
+const HISTORY_WARN = 700_000;
 const jsonSize = (o) => JSON.stringify(o).length;
 const rand = () => Math.random().toString(36).slice(2, 8);
 const nowISO = () => new Date().toISOString();
@@ -315,12 +326,11 @@ async function deleteIdsWithPhotos(ids) {
 
 // ---- drivers -------------------------------------------------------------
 
+// Throws on failure — a swallowed error here meant an add/edit/deactivate looked
+// like it worked while the roster was never written, which is exactly the class
+// of silent data loss this app has been bitten by. Callers must surface it.
 export async function saveDrivers(drivers) {
-  try {
-    await setDoc(doc(db, META, "drivers"), { drivers });
-  } catch (err) {
-    console.warn("saveDrivers failed:", err.message);
-  }
+  await setDoc(doc(db, META, "drivers"), { drivers });
 }
 
 export async function getDrivers() {
@@ -335,6 +345,19 @@ export async function getDrivers() {
 
 // ---- reports -------------------------------------------------------------
 
+// Every PDF doc belonging to a report: the chunk docs plus any legacy
+// single-doc PDF stored before chunking existed.
+async function pdfDocRefs(reportId) {
+  const refs = [];
+  const legacy = await getDoc(doc(db, REPORT_PDFS, reportId));
+  if (legacy.exists()) refs.push(legacy.ref);
+  const snap = await getDocs(
+    query(collection(db, REPORT_PDFS), where("report_id", "==", reportId)),
+  );
+  snap.forEach((d) => refs.push(d.ref));
+  return refs;
+}
+
 export async function saveReport(report) {
   const id = report.id || `r_${Date.now()}_${rand()}`;
   const { pdf_data, pdf, ...rest } = report;
@@ -347,16 +370,27 @@ export async function saveReport(report) {
   await setDoc(doc(db, REPORTS, id), meta, { merge: true });
   const bytes = pdf_data || pdf;
   if (bytes) {
-    const payload = { pdf_data: bytes };
-    if (jsonSize(payload) <= DOC_MAX) {
-      await setDoc(doc(db, REPORT_PDFS, id), payload);
-    } else {
-      await setDoc(
-        doc(db, REPORTS, id),
-        { pdf_dropped_oversize: true },
-        { merge: true },
-      );
+    // A photo report runs several MB, so the data URI is split across chunk
+    // documents; storing it whole silently exceeded the 1 MB document cap and
+    // the PDF was thrown away (see PHOTO/PDF note at the top of this file).
+    for (const ref of await pdfDocRefs(id)) {
+      await deleteDoc(ref).catch(() => {});
     }
+    const total = Math.ceil(bytes.length / PDF_CHUNK);
+    for (let i = 0; i < total; i++) {
+      await setDoc(doc(db, REPORT_PDFS, `${id}__${i}`), {
+        report_id: id,
+        idx: i,
+        chunks: total,
+        data: bytes.slice(i * PDF_CHUNK, (i + 1) * PDF_CHUNK),
+      });
+    }
+    await setDoc(
+      doc(db, REPORTS, id),
+      { pdf_chunks: total, pdf_dropped_oversize: false },
+      { merge: true },
+    );
+    return { ...meta, pdf_chunks: total };
   }
   return meta;
 }
@@ -373,13 +407,30 @@ export async function getReports() {
 
 export async function getReportWithPdf(id) {
   try {
-    const [metaSnap, pdfSnap] = await Promise.all([
-      getDoc(doc(db, REPORTS, id)),
-      getDoc(doc(db, REPORT_PDFS, id)),
-    ]);
+    const metaSnap = await getDoc(doc(db, REPORTS, id));
     if (!metaSnap.exists()) return null;
     const report = { ...metaSnap.data(), id };
-    if (pdfSnap.exists()) report.pdf_data = pdfSnap.data().pdf_data;
+    // Current shape: chunk docs reassembled in order.
+    const snap = await getDocs(
+      query(collection(db, REPORT_PDFS), where("report_id", "==", id)),
+    );
+    if (!snap.empty) {
+      const parts = snap.docs
+        .map((d) => d.data())
+        .sort((a, b) => (a.idx ?? 0) - (b.idx ?? 0));
+      const expected = parts[0]?.chunks ?? parts.length;
+      if (parts.length === expected) {
+        report.pdf_data = parts.map((p) => p.data || "").join("");
+        return report;
+      }
+      console.warn(
+        `report ${id}: PDF is incomplete (${parts.length}/${expected} chunks) — regenerate it`,
+      );
+      return report;
+    }
+    // Legacy shape: whole PDF in one doc.
+    const legacy = await getDoc(doc(db, REPORT_PDFS, id));
+    if (legacy.exists()) report.pdf_data = legacy.data().pdf_data;
     return report;
   } catch (err) {
     console.warn("getReportWithPdf failed:", err.message);
@@ -390,7 +441,9 @@ export async function getReportWithPdf(id) {
 export async function deleteReport(id) {
   try {
     await deleteDoc(doc(db, REPORTS, id));
-    await deleteDoc(doc(db, REPORT_PDFS, id)).catch(() => {});
+    for (const ref of await pdfDocRefs(id)) {
+      await deleteDoc(ref).catch(() => {});
+    }
   } catch (err) {
     console.warn("deleteReport failed:", err.message);
   }
@@ -525,7 +578,59 @@ function upsertHistory(data, rec) {
   return record;
 }
 
-async function loadHistory() {
+// --- month-sharded storage -------------------------------------------------
+// History used to be ONE document holding every record, which put a hard
+// ceiling on how much history the app could ever record (and it failed
+// silently on reaching it). It is now split one document per calendar month:
+//   dds_history/{YYYY-MM}        → { month, records, source_records }
+//   dds_report_contrib/{reportId}→ { report_id, cat, src }
+// Per-month documents stay tiny forever (a month is bounded by drivers ×
+// categories), and the per-report contribution snapshots that keep the rollup
+// idempotent are one document each instead of an unbounded map.
+
+// "2026:07:drv_x:late" -> "2026-07"
+const monthOfKey = (k) => {
+  const [y, m] = String(k).split(":");
+  return y && m ? `${y}-${m}` : null;
+};
+
+async function loadMonth(ym) {
+  const s = await getDoc(doc(db, HISTORY, ym));
+  const d = s.exists() ? s.data() : {};
+  return { records: d.records || {}, source_records: d.source_records || {} };
+}
+
+async function saveMonth(ym, data) {
+  const records = data.records || {};
+  const source_records = data.source_records || {};
+  // A month with nothing left in it is removed rather than left as an empty doc.
+  if (!Object.keys(records).length && !Object.keys(source_records).length) {
+    await deleteDoc(doc(db, HISTORY, ym)).catch(() => {});
+    return;
+  }
+  const payload = { month: ym, records, source_records, updated_at: nowISO() };
+  const size = jsonSize(payload);
+  if (size > DOC_MAX) {
+    // Not reachable with real data (a single month is bounded by drivers ×
+    // categories), but never fail silently if it somehow is.
+    throw new Error(
+      `History for ${ym} is too large to save (${Math.round(size / 1024)} KB, limit ${Math.round(DOC_MAX / 1024)} KB).`,
+    );
+  }
+  if (size > HISTORY_WARN) {
+    console.warn(`History month ${ym} is unusually large: ${Math.round(size / 1024)} KB.`);
+  }
+  await setDoc(doc(db, HISTORY, ym), payload);
+}
+
+async function monthIds() {
+  const snap = await getDocs(collection(db, HISTORY));
+  return snap.docs.map((d) => d.id);
+}
+
+// Pre-shard data lived in dds_app_meta/history. Read it so a store that has not
+// been migrated yet still returns history instead of looking empty.
+async function loadLegacyHistory() {
   const s = await getDoc(doc(db, META, "history"));
   const d = s.exists() ? s.data() : {};
   return {
@@ -534,14 +639,46 @@ async function loadHistory() {
     report_contrib: d.report_contrib || {},
   };
 }
-async function saveHistoryDoc(data) {
-  await setDoc(doc(db, META, "history"), { ...data, updated_at: nowISO() });
+
+// Split a contribution ({cat,src} keyed by composite key) into per-month pieces.
+function contribByMonth(contrib) {
+  const out = {};
+  for (const [k, n] of Object.entries(contrib.cat || {})) {
+    const ym = monthOfKey(k);
+    if (!ym) continue;
+    (out[ym] ||= { cat: {}, src: {} }).cat[k] = n;
+  }
+  for (const [k, n] of Object.entries(contrib.src || {})) {
+    const ym = monthOfKey(k);
+    if (!ym) continue;
+    (out[ym] ||= { cat: {}, src: {} }).src[k] = n;
+  }
+  return out;
+}
+
+async function loadReportContrib(reportId) {
+  const s = await getDoc(doc(db, REPORT_CONTRIB, reportId));
+  if (!s.exists()) return null;
+  const d = s.data();
+  return { cat: d.cat || {}, src: d.src || {} };
 }
 
 export async function getHistory({ driverId, year, month } = {}) {
   try {
-    const data = await loadHistory();
-    let list = Object.values(data.records);
+    let list = [];
+    const ids = await monthIds();
+    if (ids.length === 0) {
+      // Not sharded yet — fall back to the single legacy document.
+      list = Object.values((await loadLegacyHistory()).records);
+    } else if (year && month) {
+      // Targeted read: one document instead of the whole history.
+      const ym = `${year}-${String(month).padStart(2, "0")}`;
+      list = Object.values((await loadMonth(ym)).records);
+    } else {
+      const wanted = year ? ids.filter((id) => id.startsWith(`${year}-`)) : ids;
+      const months = await Promise.all(wanted.map((id) => loadMonth(id)));
+      list = months.flatMap((m) => Object.values(m.records));
+    }
     if (driverId) list = list.filter((r) => r.driver_id === driverId);
     if (year) list = list.filter((r) => r.year === Number(year));
     if (month) list = list.filter((r) => r.month === Number(month));
@@ -554,18 +691,36 @@ export async function getHistory({ driverId, year, month } = {}) {
 
 export async function saveHistoryBatch(records, { replace = false, onProgress } = {}) {
   if (!records.length) return [];
-  const data = replace
-    ? { ...(await loadHistory()), records: {} }
-    : await loadHistory();
+  // replace=true (History backfill import) resets the rollup records but must
+  // PRESERVE source_records and the per-report contribution snapshots, so a
+  // later re-rollup of an already-counted report still has something to reverse.
+  const existing = {};
+  for (const ym of await monthIds()) existing[ym] = await loadMonth(ym);
+  const touched = {};
+  if (replace) {
+    for (const [ym, data] of Object.entries(existing)) {
+      touched[ym] = { records: {}, source_records: data.source_records };
+    }
+  }
+
   const saved = [];
   let done = 0;
   for (const rec of records) {
-    const r = upsertHistory(data, rec);
+    if (!rec || !rec.driver_id || !rec.year || !rec.month || !rec.category) {
+      done++;
+      continue;
+    }
+    const ym = `${rec.year}-${String(rec.month).padStart(2, "0")}`;
+    touched[ym] ||= replace
+      ? { records: {}, source_records: existing[ym]?.source_records || {} }
+      : existing[ym] || { records: {}, source_records: {} };
+    const r = upsertHistory(touched[ym], rec);
     if (r) saved.push(r);
     done++;
     if (done % 150 === 0) onProgress?.({ done, total: records.length });
   }
-  await saveHistoryDoc(data);
+
+  for (const [ym, data] of Object.entries(touched)) await saveMonth(ym, data);
   onProgress?.({ done: records.length, total: records.length });
   return saved;
 }
@@ -573,19 +728,39 @@ export async function saveHistoryBatch(records, { replace = false, onProgress } 
 export async function rollupReportToHistory(incidents, reportId) {
   if (!incidents.length) return { updated: 0 };
   try {
-    const data = await loadHistory();
+    const contrib = computeContribution(incidents);
+    const meta = driverMeta(incidents);
     // Idempotent per report: reverse any prior contribution before re-applying,
     // so re-dropping a report can never double-count.
-    if (reportId && data.report_contrib[reportId]) {
-      applyContribution(data, data.report_contrib[reportId], -1);
+    const prior = reportId ? await loadReportContrib(reportId) : null;
+
+    // Only the months either contribution touches need to be read and written.
+    const priorByMonth = prior ? contribByMonth(prior) : {};
+    const nextByMonth = contribByMonth(contrib);
+    const months = new Set([
+      ...Object.keys(priorByMonth),
+      ...Object.keys(nextByMonth),
+    ]);
+
+    for (const ym of months) {
+      const data = await loadMonth(ym);
+      if (priorByMonth[ym]) applyContribution(data, priorByMonth[ym], -1);
+      if (nextByMonth[ym]) applyContribution(data, nextByMonth[ym], +1, meta);
+      await saveMonth(ym, data);
     }
-    const contrib = computeContribution(incidents);
-    applyContribution(data, contrib, +1, driverMeta(incidents));
-    if (reportId) data.report_contrib[reportId] = contrib;
-    await saveHistoryDoc(data);
+
+    if (reportId) {
+      await setDoc(doc(db, REPORT_CONTRIB, reportId), {
+        report_id: reportId,
+        cat: contrib.cat,
+        src: contrib.src,
+        updated_at: nowISO(),
+      });
+    }
     return {
       updated: Object.keys(contrib.cat).length,
       source_updated: Object.keys(contrib.src).length,
+      months: months.size,
     };
   } catch (err) {
     console.warn("rollupReportToHistory failed:", err.message);
@@ -595,12 +770,18 @@ export async function rollupReportToHistory(incidents, reportId) {
 
 export async function deleteAllHistory() {
   try {
-    const data = await loadHistory();
-    const deleted = Object.keys(data.records).length;
-    await setDoc(doc(db, META, "history"), {
-      records: {},
-      updated_at: nowISO(),
-    });
+    let deleted = 0;
+    for (const ym of await monthIds()) {
+      const { records } = await loadMonth(ym);
+      deleted += Object.keys(records).length;
+      await deleteDoc(doc(db, HISTORY, ym)).catch(() => {});
+    }
+    // Clear the legacy document too so it can't resurface as a fallback.
+    const legacy = await getDoc(doc(db, META, "history"));
+    if (legacy.exists()) {
+      deleted += Object.keys(legacy.data().records || {}).length;
+      await setDoc(doc(db, META, "history"), { records: {}, updated_at: nowISO() });
+    }
     return { deleted };
   } catch (err) {
     console.warn("deleteAllHistory failed:", err.message);
