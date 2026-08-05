@@ -11,7 +11,7 @@ import {
   getIncidentPhotos,
 } from "../data/firebase.js";
 import { matchDriver } from "../data/driverMatch.js";
-import { fetchAttempts, deleteAttempt, todayET } from "../data/attemptsFeed.js";
+import { fetchAttemptsForDay, deleteAttempt, todayET } from "../data/attemptsFeed.js";
 import { periodWindow } from "../data/period.js";
 import DriverModal from "./DriverModal.jsx";
 import ManualEntryAnalytics from "./ManualEntryAnalytics.jsx";
@@ -188,8 +188,18 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   // you can browse auto attempts for any day independent of the manual log date.
   const feedEnabled = !!config.feed;
   const [feedDate, setFeedDate] = React.useState(todayET);
-  const [feed, setFeed] = React.useState({ status: "idle", attempts: [], error: null });
-  const [feedNonce, setFeedNonce] = React.useState(0); // bump to refetch
+  const [feed, setFeed] = React.useState({
+    status: "idle",
+    attempts: [],
+    error: null,
+    provisionalCount: 0,
+    deriveError: null,
+  });
+  // Bump to refetch. `scan` forces live detection off the dispatch stop index (the
+  // "Run scan" button); a plain date change settles for "auto" — detect only when the
+  // evening scan hasn't written that day yet — so browsing history stays cheap.
+  const [feedNonce, setFeedNonce] = React.useState(0);
+  const [feedScan, setFeedScan] = React.useState(false);
   const [feedDeletingId, setFeedDeletingId] = React.useState(null);
 
   React.useEffect(() => {
@@ -197,20 +207,35 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     const controller = new AbortController();
     let active = true;
     setFeed((f) => ({ ...f, status: "loading", error: null }));
-    fetchAttempts(feedDate, { signal: controller.signal })
+    fetchAttemptsForDay(feedDate, {
+      derive: feedScan ? true : "auto",
+      signal: controller.signal,
+    })
       .then((j) => {
         if (!active) return;
-        setFeed({ status: "ready", attempts: j.attempts || [], error: null });
+        setFeed({
+          status: "ready",
+          attempts: j.attempts || [],
+          error: null,
+          provisionalCount: j.provisionalCount || 0,
+          deriveError: j.deriveError || null,
+        });
       })
       .catch((e) => {
         if (!active || e.name === "AbortError") return;
-        setFeed({ status: "error", attempts: [], error: e.message || "Failed to load" });
+        setFeed({
+          status: "error",
+          attempts: [],
+          error: e.message || "Failed to load",
+          provisionalCount: 0,
+          deriveError: null,
+        });
       });
     return () => {
       active = false;
       controller.abort();
     };
-  }, [feedEnabled, feedDate, feedNonce]);
+  }, [feedEnabled, feedDate, feedNonce, feedScan]);
 
   // A saved driver-reassignment for a feed attempt (an attributed "attempts"
   // incident keyed to the stop). Its presence overrides the feed's driver and
@@ -1133,16 +1158,24 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                   type="date"
                   value={feedDate}
                   max={todayET()}
-                  onChange={(e) => setFeedDate(e.target.value || todayET())}
+                  onChange={(e) => {
+                    // A new day starts from the settled list again; only the button
+                    // below opts into the heavy live-detection pass.
+                    setFeedScan(false);
+                    setFeedDate(e.target.value || todayET());
+                  }}
                   style={{ fontFamily: "var(--mono)" }}
                   title="Show the attempts log (auto + manual) for this day"
                 />
                 <button
                   type="button"
                   className="btn ghost sm"
-                  onClick={() => setFeedNonce((n) => n + 1)}
+                  onClick={() => {
+                    setFeedScan(true);
+                    setFeedNonce((n) => n + 1);
+                  }}
                   disabled={feed.status === "loading"}
-                  title="Re-run the attempts scan for this day"
+                  title="Detect this day's attempts from the live dispatch board now, without waiting for the 8 PM scan"
                   style={{ marginLeft: 8 }}
                 >
                   {feed.status === "loading" ? "Scanning…" : "↻ Run scan"}
@@ -1185,6 +1218,21 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
               Couldn't load auto attempts for {fmtMDY(feedDate)} ({feed.error}).
             </div>
           )}
+          {feedEnabled && feed.status === "ready" && feed.deriveError && (
+            <div className="empty-state" style={{ color: "var(--accent-amber, #b45309)" }}>
+              Showing the settled list only — couldn't reach the live dispatch board
+              ({feed.deriveError}).
+            </div>
+          )}
+          {feedEnabled && feed.status === "ready" && feed.provisionalCount > 0 && (
+            <div className="empty-state">
+              {feed.provisionalCount} attempt{feed.provisionalCount === 1 ? "" : "s"} detected
+              live on the dispatch board and marked <strong>LIVE</strong>. Once a stop is
+              re-routed, dispatch no longer shows who attempted it — the 8 PM scan recovers
+              that from the morning plan. Attribute one now with its driver dropdown, or
+              leave it for the scan.
+            </div>
+          )}
           {totalOnRecord === 0 &&
             !(feedEnabled && (feed.status === "loading" || feed.status === "error")) && (
               <div className="empty-state">
@@ -1209,7 +1257,16 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
           {filteredFeed.map((a) => (
             <div key={`auto-${a.stopNbr || a.shipmentNbr}`} className="ff-log-entry">
               <div className="dd-incident-head" style={{ cursor: "default" }}>
-                <span className="ff-src-chip auto">AUTO</span>
+                <span
+                  className="ff-src-chip auto"
+                  title={
+                    a.provisional
+                      ? "Detected from the live dispatch board — the 8 PM scan hasn't attributed it to a driver yet"
+                      : "Attributed by the dispatch app's evening scan"
+                  }
+                >
+                  {a.provisional ? "LIVE" : "AUTO"}
+                </span>
                 <span className="pro-num">{a.shipmentNbr || "—"}</span>
                 <span
                   className="ff-auto-driver"
@@ -1218,12 +1275,18 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                   <select
                     value={overrideFor(a.stopNbr)?.driver_id || ""}
                     onChange={(e) => reassignAuto(a, e.target.value)}
-                    title="Attribute this attempt to a driver"
+                    title={
+                      a.provisional
+                        ? "Attribute this attempt now, or leave it for the 8 PM scan"
+                        : "Attribute this attempt to a driver"
+                    }
                   >
                     <option value="">
                       {a.originalDriverName
                         ? `${a.originalDriverName} · from feed`
-                        : "Unknown · from feed"}
+                        : a.provisional
+                          ? `Not yet attributed${a.currentDriverName ? ` · now on ${a.currentDriverName}` : ""}`
+                          : "Unknown · from feed"}
                     </option>
                     {driverOptions}
                   </select>
@@ -1246,7 +1309,11 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                 <span style={{ marginLeft: "auto" }}>
                   <AttemptStatusBadge a={a} />
                 </span>
-                {config.feedDeletable && (
+                {/* Delete removes a row from the dispatch app's stored attempts list.
+                    A LIVE row isn't in that list yet, so "deleting" it would report
+                    success and change nothing — it would reappear on the next scan.
+                    Withheld until the evening scan has actually recorded it. */}
+                {config.feedDeletable && !a.provisional && (
                   <span className="ff-row-actions">
                     <button
                       className="btn ghost sm"
