@@ -964,7 +964,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                     </select>
                   </div>
                 )}
-                <div>
+                <div className="ff-charge-col">
                   <div className="dd-k">Charge to driver</div>
                   <div className="ff-charge-driver">
                     <select value={driverId} onChange={(e) => setDriverId(e.target.value)}>

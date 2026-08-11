@@ -1916,10 +1916,20 @@ table.data.analytics-subtable th {
 }
 .ff-charge-row select, .ff-charge-row input { margin-top: 4px; }
 /* Driver select + its match note (Auto-matched / Manual override) sit side by
-   side, so the note doesn't stack under the dropdown and unbalance the row. */
-.ff-charge-driver { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+   side, so the note doesn't stack under the dropdown and unbalance the row.
+   The field must not SHRINK to make room for the Notes input next to it (Notes is
+   flex:1 and would otherwise squeeze this column until the note wrapped under the
+   dropdown), so the column is fixed-size and the pair is nowrap. */
+.ff-charge-col { flex: 0 0 auto; }
+.ff-charge-driver { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; margin-top: 4px; }
 .ff-charge-driver select { margin-top: 0; }
 .ff-charge-note { white-space: nowrap; }
+/* On a phone the whole field already sits on its own line, where select + note
+   side by side would overflow — let it wrap there instead. */
+@media (max-width: 760px) {
+  .ff-charge-col { flex: 1 1 100%; }
+  .ff-charge-driver { flex-wrap: wrap; }
+}
 /* Lookup preview: meta grid on the left, order-contents stats filling the right. */
 .ff-preview-top {
   display: flex;
