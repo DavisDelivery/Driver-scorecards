@@ -281,6 +281,11 @@ async function drawEntryCard(doc, entry, photos, x, y, w, { itemLabel, color }) 
  *   periodLabel – e.g. "Last Week"
  *   rangeText   – e.g. "07/27/2026 – 07/31/2026"
  */
+// Pass `doc` to APPEND this driver's report to an existing document instead of
+// starting a new one — that's how the all-drivers pack is built. Each driver still
+// begins on a fresh page and keeps its OWN "Page X of Y" count, because the pack is
+// printed once and then split up, and every driver is handed a document that reads
+// as their own rather than "page 34 of 96".
 export async function generateDriverReport({
   driverName,
   entries,
@@ -288,8 +293,10 @@ export async function generateDriverReport({
   periodLabel,
   rangeText,
   onProgress,
+  doc: existingDoc,
 }) {
-  const doc = new jsPDF({ unit: "pt", format: "letter" });
+  const appending = !!existingDoc;
+  const doc = existingDoc || new jsPDF({ unit: "pt", format: "letter" });
   const pageW = doc.internal.pageSize.getWidth();
   const pageH = doc.internal.pageSize.getHeight();
   const contentW = pageW - PAGE_MARGIN * 2;
@@ -366,7 +373,9 @@ export async function generateDriverReport({
   const totalPages = Math.max(signoffPage, page) + 1;
 
   for (let p = 0; p < totalPages; p++) {
-    if (p > 0) doc.addPage();
+    // When appending, the very first page needs a break too — otherwise this
+    // driver's banner lands on top of the previous driver's sign-off.
+    if (p > 0 || appending) doc.addPage();
     if (p === 0) {
       drawTitleBanner(doc, bannerCtx);
       drawSummary(
@@ -447,4 +456,9 @@ export function driverReportFilename(driverName, heading, periodLabel) {
       .replace(/[^a-z0-9]+/gi, "_")
       .replace(/^_+|_+$/g, "");
   return `${clean(driverName)}_${clean(heading)}_${clean(periodLabel)}.pdf`;
+}
+
+// Filename for the every-driver pack: "All_Drivers_Forgotten_Freight_Last_Week.pdf".
+export function allDriversReportFilename(heading, periodLabel) {
+  return driverReportFilename("All Drivers", heading, periodLabel);
 }

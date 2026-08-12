@@ -4,6 +4,7 @@ import { hiddenDriverIds } from "../data/drivers.js";
 import {
   generateDriverReport,
   driverReportFilename,
+  allDriversReportFilename,
 } from "../reports/driverReport.js";
 import {
   saveIncident,
@@ -185,7 +186,8 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   // driver (set by clicking a driver in the By-Driver summary).
   const [groupByDriver, setGroupByDriver] = React.useState(false);
   const [driverFilter, setDriverFilter] = React.useState(null);
-  // Per-driver handout PDF build state.
+  // Handout PDF build state. `printing` is false | "one" | "all" so the two buttons
+  // can label their own progress (photos for one driver, drivers for the pack).
   const [printing, setPrinting] = React.useState(false);
   const [printProgress, setPrintProgress] = React.useState({ done: 0, total: 0 });
 
@@ -468,7 +470,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       alert("No entries for that driver in this period.");
       return;
     }
-    setPrinting(true);
+    setPrinting("one");
     setPrintProgress({ done: 0, total: 0 });
     try {
       const { win } = logPeriod;
@@ -489,6 +491,52 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
           logPeriod.label,
         ),
       );
+    } catch (err) {
+      alert("Could not build the report: " + (err?.message || err));
+    } finally {
+      setPrinting(false);
+      setPrintProgress({ done: 0, total: 0 });
+    }
+  }
+
+  // One PDF holding every driver's handout for the same period, in the order the
+  // by-driver chart shows them. Each driver starts on a fresh page and keeps its own
+  // page numbering, so the pack prints once and splits cleanly into handouts.
+  // Deactivated drivers are already absent from byDriver, so they're not printed —
+  // and, per the same rule, no total on screen changes because of that.
+  async function printAllDriverReports() {
+    const targets = byDriver
+      .map((row) => ({
+        row,
+        entries: manualForView.filter(
+          (i) => (i.driver_id || `name:${driverNameOf(i)}`) === row.key,
+        ),
+      }))
+      .filter((t) => t.entries.length);
+    if (!targets.length) {
+      alert("No entries in this period.");
+      return;
+    }
+    setPrinting("all");
+    setPrintProgress({ done: 0, total: targets.length });
+    try {
+      const { win } = logPeriod;
+      const rangeText =
+        win?.start && win?.end ? `${fmtMDY(win.start)} – ${fmtMDY(win.end)}` : "";
+      let doc = null;
+      for (const [i, t] of targets.entries()) {
+        // Feeding the previous doc back in appends this driver to the same file.
+        doc = await generateDriverReport({
+          driverName: t.row.name,
+          entries: t.entries,
+          config,
+          periodLabel: logPeriod.label,
+          rangeText,
+          doc,
+        });
+        setPrintProgress({ done: i + 1, total: targets.length });
+      }
+      doc.save(allDriversReportFilename(config.heading, logPeriod.label));
     } catch (err) {
       alert("Could not build the report: " + (err?.message || err));
     } finally {
@@ -1069,11 +1117,22 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                       : "Pick a driver first"
                   }
                 >
-                  {printing
+                  {printing === "one"
                     ? printProgress.total
                       ? `Building PDF… ${printProgress.done}/${printProgress.total}`
                       : "Building PDF…"
                     : "📄 Print driver report"}
+                </button>
+                <button
+                  type="button"
+                  className="btn ghost sm"
+                  onClick={printAllDriverReports}
+                  disabled={!byDriver.length || !!printing}
+                  title={`One PDF with every driver's report for ${logPeriod.label} — each driver starts on a new page`}
+                >
+                  {printing === "all"
+                    ? `Building PDF… driver ${printProgress.done}/${printProgress.total}`
+                    : `📄 Print all (${byDriver.length})`}
                 </button>
               </span>
             </div>
