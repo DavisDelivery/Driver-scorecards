@@ -65,34 +65,15 @@ export const SEED_DRIVERS = [
   { name: "Sammy Graham", role: "driver" },
   { name: "Prince Buckle", role: "driver" },
   { name: "Ricardo Burrowes", role: "driver" },
-  { name: "Theo", role: "driver" },
-  { name: "Scott", role: "driver" },
-  { name: "Mandi", role: "driver" },
-  { name: "Darvin", role: "driver" },
-  { name: "Bonzo", role: "driver" },
-  { name: "Kazeem", role: "driver" },
-  { name: "Watkins", role: "non-driver" },
-  { name: "Frank", role: "non-driver" },
-  { name: "Leroy", role: "driver" },
-  { name: "Kostner", role: "non-driver" },
-  { name: "Terrance", role: "driver" },
-  { name: "Teerrance", role: "driver" },
-  { name: "Brett", role: "non-driver" },
-  { name: "Richard", role: "non-driver" },
-  { name: "Marcus Crumpton", role: "driver" },
-  { name: "Denis", role: "driver" },
-  { name: "AB", role: "driver" },
-  { name: "Victor", role: "non-driver" },
-  { name: "Fred", role: "non-driver" },
-  { name: "Enock", role: "non-driver" },
-  { name: "Frye", role: "non-driver" },
-  { name: "Samuel", role: "driver" },
-  { name: "Nelson", role: "driver" },
-  { name: "Montel", role: "driver" },
-  { name: "Stephen", role: "driver" },
-  { name: "Chris", role: "non-driver" },
-  { name: "Marcus", role: "driver" },
 ];
+
+// NOTE: the seed used to end with a tail of ~26 single-name rows (Theo, Scott,
+// Mandi, Kazeem, Frye, Teerrance, Marcus, …) that duplicated drivers already listed
+// above under their full names. They were not harmless clutter — a bare first name
+// on the roster actively BREAKS attribution, because matchDriver's first-name
+// fallback only fires when exactly one driver shares that first name. With both
+// "Scott" and "Scott Hart" present, a NuVizz name that should have resolved to
+// Scott Hart matched nothing at all. Keep this list to full names only.
 
 // Incident categories (used across the scorecard, incident tables, and trends).
 export const INCIDENT_CATEGORIES = [
