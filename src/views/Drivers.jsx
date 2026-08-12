@@ -218,6 +218,70 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
     }
   }
 
+  // --- single-name cleanup -------------------------------------------------
+  // The roster carried a tail of bare first names (Scott, Marcus, Kazeem, …) that
+  // duplicate drivers already on it under their full names. They are not just
+  // untidy: a bare first name BREAKS attribution, because matchDriver's first-name
+  // fallback only fires when exactly one driver shares that first name — with both
+  // "Scott" and "Scott Hart" present, a NuVizz "Scott" resolves to the stub and that
+  // driver's record silently splits in two.
+  const nameTokens = (n) =>
+    String(n || "").toLowerCase().replace(/[^a-z ]/g, "").trim().split(/\s+/).filter(Boolean);
+
+  const stubRows = React.useMemo(() => {
+    const full = drivers.filter((d) => nameTokens(d.name).length > 1);
+    return drivers
+      .filter((d) => nameTokens(d.name).length === 1)
+      .map((d) => {
+        const tok = nameTokens(d.name)[0];
+        // Whoever on the roster carries this word as a first OR last name.
+        const candidates = full.filter((f) => nameTokens(f.name).includes(tok));
+        return {
+          driver: d,
+          candidates,
+          // Only propose a target when there is exactly one — "Terrance" could be
+          // Terrance Taylor or Terrance Hawk, and guessing puts the wrong name on a
+          // driver's accountability record.
+          target: candidates.length === 1 ? candidates[0] : null,
+          keeps: hasRecords(d.id),
+        };
+      });
+  }, [drivers, incidents, history]);
+
+  // Remove the stub rows that carry no history. Anything with entries on record, or
+  // with no single obvious full-name owner, is deliberately LEFT ALONE and reported
+  // — merging those is a judgement call about who a person is, not a cleanup.
+  async function cleanUpStubRows() {
+    if (!stubRows.length) return;
+    const removable = stubRows.filter((s) => !s.keeps);
+    const skipped = stubRows.filter((s) => s.keeps);
+    const line = (s) =>
+      `  • ${s.driver.name}${s.target ? ` → already on the roster as ${s.target.name}` : s.candidates.length ? ` → ambiguous (${s.candidates.map((c) => c.name).join(" / ")})` : " → no full-name match"}`;
+    const msg = [
+      removable.length
+        ? `Remove ${removable.length} single-name row${removable.length === 1 ? "" : "s"} with no entries on record:\n${removable.map(line).join("\n")}`
+        : "No single-name rows can be removed automatically.",
+      skipped.length
+        ? `\n\nLeaving ${skipped.length} alone because ${skipped.length === 1 ? "it has" : "they have"} entries on record — rename or reassign ${skipped.length === 1 ? "it" : "them"} by hand so nothing is orphaned:\n${skipped.map(line).join("\n")}`
+        : "",
+    ].join("");
+    if (!removable.length) {
+      alert(msg);
+      return;
+    }
+    if (!confirm(`${msg}\n\nRemove the ${removable.length} listed above?`)) return;
+    setSavingRoster(true);
+    try {
+      const drop = new Set(removable.map((s) => s.driver.id));
+      await saveDrivers(drivers.filter((d) => !drop.has(d.id)));
+      onUpdate && onUpdate();
+    } catch (err) {
+      alert(`Cleanup failed — the roster was NOT changed.\n\n${err.message}`);
+    } finally {
+      setSavingRoster(false);
+    }
+  }
+
   async function reactivateDriver(driver) {
     setSavingRoster(true);
     try {
@@ -277,6 +341,16 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
           Show inactive
         </label>
         <div className="toolbar-spacer" />
+        {stubRows.length > 0 && (
+          <button
+            className="btn ghost"
+            onClick={cleanUpStubRows}
+            disabled={savingRoster}
+            title="Remove roster rows that are only a first name and duplicate a driver already listed with their full name"
+          >
+            ⚠ Fix {stubRows.length} single-name row{stubRows.length === 1 ? "" : "s"}
+          </button>
+        )}
         <button className="btn" onClick={openAdd}>
           + Add Driver/Loader
         </button>
