@@ -57,6 +57,20 @@ export async function fetchAttempts(date, { driver, signal } = {}) {
 export const isAttemptShipment = (shipmentNbr) =>
   /^att/i.test(String(shipmentNbr ?? "").trim());
 
+// Shift a YYYY-MM-DD by whole days. Built from the string's own components rather
+// than new Date(str), so it can never land a day off through timezone parsing.
+export function shiftDay(date, delta) {
+  const m = String(date || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return date;
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3] + delta));
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}`;
+}
+
+// Yesterday in the business timezone — the most useful day on the attempts log,
+// since its 8pm scan has already run and attributed every attempt to a driver.
+export const yesterdayET = () => shiftDay(todayET(), -1);
+
 // Is this ET day recent enough that the dispatch app's stop index still covers it?
 // Differenced on the date strings themselves (never through new Date()) so the answer
 // can't shift a day with the viewer's timezone.

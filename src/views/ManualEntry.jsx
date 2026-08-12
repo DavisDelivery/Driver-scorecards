@@ -11,7 +11,12 @@ import {
   getIncidentPhotos,
 } from "../data/firebase.js";
 import { matchDriver } from "../data/driverMatch.js";
-import { fetchAttemptsForDay, deleteAttempt, todayET } from "../data/attemptsFeed.js";
+import {
+  fetchAttemptsForDay,
+  deleteAttempt,
+  todayET,
+  yesterdayET,
+} from "../data/attemptsFeed.js";
 import { periodWindow } from "../data/period.js";
 import DriverModal from "./DriverModal.jsx";
 import ManualEntryAnalytics from "./ManualEntryAnalytics.jsx";
@@ -1167,6 +1172,20 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                   style={{ fontFamily: "var(--mono)" }}
                   title="Show the attempts log (auto + manual) for this day"
                 />
+                {/* Yesterday is the day worth jumping to: its 8 PM scan has run, so
+                    every attempt is already attributed to the driver who had it. */}
+                <button
+                  type="button"
+                  className={`btn ghost sm ${feedDate === yesterdayET() ? "active" : ""}`}
+                  onClick={() => {
+                    setFeedScan(false);
+                    setFeedDate(yesterdayET());
+                  }}
+                  disabled={feedDate === yesterdayET()}
+                  title="Jump to yesterday, whose attempts the evening scan has already attributed"
+                >
+                  Yesterday
+                </button>
                 <button
                   type="button"
                   className="btn ghost sm"
