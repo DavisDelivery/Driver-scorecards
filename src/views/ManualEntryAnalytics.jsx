@@ -158,7 +158,18 @@ export default function ManualEntryAnalytics({ title, color, records, drivers, o
         <div className="section-head" style={{ margin: 0 }}>
           {title} · Analytics
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        {/* min-width:0 so this group can shrink inside the head instead of
+            forcing it wider than the cards below. */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "flex-end",
+            gap: 12,
+            flexWrap: "wrap",
+            minWidth: 0,
+          }}
+        >
           <div className="month-picker" style={{ margin: 0 }}>
             {PERIODS.map(([val, label]) => (
               <button

@@ -871,6 +871,10 @@ label.field > span {
 }
 .month-picker {
   display: flex;
+  /* Wrap to a second row rather than running off the edge — the pill list is long
+     enough that it doesn't fit beside a title on a laptop or a split window. */
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 2px;
   background: var(--bg-1);
   border: 1px solid var(--border);
@@ -1197,10 +1201,16 @@ hr.div {
     max-width: 100%;
     margin: 0;
   }
+  /* Every direct child of .content shares the SAME cap, so a header always lines
+     up with the card it labels. A header left out of this list stretches wider
+     than the cards, and anything right-aligned inside it (the period pills) then
+     hangs off past the card column on a wide screen. */
   .content .card,
   .content .toolbar,
   .content .page-heading,
   .content .page-title,
+  .content .section-head,
+  .content .me-analytics-head,
   .content > h1,
   .content > h2 {
     max-width: 1800px;
@@ -1830,6 +1840,11 @@ table.data.analytics-subtable th {
   gap: 8px;
   flex-shrink: 0;
 }
+/* Date + Yesterday + Run scan is more than fits on a phone in one line, so let
+   the group break there rather than push the log wider than the screen. */
+@media (max-width: 760px) {
+  .ff-feed-date { flex-shrink: 1; flex-wrap: wrap; }
+}
 .ff-auto-driver {
   display: inline-flex;
   align-items: center;
@@ -2207,5 +2222,5 @@ table.data.analytics-subtable th {
 }
 
 /* custom period range inputs (v0.10.0) */
-.custom-range { display: flex; align-items: center; gap: 7px; }
+.custom-range { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; justify-content: flex-end; }
 .custom-range input { font-family: "JetBrains Mono", monospace; font-size: 12px; }
