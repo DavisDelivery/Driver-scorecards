@@ -1,5 +1,5 @@
 import React from "react";
-import { getHistory, saveDrivers } from "../data/firebase.js";
+import { getHistory, saveDrivers, saveIncidentsBatch } from "../data/firebase.js";
 import { ROLES, newDriverId } from "../data/drivers.js";
 import DriverModal, { ymKey } from "./DriverModal.jsx";
 
@@ -239,40 +239,62 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
         return {
           driver: d,
           candidates,
-          // Only propose a target when there is exactly one — "Terrance" could be
-          // Terrance Taylor or Terrance Hawk, and guessing puts the wrong name on a
-          // driver's accountability record.
+          // A single full-name owner is used to move entries before the row goes.
+          // With two candidates there is no safe answer — "Terrance" is Taylor or
+          // Hawk — so those entries are left on their own driver_id rather than
+          // guessed onto the wrong person's record.
           target: candidates.length === 1 ? candidates[0] : null,
-          keeps: hasRecords(d.id),
+          entries: incidents.filter((i) => i.driver_id === d.id),
+          historyRows: history.filter((r) => r.driver_id === d.id).length,
         };
       });
   }, [drivers, incidents, history]);
 
-  // Remove the stub rows that carry no history. Anything with entries on record, or
-  // with no single obvious full-name owner, is deliberately LEFT ALONE and reported
-  // — merging those is a judgement call about who a person is, not a cleanup.
+  // Remove EVERY single-name row. Entries sitting on one are moved to its full-name
+  // owner first where there is exactly one, so the delete can't cost any attribution;
+  // where the name is ambiguous the entries keep their own driver_id and stay counted
+  // (an unknown driver_id is never hidden — see the reporting rules), they just show
+  // as unattributed until someone reassigns them.
   async function cleanUpStubRows() {
     if (!stubRows.length) return;
-    const removable = stubRows.filter((s) => !s.keeps);
-    const skipped = stubRows.filter((s) => s.keeps);
-    const line = (s) =>
-      `  • ${s.driver.name}${s.target ? ` → already on the roster as ${s.target.name}` : s.candidates.length ? ` → ambiguous (${s.candidates.map((c) => c.name).join(" / ")})` : " → no full-name match"}`;
-    const msg = [
-      removable.length
-        ? `Remove ${removable.length} single-name row${removable.length === 1 ? "" : "s"} with no entries on record:\n${removable.map(line).join("\n")}`
-        : "No single-name rows can be removed automatically.",
-      skipped.length
-        ? `\n\nLeaving ${skipped.length} alone because ${skipped.length === 1 ? "it has" : "they have"} entries on record — rename or reassign ${skipped.length === 1 ? "it" : "them"} by hand so nothing is orphaned:\n${skipped.map(line).join("\n")}`
-        : "",
-    ].join("");
-    if (!removable.length) {
-      alert(msg);
-      return;
-    }
-    if (!confirm(`${msg}\n\nRemove the ${removable.length} listed above?`)) return;
+    const line = (s) => {
+      const n = s.entries.length + s.historyRows;
+      const where = s.target
+        ? `entries → ${s.target.name}`
+        : s.candidates.length
+          ? `ambiguous (${s.candidates.map((c) => c.name).join(" / ")}) — entries left unattributed`
+          : "no full-name match";
+      return `  • ${s.driver.name}${n ? ` (${n} on record; ${where})` : ""}`;
+    };
+    const moving = stubRows.filter((s) => s.target && s.entries.length);
+    const stranding = stubRows.filter((s) => !s.target && (s.entries.length || s.historyRows));
+    const movedCount = moving.reduce((a, s) => a + s.entries.length, 0);
+    const msg =
+      `Remove all ${stubRows.length} single-name row${stubRows.length === 1 ? "" : "s"}:\n` +
+      stubRows.map(line).join("\n") +
+      (movedCount
+        ? `\n\n${movedCount} entr${movedCount === 1 ? "y" : "ies"} will be moved to the matching full-name driver first.`
+        : "") +
+      (stranding.length
+        ? `\n\n${stranding.length} row${stranding.length === 1 ? " has" : "s have"} records but no single obvious owner. Those records stay counted in every total, but will show as unattributed until you reassign them.`
+        : "") +
+      `\n\nThis can't be undone. Remove them?`;
+    if (!confirm(msg)) return;
     setSavingRoster(true);
     try {
-      const drop = new Set(removable.map((s) => s.driver.id));
+      // Entries first: if this fails, the roster is untouched and nothing is lost.
+      if (movedCount) {
+        await saveIncidentsBatch(
+          moving.flatMap((s) =>
+            s.entries.map((i) => ({
+              ...i,
+              driver_id: s.target.id,
+              driver_name: s.target.name,
+            })),
+          ),
+        );
+      }
+      const drop = new Set(stubRows.map((s) => s.driver.id));
       await saveDrivers(drivers.filter((d) => !drop.has(d.id)));
       onUpdate && onUpdate();
     } catch (err) {
@@ -346,9 +368,9 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
             className="btn ghost"
             onClick={cleanUpStubRows}
             disabled={savingRoster}
-            title="Remove roster rows that are only a first name and duplicate a driver already listed with their full name"
+            title="Remove every roster row that is only a first name — they duplicate drivers already listed with their full names"
           >
-            ⚠ Fix {stubRows.length} single-name row{stubRows.length === 1 ? "" : "s"}
+            ⚠ Remove {stubRows.length} single-name row{stubRows.length === 1 ? "" : "s"}
           </button>
         )}
         <button className="btn" onClick={openAdd}>
