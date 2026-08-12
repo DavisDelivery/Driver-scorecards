@@ -84,6 +84,31 @@ export function isRecentDay(date, withinDays = 2) {
   return d !== null && today !== null && today - d >= 0 && today - d <= withinDays;
 }
 
+// Which ET day a stop was DUE on, which is what makes it that day's attempt.
+//
+// This is the whole difference between "attempted today" and "failed earlier and still
+// being redelivered". A stop that fails is re-planned onto a later day's route, so it
+// keeps appearing on the board for days — but the vendor does NOT roll its estimated
+// arrival forward, and the evening scan's saved search filters on arrival = today. So
+// arrival day is the field that decides.
+//
+// `plannedEtaDTTM` is the vendor's own estimated arrival and is checked FIRST because
+// it reproduces the evening scan's result exactly. The other two candidates do not:
+//   - `boardDate` is arrival-OR-requested date, then re-stamped with the board's day.
+//     Checked on 08-11 it wrongly claims stop 007159137 (vendor arrival 08-10, already
+//     recorded as an 08-10 attempt) as an 08-11 attempt — the scan excluded it.
+//   - `scheduledDate` is stamped by the dispatch app with the board's own date, so it
+//     always equals the day being viewed and would match every row.
+// Both are kept only as fallbacks for a stop carrying no vendor arrival at all, where
+// dropping the row would hide a genuine attempt.
+//
+// Verified against 2026-08-11: filtering on plannedEtaDTTM reproduces the scan's ten
+// recorded stops with no false positives and no false negatives; boardDate adds one.
+const arrivalDay = (s) =>
+  String(s?.plannedEtaDTTM || "").slice(0, 10) ||
+  s?.boardDate ||
+  String(s?.scheduledDate || "").slice(0, 10);
+
 // Detect the day's attempts from the Firestore-backed stop index. NO NuVizz traffic:
 // the endpoint serves the pre-scanned index (its `live=1` debug mode would scan the
 // vendor, so it is deliberately never passed here).
@@ -102,11 +127,18 @@ export async function fetchDerivedAttempts(date, { signal } = {}) {
   const j = await res.json();
   if (!j || j.ok === false) throw new Error(j?.error || "Stop index error");
   const detectedAt = j.generated || j.lastScannedAt || new Date().toISOString();
-  return (Array.isArray(j.stops) ? j.stops : [])
-    .filter((s) => s && s.stopNbr && isAttemptShipment(s.shipmentNbr))
+  const attStops = (Array.isArray(j.stops) ? j.stops : []).filter(
+    (s) => s && s.stopNbr && isAttemptShipment(s.shipmentNbr),
+  );
+  // Due TODAY. Without this every unresolved ATT stop from previous days — still on
+  // the board awaiting redelivery, still ATT-marked — reads as a fresh attempt, and
+  // the same failure is re-reported every day until it finally gets delivered.
+  const dueToday = attStops.filter((s) => arrivalDay(s) === date);
+  const rows = dueToday
     .map((s) => ({
       stopNbr: String(s.stopNbr),
       shipmentNbr: s.shipmentNbr ?? null,
+      orderNbr: s.orderNbr ?? null,
       originalDriverName: null,
       originalDriverUserName: null,
       originalLoadNbr: null,
@@ -125,6 +157,33 @@ export async function fetchDerivedAttempts(date, { signal } = {}) {
       // Detected from the live board, not yet attributed by the evening scan.
       provisional: true,
     }));
+  // Earlier days' failures still sitting on today's board awaiting redelivery. Not
+  // today's attempts — but worth reporting a count for, so an empty log reads as
+  // "nothing failed today" rather than as the feed being broken.
+  return { rows, carriedOver: attStops.length - dueToday.length };
+}
+
+// Flag the rows that are two legs of ONE delivery rather than two failures.
+//
+// When a stop looks wrong, dispatch duplicates it — the copy gets a "-1" stop number
+// but keeps the original's shipment number, so both legs carry the ATT marker and both
+// land in the log looking like separate attempts against the same PRO. (One of them
+// says so in its own note: "DUPPED SINCE ORIGINAL STOP SEEMED BUGGED".) The dispatch
+// app stores attempts keyed by stop number and groups nothing, so its own totals count
+// these twice; rather than quietly diverge from the numbers it reports, the rows are
+// marked so a reader can see WHY the same PRO appears more than once.
+function markSplitLegs(rows) {
+  const byShipment = new Map();
+  for (const r of rows) {
+    const k = String(r.shipmentNbr || "").trim().toUpperCase();
+    if (!k) continue;
+    byShipment.set(k, (byShipment.get(k) || 0) + 1);
+  }
+  return rows.map((r) => {
+    const k = String(r.shipmentNbr || "").trim().toUpperCase();
+    const legs = k ? byShipment.get(k) || 1 : 1;
+    return legs > 1 ? { ...r, legs } : r;
+  });
 }
 
 // The attempts log for one day: the settled list, plus (when asked) anything the
@@ -145,13 +204,21 @@ export async function fetchAttemptsForDay(date, { derive = false, signal } = {})
   const wantDerive =
     derive === true || (derive === "auto" && rows.length === 0 && isRecentDay(date));
   if (!wantDerive) {
-    return { ...settled, attempts: rows, provisionalCount: 0, derived: false };
+    return {
+      ...settled,
+      attempts: markSplitLegs(rows),
+      provisionalCount: 0,
+      derived: false,
+    };
   }
   let provisionalCount = 0;
+  let carriedOver = 0;
   let deriveError = null;
   try {
     const seen = new Set(rows.map((a) => String(a.stopNbr)));
-    for (const row of await fetchDerivedAttempts(date, { signal })) {
+    const derivedResult = await fetchDerivedAttempts(date, { signal });
+    carriedOver = derivedResult.carriedOver;
+    for (const row of derivedResult.rows) {
       if (seen.has(row.stopNbr)) continue;
       seen.add(row.stopNbr);
       rows.push(row);
@@ -165,9 +232,10 @@ export async function fetchAttemptsForDay(date, { derive = false, signal } = {})
   }
   return {
     ...settled,
-    attempts: rows,
+    attempts: markSplitLegs(rows),
     count: rows.length,
     provisionalCount,
+    carriedOver,
     deriveError,
     derived: true,
   };

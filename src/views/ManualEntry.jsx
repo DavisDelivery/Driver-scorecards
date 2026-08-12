@@ -223,6 +223,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
           attempts: j.attempts || [],
           error: null,
           provisionalCount: j.provisionalCount || 0,
+          carriedOver: j.carriedOver || 0,
           deriveError: j.deriveError || null,
         });
       })
@@ -1243,6 +1244,13 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
               ({feed.deriveError}).
             </div>
           )}
+          {feedEnabled && feed.status === "ready" && feed.carriedOver > 0 && (
+            <div className="empty-state">
+              {feed.carriedOver} earlier failure{feed.carriedOver === 1 ? " is" : "s are"} still
+              on the board awaiting redelivery, marked ATT but due before {fmtMDY(feedDate)}.
+              They belong to the day they were attempted and aren't counted here.
+            </div>
+          )}
           {feedEnabled && feed.status === "ready" && feed.provisionalCount > 0 && (
             <div className="empty-state">
               {feed.provisionalCount} attempt{feed.provisionalCount === 1 ? "" : "s"} detected
@@ -1287,6 +1295,14 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                   {a.provisional ? "LIVE" : "AUTO"}
                 </span>
                 <span className="pro-num">{a.shipmentNbr || "—"}</span>
+                {a.legs > 1 && (
+                  <span
+                    className="ff-item-chip"
+                    title={`This PRO is on the log ${a.legs} times because dispatch split or duplicated the stop — same order, ${a.legs} stop numbers, all carrying the ATT marker. Dispatch counts each leg separately.`}
+                  >
+                    {a.legs} legs · 1 order
+                  </span>
+                )}
                 <span
                   className="ff-auto-driver"
                   onClick={(e) => e.stopPropagation()}
