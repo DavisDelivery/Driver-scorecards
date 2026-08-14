@@ -469,6 +469,16 @@ table.data tr.clickable {
 /* Label/value rows inside the stop detail modal. */
 .dd-kv { display: flex; gap: 6px; align-items: baseline; padding: 3px 0; }
 .dd-kv > .dd-k { flex: 0 0 130px; }
+/* Leg switcher for a split order (original stop + its "-1" duplicates). */
+.sd-legs {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
 .chip {
   display: inline-block;
   padding: 2px 8px;
