@@ -25,25 +25,46 @@ function Field({ k, v }) {
   );
 }
 
-export default function StopDetailModal({ row, onClose }) {
-  const [state, setState] = React.useState({ status: "idle", events: [], error: null });
+const IDLE = { status: "idle", events: [], error: null };
+
+export default function StopDetailModal({ row, legs, onClose }) {
+  // Every stop on this order, original first so the "-1" duplicates follow it.
+  const allLegs = React.useMemo(() => {
+    const list = (Array.isArray(legs) && legs.length ? legs : [row]).filter(Boolean);
+    const byStop = new Map(list.map((l) => [String(l.stopNbr), l]));
+    return [...byStop.values()].sort((a, b) =>
+      String(a.stopNbr).localeCompare(String(b.stopNbr)),
+    );
+  }, [legs, row]);
+
+  const [activeStop, setActiveStop] = React.useState(String(row?.stopNbr || ""));
+  // Timelines are per stop, so they're cached per stop — switching between the legs
+  // of one order doesn't re-spend a vendor lookup on a leg already loaded.
+  const [byStop, setByStop] = React.useState({});
 
   React.useEffect(() => {
-    // A new order means the previously loaded timeline no longer applies.
-    setState({ status: "idle", events: [], error: null });
+    setActiveStop(String(row?.stopNbr || ""));
+    setByStop({});
   }, [row?.stopNbr]);
 
+  const active = allLegs.find((l) => String(l.stopNbr) === activeStop) || row;
+  const state = byStop[activeStop] || IDLE;
+
   async function loadHistory() {
-    setState({ status: "loading", events: [], error: null });
+    const stop = activeStop;
+    setByStop((m) => ({ ...m, [stop]: { status: "loading", events: [], error: null } }));
     try {
-      const { events } = await fetchStopEvents(row.stopNbr, { stopId: row.stopId });
-      setState({ status: "ready", events, error: null });
+      const { events } = await fetchStopEvents(stop, { stopId: active?.stopId });
+      setByStop((m) => ({ ...m, [stop]: { status: "ready", events, error: null } }));
     } catch (err) {
-      setState({
-        status: "error",
-        events: [],
-        error: err?.message || "Could not load the activity history",
-      });
+      setByStop((m) => ({
+        ...m,
+        [stop]: {
+          status: "error",
+          events: [],
+          error: err?.message || "Could not load the activity history",
+        },
+      }));
     }
   }
 
@@ -53,16 +74,17 @@ export default function StopDetailModal({ row, onClose }) {
   // unplanned it is listed separately, not as the person who had it.
   const ours = actors.filter((a) => a.drove);
   const others = actors.filter((a) => !a.drove);
-  const place = [row.city, row.state].filter(Boolean).join(", ");
+  const place = [active.city, active.state].filter(Boolean).join(", ");
+  const isDup = /-\d+$/.test(String(active.stopNbr || ""));
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <div>
-            <div className="modal-title">{row.shipmentNbr || row.stopNbr}</div>
+            <div className="modal-title">{active.shipmentNbr || active.stopNbr}</div>
             <div className="meta">
-              {row.businessName || "—"}
+              {active.businessName || "—"}
               {place ? ` · ${place}` : ""}
             </div>
           </div>
@@ -72,25 +94,48 @@ export default function StopDetailModal({ row, onClose }) {
         </div>
 
         <div className="modal-body">
+          {allLegs.length > 1 && (
+            <div className="sd-legs">
+              <span className="dd-k">
+                {allLegs.length} stops on this order — dispatch counts each separately
+              </span>
+              <div className="month-picker" style={{ margin: 0 }}>
+                {allLegs.map((l) => (
+                  <button
+                    key={l.stopNbr}
+                    type="button"
+                    className={`month-btn ${String(l.stopNbr) === activeStop ? "active" : ""}`}
+                    onClick={() => setActiveStop(String(l.stopNbr))}
+                    title={
+                      /-\d+$/.test(String(l.stopNbr))
+                        ? "The duplicate leg dispatch created later"
+                        : "The original stop"
+                    }
+                  >
+                    {l.stopNbr}
+                    {/-\d+$/.test(String(l.stopNbr)) ? "" : " · original"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="dd-notes">
-            <Field k="Stop number" v={row.stopNbr} />
-            <Field k="Shipment" v={row.shipmentNbr} />
-            <Field k="Address" v={row.addr1} />
-            <Field k="Zip" v={row.zip} />
-            <Field k="Status" v={row.currentlyUnplanned ? "Unplanned" : row.currentStatus} />
-            <Field k="Route" v={row.routeName} />
+            <Field k="Stop number" v={active.stopNbr} />
+            <Field k="Shipment" v={active.shipmentNbr} />
+            <Field k="Address" v={active.addr1} />
+            <Field k="Zip" v={active.zip} />
+            <Field
+              k="Status"
+              v={active.currentlyUnplanned ? "Unplanned" : active.currentStatus}
+            />
+            <Field k="Route" v={active.routeName} />
             <Field
               k="Attempt charged to"
-              v={row.originalDriverName || "Not yet attributed"}
+              v={active.originalDriverName || "Not yet attributed"}
             />
-            <Field k="On now" v={row.currentDriverName} />
-            <Field k="Detected" v={fmtDateTime(row.detectedAt)} />
-            {row.legs > 1 && (
-              <Field
-                k="Split"
-                v={`${row.legs} stops on this order — dispatch counts each leg separately`}
-              />
-            )}
+            <Field k="On now" v={active.currentDriverName} />
+            <Field k="Detected" v={fmtDateTime(active.detectedAt)} />
           </div>
 
           <div className="section-head" style={{ marginTop: 18 }}>
@@ -102,12 +147,15 @@ export default function StopDetailModal({ row, onClose }) {
 
           {state.status === "idle" && (
             <div className="empty-state">
-              {row.originalDriverName
+              {active.originalDriverName
                 ? "The timeline shows every planned, dispatched and unplanned action on this stop, with who did it."
-                : "This attempt has no driver attributed — the stop wasn't in the morning routed plan. The timeline names who actually had it."}
+                : isDup
+                  ? "This is the duplicate leg, created after the order was already attempted — it usually carries no driver events at all. Check the original stop above for who had it."
+                  : "This attempt has no driver attributed — the stop wasn't in the morning routed plan. The timeline names who actually had it."}
               <div style={{ marginTop: 10 }}>
                 <button className="btn" onClick={loadHistory}>
                   Load activity history
+                  {allLegs.length > 1 ? ` for ${active.stopNbr}` : ""}
                 </button>
               </div>
             </div>
@@ -142,7 +190,9 @@ export default function StopDetailModal({ row, onClose }) {
                                 `${a.name}${a.routes.length ? ` (${a.routes.join(", ")})` : ""}`,
                             )
                             .join(" · ")
-                        : "No driver ever picked this stop up — it was only planned and unplanned."}
+                        : allLegs.length > 1
+                          ? "No driver ever picked THIS stop up — it was only planned and unplanned. Try the other leg above."
+                          : "No driver ever picked this stop up — it was only planned and unplanned."}
                     </span>
                   </div>
                   {others.length > 0 && (

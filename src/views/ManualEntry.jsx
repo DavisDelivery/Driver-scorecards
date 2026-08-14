@@ -1359,7 +1359,20 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                 <button
                   type="button"
                   className="pro-num pro-num-link"
-                  onClick={() => setStopDetail(a)}
+                  onClick={() =>
+                    setStopDetail({
+                      row: a,
+                      // Every stop on this order, so a split can be inspected leg by
+                      // leg — the driver events usually sit on the ORIGINAL stop while
+                      // the "-1" duplicate has none, so opening one without the other
+                      // answers "who had it" with a blank.
+                      legs: feedRows.filter(
+                        (x) =>
+                          String(x.shipmentNbr || "").trim().toUpperCase() ===
+                          String(a.shipmentNbr || "").trim().toUpperCase(),
+                      ),
+                    })
+                  }
                   title="Open this order — details and, if you want it, the activity history showing who had it"
                 >
                   {a.shipmentNbr || "—"}
@@ -1492,7 +1505,11 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         />
       )}
       {stopDetail && (
-        <StopDetailModal row={stopDetail} onClose={() => setStopDetail(null)} />
+        <StopDetailModal
+          row={stopDetail.row}
+          legs={stopDetail.legs}
+          onClose={() => setStopDetail(null)}
+        />
       )}
     </div>
   );
