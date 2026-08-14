@@ -449,6 +449,26 @@ table.data tr.clickable {
   color: var(--davis-blue);
   font-weight: 600;
 }
+/* A PRO that opens its order. Rendered as a <button> for keyboard and screen-reader
+   reach, so the button chrome has to be stripped back to look like the plain PRO. */
+.pro-num-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--davis-blue);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 2px;
+  transition: text-decoration-color 0.12s;
+}
+.pro-num-link:hover,
+.pro-num-link:focus-visible { text-decoration-color: currentColor; }
+/* Label/value rows inside the stop detail modal. */
+.dd-kv { display: flex; gap: 6px; align-items: baseline; padding: 3px 0; }
+.dd-kv > .dd-k { flex: 0 0 130px; }
 .chip {
   display: inline-block;
   padding: 2px 8px;

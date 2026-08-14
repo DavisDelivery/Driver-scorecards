@@ -241,6 +241,83 @@ export async function fetchAttemptsForDay(date, { derive = false, signal } = {})
   };
 }
 
+// The portal's Activity Timeline for ONE stop: Stop Planned / Dispatched / Updated /
+// Unplanned, each with the time, the person who did it, their company, and the route.
+// This is the only place that says who actually had an order before it was unplanned
+// and re-routed, which is exactly what an unattributed attempt needs.
+//
+// Unlike everything else in this file it is NOT free — the dispatch app answers it with
+// a live vendor lookup. It is therefore only ever called for a single order the user has
+// explicitly opened, never in a loop and never on render.
+export const STOP_EVENTS_URL =
+  "https://dd-dispatch-map.netlify.app/.netlify/functions/nuvizz-stop-events";
+
+// "8/13/26 04:21 PM" -> a sortable key, built from the string's own parts so no
+// timezone conversion can shift the day.
+export function eventSortKey(dttm) {
+  const m = String(dttm || "").match(
+    /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})\s+(\d{1,2}):(\d{2})\s*(AM|PM)?/i,
+  );
+  if (!m) return "";
+  let h = Number(m[4]);
+  const ap = (m[6] || "").toUpperCase();
+  if (ap === "PM" && h !== 12) h += 12;
+  if (ap === "AM" && h === 12) h = 0;
+  const yr = m[3].length === 2 ? `20${m[3]}` : m[3];
+  const p = (n) => String(n).padStart(2, "0");
+  return `${yr}-${p(m[1])}-${p(m[2])}T${p(h)}:${m[5]}`;
+}
+
+export async function fetchStopEvents(stopNbr, { stopId, signal } = {}) {
+  const qs = new URLSearchParams();
+  if (stopNbr) qs.set("stopNbr", String(stopNbr));
+  if (stopId) qs.set("stopId", String(stopId));
+  const res = await fetch(`${STOP_EVENTS_URL}?${qs}`, { signal });
+  const j = await res.json().catch(() => null);
+  if (!res.ok || !j || j.ok === false) {
+    throw new Error(j?.reason || `HTTP ${res.status}`);
+  }
+  // Newest first, matching every other log in the app.
+  const events = (Array.isArray(j.events) ? j.events : [])
+    .map((e) => ({ ...e, _k: eventSortKey(e.dttm) }))
+    .sort((a, b) => b._k.localeCompare(a._k));
+  return { events, source: j.source || "" };
+}
+
+// Events only a DRIVER can produce — they happen out on the road, at the stop.
+// Planning, unplanning, creating and updating a stop are dispatcher actions and are
+// deliberately NOT in here: a dispatcher who plans an order never had it, and listing
+// them as though they did is exactly the wrong answer to "who had this?".
+const DROVE_IT = /(arrival|depart|confirmation|dispatched|delivered|delivery|pod|signature|exception)/i;
+
+// Everyone in a stop's timeline, split by whether they actually handled the order.
+// `drove` is the "who had this" answer — the driver on the pickup/dispatch events,
+// which survives even after the stop is unplanned away from them and re-routed.
+export function actorsFromEvents(events) {
+  const seen = new Map();
+  for (const e of events) {
+    const name = String(e.user || "").replace(/\s+/g, " ").trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (!seen.has(key)) {
+      seen.set(key, {
+        name,
+        company: e.company || "",
+        ours: /davis/i.test(e.company || ""),
+        routes: new Set(),
+        last: e.dttm,
+        actions: 0,
+        drove: false,
+      });
+    }
+    const a = seen.get(key);
+    a.actions++;
+    if (e.routeName) a.routes.add(e.routeName);
+    if (DROVE_IT.test(String(e.name || ""))) a.drove = true;
+  }
+  return [...seen.values()].map((a) => ({ ...a, routes: [...a.routes] }));
+}
+
 // Remove one auto-detected attempt from the feed (by ET day + stopNbr).
 export async function deleteAttempt(date, stopNbr, { signal } = {}) {
   const url =

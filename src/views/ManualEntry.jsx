@@ -20,6 +20,7 @@ import {
 } from "../data/attemptsFeed.js";
 import { periodWindow } from "../data/period.js";
 import DriverModal from "./DriverModal.jsx";
+import StopDetailModal from "./StopDetailModal.jsx";
 import ManualEntryAnalytics from "./ManualEntryAnalytics.jsx";
 import {
   ResponsiveContainer,
@@ -208,6 +209,8 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   const [feedNonce, setFeedNonce] = React.useState(0);
   const [feedScan, setFeedScan] = React.useState(false);
   const [feedDeletingId, setFeedDeletingId] = React.useState(null);
+  // The feed row whose detail/activity-history modal is open.
+  const [stopDetail, setStopDetail] = React.useState(null);
 
   React.useEffect(() => {
     if (!feedEnabled) return;
@@ -1353,7 +1356,14 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                 >
                   {a.provisional ? "LIVE" : "AUTO"}
                 </span>
-                <span className="pro-num">{a.shipmentNbr || "—"}</span>
+                <button
+                  type="button"
+                  className="pro-num pro-num-link"
+                  onClick={() => setStopDetail(a)}
+                  title="Open this order — details and, if you want it, the activity history showing who had it"
+                >
+                  {a.shipmentNbr || "—"}
+                </button>
                 {a.legs > 1 && (
                   <span
                     className="ff-item-chip"
@@ -1480,6 +1490,9 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
           incidents={incidents.filter((i) => i.driver_id === focus.id)}
           onClose={() => setFocus(null)}
         />
+      )}
+      {stopDetail && (
+        <StopDetailModal row={stopDetail} onClose={() => setStopDetail(null)} />
       )}
     </div>
   );
