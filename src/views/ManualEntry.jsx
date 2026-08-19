@@ -445,10 +445,23 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   // Per-driver rollup for the current period: who made mistakes, and how many.
   // Deactivated drivers are left out — this chart is "who am I managing", not a
   // record of the period. Their rows stay in the log and in every count below.
+  // Rows for the ANALYTICS period, whatever the log below happens to be showing.
+  // On the feed-backed tab the log is a single day, but the by-driver breakdown has
+  // to cover the selected period like every other stat in the panel above it — and
+  // it deliberately keeps the reassignment overrides (attempt_stop_nbr) that the log
+  // hides, because those rows are exactly where an auto attempt's driver lives.
+  const periodRows = React.useMemo(() => {
+    const { start, end } = logPeriod.win;
+    return logIncidents.filter((i) => {
+      const d = (i.delivered_date || i.created_at || "").slice(0, 10);
+      return d && d >= start && d <= end;
+    });
+  }, [logIncidents, logPeriod.win]);
+
   const byDriver = React.useMemo(() => {
     const hidden = hiddenDriverIds(drivers);
     const m = new Map();
-    for (const i of manualForView) {
+    for (const i of periodRows) {
       if (i.driver_id && hidden.has(i.driver_id)) continue;
       const name = driverNameOf(i);
       const key = i.driver_id || `name:${name}`;
@@ -458,7 +471,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     return [...m.values()].sort(
       (a, b) => b.count - a.count || a.name.localeCompare(b.name),
     );
-  }, [manualForView, driverNameOf, drivers]);
+  }, [periodRows, driverNameOf, drivers]);
 
   // Build a handout PDF for the currently selected driver, covering exactly the
   // period the charts and log are showing. Uses the same driver key the chart
@@ -466,7 +479,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   async function printDriverReport() {
     if (!driverFilter) return;
     const row = byDriver.find((d) => d.key === driverFilter);
-    const entries = manualForView.filter(
+    const entries = periodRows.filter(
       (i) => (i.driver_id || `name:${driverNameOf(i)}`) === driverFilter,
     );
     if (!entries.length) {
@@ -511,7 +524,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     const targets = byDriver
       .map((row) => ({
         row,
-        entries: manualForView.filter(
+        entries: periodRows.filter(
           (i) => (i.driver_id || `name:${driverNameOf(i)}`) === row.key,
         ),
       }))
@@ -1072,7 +1085,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         leaderLabel={config.leaderLabel}
       />
 
-      {!feedEnabled && byDriver.length > 0 && (
+      {byDriver.length > 0 && (
         <div className="card ff-bydriver-card">
           <div className="card-body">
             <div
@@ -1089,7 +1102,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                 Drivers · {logPeriod.label}
                 <span className="meta">
                   {" "}· {byDriver.length} driver{byDriver.length === 1 ? "" : "s"},{" "}
-                  {manualForView.length} entr{manualForView.length === 1 ? "y" : "ies"}
+                  {periodRows.length} entr{periodRows.length === 1 ? "y" : "ies"}
                 </span>
               </span>
               {/* Always-visible way to print one driver's report. Bound to the
