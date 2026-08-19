@@ -136,6 +136,8 @@ export default function StopDetailModal({ row, legs, onClose }) {
             />
             <Field k="On now" v={active.currentDriverName} />
             <Field k="Detected" v={fmtDateTime(active.detectedAt)} />
+            {/* Full text — the log row clamps it to two lines. */}
+            <Field k="CS note" v={active.note} />
           </div>
 
           <div className="section-head" style={{ marginTop: 18 }}>
