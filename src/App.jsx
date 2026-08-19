@@ -410,7 +410,7 @@ export default function App() {
                 onSaved={applyIncidentChange}
               />
             )}
-            {tab === "reviews" && <Reviews />}
+            {tab === "reviews" && <Reviews incidents={incidents} />}
             {tab === "history" && (
               <History
                 drivers={drivers}
