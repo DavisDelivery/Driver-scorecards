@@ -109,6 +109,29 @@ const arrivalDay = (s) =>
   s?.boardDate ||
   String(s?.scheduledDate || "").slice(0, 10);
 
+// Customer service writes why a delivery failed into the order's instructions, and
+// the vendor concatenates that with Uline's own boilerplate into one semicolon-joined
+// string. The note is whatever ISN'T boilerplate.
+//
+// Matching on the "ATT:" prefix alone is not enough — CS is inconsistent about it
+// ("ATT:", "Att:", "Attempted:", "ATTEMPTED @ 4:20PM.") and a third of the notes carry
+// no marker at all ("PER SERCURITY NO ROOM FOR RECEIVING NOT ABLE TO TAKE"). So the
+// boilerplate is dropped and the rest kept, then a leading marker is trimmed for
+// display. Checked against a full day's stops: this finds a note on every one, where
+// a prefix rule found two thirds.
+const NOTE_BOILERPLATE = /^\s*(SPL-INSTR-TEXT\s*:|TOTAL-AMOUNT\s*:|PO\s*:|APPT\s*#)/i;
+const NOTE_LEAD_MARKER = /^\s*att(?:empt(?:ed)?)?\s*[:.\-]\s*/i;
+
+export function attemptNote(stop) {
+  const raw = String(stop?.orderInstructions || "");
+  if (!raw.trim()) return "";
+  const kept = raw
+    .split(";")
+    .map((x) => x.trim())
+    .filter((x) => x && !NOTE_BOILERPLATE.test(x));
+  return kept.join("; ").replace(NOTE_LEAD_MARKER, "").trim();
+}
+
 // Detect the day's attempts from the Firestore-backed stop index. NO NuVizz traffic:
 // the endpoint serves the pre-scanned index (its `live=1` debug mode would scan the
 // vendor, so it is deliberately never passed here).
@@ -154,13 +177,23 @@ export async function fetchDerivedAttempts(date, { signal } = {}) {
       currentlyUnplanned: !!s.isUnplanned,
       matched: false,
       detectedAt,
+      // Why CS said the delivery failed.
+      note: attemptNote(s),
       // Detected from the live board, not yet attributed by the evening scan.
       provisional: true,
     }));
+  // CS notes for EVERY ATT stop on the board that day, not just the ones due today —
+  // the settled list carries no notes of its own, so this map is what supplies them
+  // for rows that came from the evening scan.
+  const notes = new Map();
+  for (const s of attStops) {
+    const note = attemptNote(s);
+    if (note) notes.set(String(s.stopNbr), note);
+  }
   // Earlier days' failures still sitting on today's board awaiting redelivery. Not
   // today's attempts — but worth reporting a count for, so an empty log reads as
   // "nothing failed today" rather than as the feed being broken.
-  return { rows, carriedOver: attStops.length - dueToday.length };
+  return { rows, notes, carriedOver: attStops.length - dueToday.length };
 }
 
 // Flag the rows that are two legs of ONE delivery rather than two failures.
@@ -198,12 +231,17 @@ function markSplitLegs(rows) {
 //
 // `derive`: true forces detection, false never detects, "auto" detects only when the
 // settled list is empty for a day recent enough for the index to still hold it.
-export async function fetchAttemptsForDay(date, { derive = false, signal } = {}) {
+export async function fetchAttemptsForDay(
+  date,
+  { derive = false, notes = false, signal } = {},
+) {
   const settled = await fetchAttempts(date, { signal });
   const rows = Array.isArray(settled.attempts) ? settled.attempts.slice() : [];
   const wantDerive =
     derive === true || (derive === "auto" && rows.length === 0 && isRecentDay(date));
-  if (!wantDerive) {
+  // The index is one fetch that serves BOTH detection and notes, so asking for notes
+  // on a day we were already going to detect on costs nothing extra.
+  if (!wantDerive && !notes) {
     return {
       ...settled,
       attempts: markSplitLegs(rows),
@@ -218,11 +256,18 @@ export async function fetchAttemptsForDay(date, { derive = false, signal } = {})
     const seen = new Set(rows.map((a) => String(a.stopNbr)));
     const derivedResult = await fetchDerivedAttempts(date, { signal });
     carriedOver = derivedResult.carriedOver;
-    for (const row of derivedResult.rows) {
-      if (seen.has(row.stopNbr)) continue;
-      seen.add(row.stopNbr);
-      rows.push(row);
-      provisionalCount++;
+    // Settled rows have no notes of their own — attach them from the board.
+    for (let i = 0; i < rows.length; i++) {
+      const note = derivedResult.notes.get(String(rows[i].stopNbr));
+      if (note) rows[i] = { ...rows[i], note };
+    }
+    if (wantDerive) {
+      for (const row of derivedResult.rows) {
+        if (seen.has(row.stopNbr)) continue;
+        seen.add(row.stopNbr);
+        rows.push(row);
+        provisionalCount++;
+      }
     }
   } catch (err) {
     // Detection is a bonus on top of the settled list — surface that it failed

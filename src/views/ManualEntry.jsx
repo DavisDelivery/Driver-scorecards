@@ -219,6 +219,10 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     setFeed((f) => ({ ...f, status: "loading", error: null }));
     fetchAttemptsForDay(feedDate, {
       derive: feedScan ? true : "auto",
+      // CS's reason for each failure. Same board fetch detection already uses, so on
+      // a day that detects it costs nothing; on a settled day it is the one fetch
+      // that turns "UNPLANNED" into "closed when the driver got there".
+      notes: true,
       signal: controller.signal,
     })
       .then((j) => {
@@ -1457,6 +1461,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                   </span>
                 )}
               </div>
+              {a.note && <div className="ff-att-note">{a.note}</div>}
             </div>
           ))}
 
