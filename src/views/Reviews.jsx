@@ -57,7 +57,11 @@ function ratingColor(avg) {
   return RED;
 }
 
-export default function Reviews() {
+// `incidents` is the Firestore incident set App already holds. A review only carries
+// a PRO, so the customer is looked up: first from those incidents (free — the PRO is
+// usually one we've already logged), and only otherwise from the per-PRO NuVizz
+// lookup this view was already making to attribute the driver.
+export default function Reviews({ incidents = [] }) {
   const [reviews, setReviews] = useState([]);
   const [drivers, setDrivers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -85,6 +89,24 @@ export default function Reviews() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // PRO -> customer from what's already in Firestore. Costs nothing: these are the
+  // incidents the app has loaded anyway, and a reviewed delivery is often one we
+  // already have on record.
+  const customerFromIncidents = useMemo(() => {
+    const m = new Map();
+    for (const i of incidents) {
+      const pro = String(i.pro_number || "").trim();
+      if (!pro || m.has(pro)) continue;
+      const name = String(i.customer || "").trim();
+      if (!name) continue;
+      m.set(pro, {
+        name,
+        place: [i.to_city, i.to_state].filter(Boolean).join(", "),
+      });
+    }
+    return m;
+  }, [incidents]);
+
   // Resolve the delivering driver for each unattributed review by looking up its
   // PRO in NuVizz and matching the driver name to the roster. Cached per-PRO so
   // it only hits NuVizz once per PRO per browser; pass force=true to re-check.
@@ -94,13 +116,21 @@ export default function Reviews() {
       writeAttrCache({});
     }
     const cache = force ? {} : readAttrCache();
+    // Look a PRO up when we're missing EITHER the driver or the customer. Before,
+    // a review that arrived with a driver was never looked up, so it could never
+    // show a customer — and the customer rides along in the same response, so
+    // resolving it costs no extra call for the ones already being fetched.
     const pending = [
       ...new Set(
         revs
-          .filter((r) => !sourceHasDriver(r) && r.proNumber)
+          .filter(
+            (r) =>
+              r.proNumber &&
+              (!sourceHasDriver(r) || !customerFromIncidents.has(String(r.proNumber).trim())),
+          )
           .map((r) => r.proNumber),
       ),
-    ].filter((pro) => force || !(pro in cache));
+    ].filter((pro) => force || !(pro in cache) || !cache[pro]?.customer);
     if (!pending.length) {
       setAttrib(cache);
       return;
@@ -114,12 +144,17 @@ export default function Reviews() {
           try {
             const res = await fetchStopData(pro);
             const name = res?.stop?.driverName || "";
+            // The customer was always in this response; it was just being dropped.
+            const customer = String(res?.stop?.to?.name || "").trim();
+            const place = [res?.stop?.to?.city, res?.stop?.to?.state]
+              .filter(Boolean)
+              .join(", ");
             const d = matchDriver(name, drvs);
             if (d)
-              return [pro, { driverId: d.id, driverName: d.name, nuvizzName: name, status: "resolved" }];
+              return [pro, { driverId: d.id, driverName: d.name, nuvizzName: name, customer, place, status: "resolved" }];
             if (name)
-              return [pro, { driverId: "", driverName: "", nuvizzName: name, status: "unmatched" }];
-            return [pro, { driverId: "", driverName: "", nuvizzName: "", status: "none" }];
+              return [pro, { driverId: "", driverName: "", nuvizzName: name, customer, place, status: "unmatched" }];
+            return [pro, { driverId: "", driverName: "", nuvizzName: "", customer, place, status: "none" }];
           } catch (e) {
             return [pro, { driverId: "", driverName: "", status: "error", err: e.message }];
           }
@@ -142,6 +177,15 @@ export default function Reviews() {
     const a = attrib[r.proNumber];
     return a && a.status === "resolved" ? a.driverName : null;
   };
+  // Firestore first, then whatever the PRO lookup brought back.
+  const customerFor = (r) => {
+    const pro = String(r.proNumber || "").trim();
+    const local = customerFromIncidents.get(pro);
+    if (local) return local;
+    const a = attrib[pro];
+    return a?.customer ? { name: a.customer, place: a.place || "" } : null;
+  };
+
   const attributedViaPro = (r) =>
     !sourceHasDriver(r) && attrib[r.proNumber]?.status === "resolved";
 
@@ -382,6 +426,16 @@ export default function Reviews() {
                   {r.proNumber && (
                     <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: "11px", color: "#97a3b3" }}>
                       PRO {r.proNumber}
+                    </span>
+                  )}
+                  {/* Who the delivery was FOR. A review only carries a PRO, so this
+                      is resolved from the incident record or the PRO lookup. */}
+                  {customerFor(r) && (
+                    <span style={{ fontSize: "12px", color: "#3c4858" }}>
+                      {customerFor(r).name}
+                      {customerFor(r).place && (
+                        <span style={{ color: "#97a3b3" }}> · {customerFor(r).place}</span>
+                      )}
                     </span>
                   )}
                 </div>
