@@ -308,7 +308,7 @@ export default function Trends({ drivers, incidents = [] }) {
                       <XAxis dataKey="month" tick={axisTick} axisLine={false} tickLine={false} />
                       <YAxis tick={axisTick} axisLine={false} tickLine={false} allowDecimals={false} />
                       <Tooltip {...tooltipStyle} />
-                      <Bar dataKey="count" name="Incidents" fill="#1e5b92" radius={[3, 3, 0, 0]} />
+                      <Bar dataKey="count" name="Incidents" fill="#234294" radius={[3, 3, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -317,8 +317,8 @@ export default function Trends({ drivers, incidents = [] }) {
                 <div className="chart-card-header">
                   <div className="chart-card-title">Category Breakdown</div>
                   <div className="cc-count">
-                    <span className="cc-key"><i style={{ background: "#1e5b92" }} /> {year}</span>
-                    <span className="cc-key"><i className="cc-key-ytd" style={{ background: "#1e5b92" }} /> ALL</span>
+                    <span className="cc-key"><i style={{ background: "#234294" }} /> {year}</span>
+                    <span className="cc-key"><i className="cc-key-ytd" style={{ background: "#234294" }} /> ALL</span>
                   </div>
                 </div>
                 <div className="lb-body">

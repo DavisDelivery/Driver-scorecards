@@ -16,7 +16,7 @@ import {
   LINE,
   setColor,
 } from "./pdfGenerator.js";
-import { getBrandLogo, logoSize } from "./brandLogo.js";
+import { resolveReportLogo, drawWordmark } from "./brandLogo.js";
 
 const PAGE_MARGIN = 44;
 const HEADER_H = 88;
@@ -38,37 +38,6 @@ export function fmtReviewDate(iso) {
 const stars = (n) => "*".repeat(Math.max(0, Math.round(n))).padEnd(5, "-");
 const ratingRgb = (avg) => (avg >= 4.5 ? GREEN : avg >= 3.5 ? TEXT_DARK : RED);
 
-// The Davis mark. If a logo has been uploaded (Reviews tab → "Logo"), that image is
-// drawn; otherwise this falls back to the rounded blue square with a "D" the app
-// renders, so a report is never blank-headed while no logo is set.
-export function drawBrandMark(doc, x, y, size, { onDark = false, logo = null } = {}) {
-  // An uploaded logo wins: draw it letterboxed inside the square the mark occupies,
-  // so a wide wordmark keeps its proportions instead of being squashed.
-  if (logo && logo.dataUri) {
-    const nat = logo.size || { w: 1, h: 1 };
-    const scale = Math.min(size / nat.w, size / nat.h);
-    const w = nat.w * scale;
-    const h = nat.h * scale;
-    try {
-      doc.addImage(logo.dataUri, x + (size - w) / 2, y + (size - h) / 2, w, h);
-      return;
-    } catch {
-      /* unreadable image — fall through to the drawn mark */
-    }
-  }
-  if (onDark) {
-    doc.setFillColor(255, 255, 255);
-  } else {
-    setColor(doc, DAVIS_BLUE, "fill");
-  }
-  doc.roundedRect(x, y, size, size, size * 0.17, size * 0.17, "F");
-  doc.setFont("courier", "bold");
-  doc.setFontSize(size * 0.62);
-  if (onDark) setColor(doc, DAVIS_BLUE, "text");
-  else doc.setTextColor(255, 255, 255);
-  doc.text("D", x + size / 2, y + size * 0.72, { align: "center" });
-}
-
 // This goes to CUSTOMERS, so the first thing on the page is who it's from and what
 // window it covers — not an internal report title.
 function drawBanner(doc, { title, subtitle, periodText, rangeText, logo }) {
@@ -76,15 +45,13 @@ function drawBanner(doc, { title, subtitle, periodText, rangeText, logo }) {
   setColor(doc, DAVIS_BLUE, "fill");
   doc.rect(0, 0, w, HEADER_H, "F");
 
-  drawBrandMark(doc, PAGE_MARGIN, 20, 34, { onDark: true, logo });
-
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(15);
-  doc.setTextColor(255, 255, 255);
-  doc.text("DAVIS DELIVERY", PAGE_MARGIN + 46, 36);
+  // The logo IS the wordmark — it already says Davis Delivery Service, so the banner
+  // doesn't repeat it in type underneath.
+  const logoW = drawWordmark(doc, logo, PAGE_MARGIN, 16, 26, { onDark: true });
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
-  doc.text("Customer Delivery Reviews", PAGE_MARGIN + 46, 50);
+  doc.setTextColor(255, 255, 255);
+  doc.text("Customer Delivery Reviews", PAGE_MARGIN, 16 + 26 + 13);
 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(13);
@@ -99,15 +66,16 @@ function drawBanner(doc, { title, subtitle, periodText, rangeText, logo }) {
     doc.setFontSize(8);
     doc.text(rangeText, w - PAGE_MARGIN, 36, { align: "right" });
   }
+  return logoW;
 }
 
-function drawRunningHeader(doc, { title, logo }) {
+function drawRunningHeader(doc, { title, logoLight }) {
   const w = doc.internal.pageSize.getWidth();
-  drawBrandMark(doc, PAGE_MARGIN, 12, 16, { logo });
+  const lw = drawWordmark(doc, logoLight, PAGE_MARGIN, 10, 14);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(9);
   setColor(doc, DAVIS_BLUE, "text");
-  doc.text(`Davis Delivery — ${title}`, PAGE_MARGIN + 22, 24);
+  doc.text(String(title), PAGE_MARGIN + lw + 10, 22);
   setColor(doc, LINE, "draw");
   doc.line(PAGE_MARGIN, 34, w - PAGE_MARGIN, 34);
 }
@@ -244,9 +212,10 @@ export async function generateReviewsReport({
   const pageW = doc.internal.pageSize.getWidth();
   const pageH = doc.internal.pageSize.getHeight();
   const contentW = pageW - PAGE_MARGIN * 2;
-  // Decoded once per report, not once per page.
-  const logoUri = getBrandLogo();
-  const logo = logoUri ? { dataUri: logoUri, size: await logoSize(logoUri) } : null;
+  // Resolved once per report, not once per page: the white knockout for the blue
+  // banner, the brand-blue cut for the running header on white.
+  const logo = await resolveReportLogo({ onDark: true });
+  const logoLight = await resolveReportLogo({ onDark: false });
   const rows = reviews || [];
 
   // Layout pass first, so "Page X of Y" is right before anything is drawn.
@@ -277,7 +246,7 @@ export async function generateReviewsReport({
         doc.text("No reviews in this period.", PAGE_MARGIN, HEADER_H + 20 + summaryH + 16);
       }
     } else {
-      drawRunningHeader(doc, { title, logo });
+      drawRunningHeader(doc, { title, logoLight });
     }
     for (const item of placed) {
       if (item.page !== p) continue;

@@ -31,7 +31,7 @@ const writeAttrCache = (o) => {
 // A review counts as already-attributed if the source supplied a driver name.
 const sourceHasDriver = (r) => !!(r.driver && r.driver.trim());
 
-const ACCENT = "#1e5b92";
+const ACCENT = "#234294";
 const GREEN = "#15803d";
 const AMBER = "#b45309";
 const RED = "#b91c1c";

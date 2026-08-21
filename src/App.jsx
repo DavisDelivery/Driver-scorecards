@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { buildSeededDrivers } from "./data/drivers.js";
+import davisLogo from "./assets/davis-logo.svg";
 import {
   getDrivers,
   saveDrivers,
@@ -26,7 +27,7 @@ import ManualEntry, {
 import { migrateBlobsToFirestore } from "./data/migrateFromBlobs.js";
 import { rescueLocalEntries } from "./data/rescueLocal.js";
 
-export const APP_VERSION = "0.13.1";
+export const APP_VERSION = "0.14.0";
 // Host the app is actually served from — shown in the footer so two people can
 // instantly confirm they're on the SAME deploy/store (a mismatch is a common
 // reason one person's entries never reach another's view).
@@ -253,10 +254,9 @@ export default function App() {
     <div className="app-shell">
       <aside className="sidebar-nav">
         <div className="sidebar-brand">
-          <div className="brand-mark">D</div>
+          <img className="brand-logo" src={davisLogo} alt="Davis Delivery Service" />
           <div className="brand-text">
             <div className="brand-name">DRIVER SCORECARD</div>
-            <div className="brand-sub">Davis Delivery</div>
           </div>
         </div>
         <div className="sidebar-nav-section">
@@ -299,11 +299,11 @@ export default function App() {
             ☰
           </button>
           <div className="brand">
-            <div className="brand-mark">D</div>
+            <img className="brand-logo sm" src={davisLogo} alt="Davis Delivery Service" />
             <div className="brand-text">
               <div className="brand-name">DRIVER SCORECARD</div>
               <div className="brand-sub" title={APP_HOST}>
-                Davis Delivery · v{APP_VERSION}
+                v{APP_VERSION}
                 {APP_HOST ? ` · ${APP_HOST}` : ""}
               </div>
             </div>
@@ -319,6 +319,7 @@ export default function App() {
         <div className="nav-drawer-overlay" onClick={() => setMenuOpen(false)}>
           <nav className="nav-drawer" onClick={(e) => e.stopPropagation()}>
             <div className="nav-drawer-head">
+              <img className="brand-logo sm" src={davisLogo} alt="Davis Delivery Service" />
               <div className="brand-name">DRIVER SCORECARD</div>
               <button
                 className="nav-drawer-close"

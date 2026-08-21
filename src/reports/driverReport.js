@@ -11,6 +11,7 @@
 // visually identical rather than drifting apart.
 import { jsPDF } from "jspdf";
 import { getIncidentPhotosBatch } from "../data/firebase.js";
+import { resolveReportLogo, drawWordmark } from "./brandLogo.js";
 import {
   DAVIS_BLUE,
   TEXT_DARK,
@@ -40,19 +41,18 @@ const incidentDateOf = (i) => i.delivered_date || i.created_at || "";
 
 // Page furniture -------------------------------------------------------------
 
-function drawTitleBanner(doc, { driverName, heading, periodLabel, rangeText, color }) {
+function drawTitleBanner(doc, { driverName, heading, periodLabel, rangeText, color, logo }) {
   const pageW = doc.internal.pageSize.getWidth();
   setColor(doc, DAVIS_BLUE, "fill");
   doc.rect(0, 0, pageW, HEADER_H, "F");
 
+  // White cut of the lockup on the blue banner; it is the wordmark, so the company
+  // name isn't also set in type.
+  drawWordmark(doc, logo, PAGE_MARGIN, 10, 22, { onDark: true });
   doc.setTextColor(255, 255, 255);
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(10);
-  doc.text("DAVIS DELIVERY", PAGE_MARGIN, 30);
-
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8.5);
-  doc.text(heading.toUpperCase() + " — DRIVER REPORT", PAGE_MARGIN, 44);
+  doc.text(heading.toUpperCase() + " — DRIVER REPORT", PAGE_MARGIN, 46);
 
   // The driver's name is the headline: this document is about them.
   doc.setFont("helvetica", "bold");
@@ -337,7 +337,9 @@ export async function generateDriverReport({
   };
 
   const generatedOn = fmtMDY(new Date().toISOString());
-  const bannerCtx = { driverName, heading: config.heading, periodLabel, rangeText, color };
+  // White knockout, because the title banner is brand blue.
+  const logo = await resolveReportLogo({ onDark: true });
+  const bannerCtx = { driverName, heading: config.heading, periodLabel, rangeText, color, logo };
 
   // Layout pass so the footer can print a correct "Page X of Y".
   const summaryH = 62 + 18;
