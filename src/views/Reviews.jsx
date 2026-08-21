@@ -8,6 +8,7 @@ import {
   reviewsReportFilename,
 } from "../reports/reviewsReport.js";
 import { PERIODS, periodWindow, periodLabel, toYMD } from "../data/period.js";
+import { clickStatus, clickLabel, rollupClicks, fmtRate } from "../data/reviewClicks.js";
 
 // Per-browser cache of PRO → resolved driver so we don't re-hit NuVizz each load.
 const ATTR_CACHE = "dds_review_pro_driver";
@@ -46,6 +47,56 @@ function fmtDate(iso) {
   }
 }
 
+// Click stamps are worth the time of day — "they took the link four minutes after the
+// delivery" and "they took it the next morning off the follow-up email" are different facts.
+function fmtDateTime(iso) {
+  if (!iso) return "—";
+  try {
+    return new Date(iso).toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      timeZone: "America/New_York",
+    });
+  } catch {
+    return iso;
+  }
+}
+
+// How the Google hand-off ended, as a pill. Grey is deliberate for the two statuses that
+// mean "we cannot say" — only an observed click earns green, and only an observed
+// non-click earns amber.
+const CLICK_TONE = {
+  clicked: { fg: "#15803d", bg: "#e7f4ec", bd: "#cce8d6" },
+  "not-taken": { fg: "#b45309", bg: "#fdf3e3", bd: "#f0dfbe" },
+  "not-tracked": { fg: "#8b95a3", bg: "#f4f6f8", bd: "#e3e8ee" },
+  unreadable: { fg: "#8b95a3", bg: "#f4f6f8", bd: "#e3e8ee" },
+  internal: { fg: "#8b95a3", bg: "#f4f6f8", bd: "#e3e8ee" },
+};
+
+function ClickBadge({ status, title }) {
+  const t = CLICK_TONE[status] || CLICK_TONE.internal;
+  return (
+    <span
+      title={title}
+      style={{
+        fontSize: "10px",
+        fontWeight: 700,
+        color: t.fg,
+        background: t.bg,
+        border: `1px solid ${t.bd}`,
+        borderRadius: "4px",
+        padding: "1px 6px",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {clickLabel(status)}
+    </span>
+  );
+}
+
 function Stars({ n }) {
   const full = Math.round(n);
   return (
@@ -68,6 +119,9 @@ function ratingColor(avg) {
 // lookup this view was already making to attribute the driver.
 export default function Reviews({ incidents = [] }) {
   const [allReviews, setAllReviews] = useState([]);
+  // Whether the source could read its Google-click store on this load. true / false / null
+  // (unknown). Never defaulted to true: see src/data/reviewClicks.js.
+  const [clicksReadable, setClicksReadable] = useState(null);
   const [drivers, setDrivers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
@@ -92,8 +146,10 @@ export default function Reviews({ incidents = [] }) {
   useEffect(() => {
     (async () => {
       try {
-        const [revs, drvs] = await Promise.all([getReviews(), getDrivers()]);
+        const [payload, drvs] = await Promise.all([getReviews(), getDrivers()]);
+        const revs = payload.reviews || [];
         setAllReviews(revs);
+        setClicksReadable(payload.clicksReadable);
         setDrivers(drvs);
         resolveAttributions(revs, drvs);
       } catch (e) {
@@ -227,11 +283,14 @@ export default function Reviews({ incidents = [] }) {
   const kpis = useMemo(() => {
     const n = reviews.length;
     const avg = n ? reviews.reduce((s, r) => s + (r.rating || 0), 0) / n : 0;
-    const google = reviews.filter((r) => r.routedTo === "google").length;
     const internal = reviews.filter((r) => r.routedTo === "internal").length;
     const dist = [1, 2, 3, 4, 5].map((star) => reviews.filter((r) => r.rating === star).length);
-    return { n, avg, google, internal, dist };
-  }, [reviews]);
+    // shown / clicked / rate. `shown` is what the old "4★+ (→ Google)" tile counted, and on
+    // its own it is just a restatement of the rating — it was never a count of customers
+    // who went. `clicked` is the observed one.
+    const clicks = rollupClicks(reviews, clicksReadable);
+    return { n, avg, internal, dist, clicks };
+  }, [reviews, clicksReadable]);
 
   // Per-driver rollup. Uses the PRO-attributed driver when the source left one
   // blank; anything still unresolved buckets as "Unattributed".
@@ -239,16 +298,27 @@ export default function Reviews({ incidents = [] }) {
     const map = new Map();
     for (const r of reviews) {
       const key = driverFor(r) || "Unattributed (PRO only)";
-      if (!map.has(key)) map.set(key, { driver: key, count: 0, sum: 0, low: 0, last: "" });
+      if (!map.has(key)) map.set(key, { driver: key, count: 0, sum: 0, low: 0, last: "", rows: [] });
       const d = map.get(key);
       d.count += 1;
       d.sum += r.rating || 0;
+      d.rows.push(r);
       if ((r.rating || 0) <= 3) d.low += 1;
       if (!d.last || new Date(r.submittedAt) > new Date(d.last)) d.last = r.submittedAt;
     }
-    return Array.from(map.values()).map((d) => ({ ...d, avg: d.count ? d.sum / d.count : 0 }));
+    return Array.from(map.values()).map((d) => {
+      const c = rollupClicks(d.rows, clicksReadable);
+      return {
+        ...d,
+        avg: d.count ? d.sum / d.count : 0,
+        clicked: c.clicked,
+        trackable: c.trackable,
+        clickRate: c.rate,
+        clicksAnswerable: c.answerable,
+      };
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reviews, attrib]);
+  }, [reviews, attrib, clicksReadable]);
 
   const sortedDrivers = useMemo(() => {
     const arr = [...byDriver];
@@ -505,14 +575,69 @@ export default function Reviews({ incidents = [] }) {
           </div>
           <Stars n={kpis.avg} />
         </div>
+        {/* Shown vs clicked, kept apart on purpose. "Shown" is how many customers were
+            handed the Google button — it follows from the rating alone and nobody has done
+            anything yet. "Clicked through" is the one we actually observed. */}
         <div style={card}>
-          <div style={{ fontSize: "11px", color: "#97a3b3", textTransform: "uppercase", letterSpacing: ".04em" }}>4★+ (→ Google)</div>
-          <div style={{ fontSize: "28px", fontWeight: 800, color: GREEN }}>{kpis.google}</div>
+          <div style={{ fontSize: "11px", color: "#97a3b3", textTransform: "uppercase", letterSpacing: ".04em" }}>Shown Google link</div>
+          <div style={{ fontSize: "28px", fontWeight: 800, color: "#5a6779" }}>{kpis.clicks.shown}</div>
+          <div style={{ fontSize: "11px", color: "#97a3b3" }}>4★+ · offered, not taken yet</div>
+        </div>
+        <div style={card}>
+          <div style={{ fontSize: "11px", color: "#97a3b3", textTransform: "uppercase", letterSpacing: ".04em" }}>Clicked through</div>
+          {/* A green 0 during a click-store outage would be the same false confidence this
+              screen exists to remove — every tracked row looks un-clicked when the store is
+              down. Withhold the count, do not print a zero. */}
+          <div style={{ fontSize: "28px", fontWeight: 800, color: kpis.clicks.answerable ? GREEN : "#97a3b3" }}>
+            {kpis.clicks.answerable ? kpis.clicks.clicked : "—"}
+          </div>
+          <div style={{ fontSize: "11px", color: "#97a3b3" }}>
+            {!kpis.clicks.answerable
+              ? "click store unreadable — cannot say"
+              : kpis.clicks.untracked > 0
+                ? `${kpis.clicks.untracked} older review${kpis.clicks.untracked === 1 ? "" : "s"} predate tracking`
+                : "observed at the redirect"}
+          </div>
+        </div>
+        <div style={card}>
+          <div style={{ fontSize: "11px", color: "#97a3b3", textTransform: "uppercase", letterSpacing: ".04em" }}>Click-through rate</div>
+          <div style={{ fontSize: "28px", fontWeight: 800, color: kpis.clicks.rate == null ? "#97a3b3" : GREEN }}>
+            {fmtRate(kpis.clicks.rate)}
+          </div>
+          <div style={{ fontSize: "11px", color: "#97a3b3" }}>
+            {kpis.clicks.rate == null
+              ? "not enough tracked reviews"
+              : `${kpis.clicks.clicked} of ${kpis.clicks.trackable} tracked`}
+          </div>
         </div>
         <div style={card}>
           <div style={{ fontSize: "11px", color: "#97a3b3", textTransform: "uppercase", letterSpacing: ".04em" }}>≤3★</div>
           <div style={{ fontSize: "28px", fontWeight: 800, color: RED }}>{kpis.internal}</div>
         </div>
+      </div>
+
+      {/* The ceiling of what any of this can know, stated where the numbers are read. */}
+      <div
+        style={{
+          ...card,
+          borderLeft: `4px solid ${clicksReadable === true ? "#e8a838" : RED}`,
+          fontSize: "12px",
+          color: "#5a6779",
+          lineHeight: 1.5,
+        }}
+      >
+        <strong style={{ color: "#0a2744" }}>"Clicked through" is as far as we can see.</strong>{" "}
+        It means the customer took the Google link from the tracking portal. Whether they then
+        signed in and posted happens on Google, and Google tells us nothing — so a click is
+        evidence they went, not proof a review exists. Reviews submitted before click tracking
+        existed carry no click record either way and are left out of the rate.
+        {clicksReadable !== true && (
+          <div style={{ marginTop: "6px", color: RED, fontWeight: 600 }}>
+            {clicksReadable === false
+              ? "The click store could not be read on this load, so no row below can show a click — this is not the same as nobody clicking."
+              : "The review source did not report whether its click store was readable, so clicks below are shown as unconfirmed rather than as absent."}
+          </div>
+        )}
       </div>
 
       {/* Rating distribution */}
@@ -548,6 +673,7 @@ export default function Reviews({ incidents = [] }) {
                 <Th k="count" right>Reviews</Th>
                 <Th k="avg" right>Avg</Th>
                 <Th k="low" right>≤3★</Th>
+                <Th k="clicked" right>→ Google</Th>
                 <Th k="last" right>Last Review</Th>
               </tr>
             </thead>
@@ -562,12 +688,29 @@ export default function Reviews({ incidents = [] }) {
                     {d.avg.toFixed(2)} <Stars n={d.avg} />
                   </td>
                   <td style={{ padding: "9px 10px", textAlign: "right", color: d.low ? RED : "#5a6779" }}>{d.low}</td>
+                  {/* Clicked out of trackable, never out of total — the denominator is the
+                      reviews that could show a click at all. */}
+                  <td
+                    style={{ padding: "9px 10px", textAlign: "right", color: d.clicked ? GREEN : "#97a3b3", whiteSpace: "nowrap" }}
+                    title={
+                      !d.clicksAnswerable
+                        ? "The click store could not be read on this load"
+                        : d.trackable
+                          ? `${d.clicked} of ${d.trackable} tracked 4★+ reviews took the Google link`
+                          : "No reviews with click tracking yet"
+                    }
+                  >
+                    {d.clicksAnswerable && d.trackable ? `${d.clicked}/${d.trackable}` : "—"}
+                    {d.clickRate != null && (
+                      <span style={{ color: "#97a3b3", fontWeight: 400 }}> · {fmtRate(d.clickRate)}</span>
+                    )}
+                  </td>
                   <td style={{ padding: "9px 10px", textAlign: "right", color: "#5a6779" }}>{fmtDate(d.last)}</td>
                 </tr>
               ))}
               {!sortedDrivers.length && (
                 <tr>
-                  <td colSpan={5} style={{ padding: "24px", textAlign: "center", color: "#97a3b3" }}>No reviews yet.</td>
+                  <td colSpan={6} style={{ padding: "24px", textAlign: "center", color: "#97a3b3" }}>No reviews yet.</td>
                 </tr>
               )}
             </tbody>
@@ -607,7 +750,7 @@ export default function Reviews({ incidents = [] }) {
           {recent.map((r) => (
             <div key={r.id} style={{ padding: "12px 18px", borderBottom: "1px solid #f1f4f7" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
                   <Stars n={r.rating} />
                   <span style={{ fontWeight: 700, color: driverFor(r) ? "#0a2744" : "#97a3b3" }}>
                     {driverFor(r) || "Unattributed"}
@@ -652,6 +795,49 @@ export default function Reviews({ incidents = [] }) {
                   {r.contact}
                 </div>
               )}
+              {/* Did this customer actually follow the link? Shown only for reviews that
+                  were offered Google at all — a 1★ never sees the button, and stamping
+                  every complaint "internal only" is noise on a driver scorecard. */}
+              {(() => {
+                const status = clickStatus(r, clicksReadable);
+                if (status === "internal") return null;
+                return (
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "8px",
+                      flexWrap: "wrap",
+                      marginTop: "6px",
+                      fontSize: "11px",
+                      color: "#97a3b3",
+                    }}
+                  >
+                    <ClickBadge
+                      status={status}
+                      title={
+                        status === "not-tracked"
+                          ? "Submitted before click tracking existed — no click record either way"
+                          : status === "unreadable"
+                            ? "The click store could not be read on this load"
+                            : undefined
+                      }
+                    />
+                    {r.googleClickAt && (
+                      <span>
+                        Took the link {fmtDateTime(r.googleClickAt)}
+                        {Number(r.googleClickCount) > 1 ? ` (${Number(r.googleClickCount)}×)` : ""}
+                      </span>
+                    )}
+                    {Number(r.googleClickProbes) > 0 && (
+                      <span title="Mail scanners and link-preview bots. Recorded, deliberately not counted as clicks.">
+                        {Number(r.googleClickProbes)} bot fetch
+                        {Number(r.googleClickProbes) > 1 ? "es" : ""} (not counted)
+                      </span>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           ))}
           {!recent.length && (

@@ -38,7 +38,20 @@ exports.handler = async (event) => {
     }
     let data;
     try { data = JSON.parse(text); } catch { data = { reviews: [] }; }
-    return { statusCode: 200, headers, body: JSON.stringify({ reviews: data.reviews || [] }) };
+    // clicksReadable rides along. The source joins observed Google clicks onto each review
+    // and sets this false when its click store was unreachable — in which case EVERY row
+    // comes back with googleClickAt: null. Dropping the flag here (which this proxy used to
+    // do) would leave the UI unable to tell "nobody clicked" apart from "we could not look",
+    // and it would print the confident version of the two. Absent from the source means
+    // unknown, not fine, so it is forwarded as null rather than defaulted to true.
+    const clicksReadable = data.clicksReadable === true ? true
+      : data.clicksReadable === false ? false
+      : null;
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({ reviews: data.reviews || [], clicksReadable }),
+    };
   } catch (err) {
     return { statusCode: 502, headers, body: JSON.stringify({ error: "Fetch failed", detail: err.message }) };
   }
