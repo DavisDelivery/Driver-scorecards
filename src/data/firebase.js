@@ -1153,3 +1153,47 @@ export async function deleteAllHistory() {
     return { deleted: 0, error: err.message };
   }
 }
+
+// Hidden reviews ------------------------------------------------------------
+//
+// Reviews come from the tracking portal and this app can only read them, so a bogus
+// one (a test submission, a customer who reviewed the wrong carrier, a duplicate)
+// can't be deleted at the source from here. It is suppressed instead: the id goes in
+// dds_hidden_reviews and every count, chart, table and printed report skips it.
+//
+// In Firestore rather than localStorage on purpose — an invalid review is invalid for
+// everyone, not just for the browser that noticed it. Nothing is destroyed: the row
+// keeps its reason and who filed it, and un-hiding puts it straight back.
+const HIDDEN_REVIEWS = "dds_hidden_reviews";
+
+export async function getHiddenReviews() {
+  try {
+    const snap = await getDocs(collection(db, HIDDEN_REVIEWS));
+    return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  } catch (err) {
+    console.warn("getHiddenReviews failed:", err.message);
+    return [];
+  }
+}
+
+// `review` is the row being hidden — its driver / customer / rating are copied in so
+// the hidden list is readable without re-joining it against the source.
+export async function hideReview(review, reason = "") {
+  const id = String(review?.id || "").trim();
+  if (!id) throw new Error("hideReview: review has no id");
+  await trackWrite(
+    setDoc(doc(db, HIDDEN_REVIEWS, id), {
+      review_id: id,
+      reason: String(reason || "").slice(0, 500),
+      rating: review.rating ?? null,
+      driver: review.driverName || review.driver || "",
+      customer: review.customer || "",
+      submitted_at: review.submittedAt || "",
+      hidden_at: nowISO(),
+    }),
+  );
+}
+
+export async function unhideReview(id) {
+  await trackWrite(deleteDoc(doc(db, HIDDEN_REVIEWS, String(id))));
+}
