@@ -87,6 +87,11 @@ export const INCIDENT_CATEGORIES = [
   { id: "compliment", label: "Compliment", color: "#22c55e" },
   { id: "return", label: "Return", color: "#3b82f6" },
   { id: "trace", label: "Trace", color: "#64748b" },
+  // Logged from Forgotten Freight when a PRO can't be tracked to a driver. It is here
+  // so the incident log and editor can NAME it; the scorecard, trends and history
+  // rollups enumerate their own category lists and deliberately leave it out — it is
+  // a record of a failed lookup, not something charged to anyone.
+  { id: "unable_to_track", label: "Unable to Track", color: "#94a3b8" },
 ];
 
 // Fault attribution codes for an incident.

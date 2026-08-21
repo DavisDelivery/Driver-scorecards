@@ -19,15 +19,15 @@ import Trends from "./views/Trends.jsx";
 import History from "./views/History.jsx";
 import Reviews from "./views/Reviews.jsx";
 import ManualEntry, {
-  FF_CONFIG,
   MISDELIVERY_CONFIG,
   ATTEMPTS_CONFIG,
   COMPLIMENTS_CONFIG,
 } from "./views/ManualEntry.jsx";
+import ForgottenFreightTabs from "./views/ForgottenFreightTabs.jsx";
 import { migrateBlobsToFirestore } from "./data/migrateFromBlobs.js";
 import { rescueLocalEntries } from "./data/rescueLocal.js";
 
-export const APP_VERSION = "0.15.0";
+export const APP_VERSION = "0.16.0";
 // Host the app is actually served from — shown in the footer so two people can
 // instantly confirm they're on the SAME deploy/store (a mismatch is a common
 // reason one person's entries never reach another's view).
@@ -405,8 +405,7 @@ export default function App() {
             )}
             {tab === "trends" && <Trends drivers={drivers} incidents={incidents} />}
             {tab === "ff" && (
-              <ManualEntry
-                config={FF_CONFIG}
+              <ForgottenFreightTabs
                 drivers={drivers}
                 incidents={incidents}
                 onSaved={applyIncidentChange}
