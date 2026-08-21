@@ -29,6 +29,7 @@ import {
   query,
   where,
   writeBatch,
+  waitForPendingWrites,
 } from "firebase/firestore";
 import { db } from "./firebaseApp.js";
 
@@ -117,12 +118,14 @@ async function savePhotosFor(incidentId, photoUrls, photoMeta) {
       oversize++;
       continue;
     }
-    await setDoc(doc(db, INCIDENT_PHOTOS, `${incidentId}__${i}`), {
-      incident_id: incidentId,
-      idx: i,
-      url,
-      meta: photoMeta?.[i] ?? null,
-    });
+    await trackWrite(
+      setDoc(doc(db, INCIDENT_PHOTOS, `${incidentId}__${i}`), {
+        incident_id: incidentId,
+        idx: i,
+        url,
+        meta: photoMeta?.[i] ?? null,
+      }),
+    );
     stored++;
   }
   return { stored, oversize };
@@ -131,30 +134,114 @@ async function savePhotosFor(incidentId, photoUrls, photoMeta) {
 export async function saveIncident(incident) {
   const id = incident.id || `i_${Date.now()}_${rand()}`;
   const { light, photo_urls, photo_meta } = lightIncident(incident, id);
-  await setDoc(doc(db, INCIDENTS, id), light, { merge: true });
+  const { acked } = await trackWrite(setDoc(doc(db, INCIDENTS, id), light, { merge: true }));
+
+  // Photo docs + the persisted-flags update, issued the same way in both branches;
+  // when the main write is unacked they queue behind it rather than hanging the UI.
+  const writePhotos = () =>
+    savePhotosFor(id, photo_urls, photo_meta).then(({ stored, oversize }) => {
+      const flags = {
+        has_photos: stored > 0,
+        photo_count: stored,
+        photos_dropped_oversize: oversize > 0,
+      };
+      return trackWrite(setDoc(doc(db, INCIDENTS, id), flags, { merge: true })).then(
+        () => flags,
+      );
+    });
+
+  if (!acked) {
+    // The server hasn't confirmed. The write stays queued and will sync when the
+    // connection returns — but the caller must be able to say so instead of
+    // reporting a green "Saved" (the bug that lost a week of entries, twice now).
+    if (Array.isArray(photo_urls) && photo_urls.length) {
+      writePhotos().catch((e) => console.warn(`queued photo write for ${id}:`, e.message));
+    }
+    return { ...light, _pendingSync: true };
+  }
   if (Array.isArray(photo_urls) && photo_urls.length) {
-    const { stored, oversize } = await savePhotosFor(id, photo_urls, photo_meta);
-    // Reflect what actually persisted, and clear any stale oversize flag from
-    // the era when a whole photo set was dropped for being too big together.
-    const flags = {
-      has_photos: stored > 0,
-      photo_count: stored,
-      photos_dropped_oversize: oversize > 0,
-    };
-    await setDoc(doc(db, INCIDENTS, id), flags, { merge: true });
+    const flags = await writePhotos();
     return { ...light, ...flags };
   }
   return light;
 }
 
-// Firestore manages its own offline write queue + retry, so there is no manual
-// pending-sync bookkeeping to do here. Kept as no-op stubs so callers (App) keep
-// working; the SDK guarantees queued writes reach the server once reconnected.
-export function countPendingIncidents() {
-  return 0;
+// ---- pending-write truth -------------------------------------------------
+// Firestore's setDoc/commit promises resolve ONLY when the SERVER acknowledges
+// the write. Offline (or blocked by an extension/firewall), they hang forever
+// while the write sits queued in this browser's IndexedDB — visible locally,
+// invisible to everyone else, and gone for good if the browser evicts storage.
+// The original stubs here returned 0 pending forever, which silenced the app's
+// unsynced banner and let exactly that happen: an entry typed on 08/20 never
+// reached the server and evaporated. Never swallow a write failure — so every
+// write below is tracked, raced against an ack timeout, and reported honestly.
+
+const ACK_TIMEOUT_MS = 8_000;
+
+let pendingWrites = 0;
+const pendingListeners = new Set();
+const notifyPending = () => {
+  for (const l of pendingListeners) {
+    try {
+      l(pendingWrites);
+    } catch {
+      /* a broken listener must not break the write path */
+    }
+  }
+};
+// Live subscription for the App banner; returns an unsubscribe.
+export function onPendingWritesChange(fn) {
+  pendingListeners.add(fn);
+  try {
+    fn(pendingWrites);
+  } catch {
+    /* ignore */
+  }
+  return () => pendingListeners.delete(fn);
 }
+
+// Count a write as pending until the server acks it, and resolve { acked:false }
+// if the ack hasn't arrived within the window. The write itself is NOT cancelled —
+// it stays queued and still syncs when the connection returns; this only stops the
+// UI from waiting forever and lets it say "not on the server yet" out loud.
+// A rejection inside the window still throws, so real errors surface as failures.
+function trackWrite(p) {
+  pendingWrites++;
+  notifyPending();
+  const settle = () => {
+    pendingWrites = Math.max(0, pendingWrites - 1);
+    notifyPending();
+  };
+  p.then(settle, settle);
+  return Promise.race([
+    p.then(() => ({ acked: true })),
+    new Promise((res) => setTimeout(() => res({ acked: false }), ACK_TIMEOUT_MS)),
+  ]);
+}
+
+export function countPendingIncidents() {
+  return pendingWrites;
+}
+
+// Are queued writes still waiting on the server — INCLUDING ones queued by an
+// earlier session this counter never saw? waitForPendingWrites resolves at once
+// when the queue is empty, so a timeout means the queue is stuck.
+export async function hasStuckWrites(timeoutMs = 4_000) {
+  try {
+    return await Promise.race([
+      waitForPendingWrites(db).then(() => false),
+      new Promise((res) => setTimeout(() => res(true), timeoutMs)),
+    ]);
+  } catch {
+    return false;
+  }
+}
+
 export async function flushPendingIncidents() {
-  return { flushed: 0, remaining: 0 };
+  const stuck = await hasStuckWrites();
+  // The tracker knows this session's writes; a stuck queue from a previous
+  // session reports as at least one so the banner can't stay dark.
+  return { flushed: 0, remaining: stuck ? Math.max(1, pendingWrites) : pendingWrites };
 }
 
 export async function saveIncidentsBatch(incidents, onProgress = null) {
@@ -175,7 +262,9 @@ export async function saveIncidentsBatch(incidents, onProgress = null) {
         photoWrites.push([id, { photo_urls, photo_meta: photo_meta || [] }]);
       }
     }
-    await batch.commit();
+    // Raced against the ack timeout so an offline import still queues every chunk
+    // instead of hanging forever on the first; the pending banner reports the truth.
+    await trackWrite(batch.commit());
     // Photo docs are large — write them one photo at a time, outside the batch.
     for (const [id, payload] of photoWrites) {
       try {
@@ -330,7 +419,15 @@ async function deleteIdsWithPhotos(ids) {
 // like it worked while the roster was never written, which is exactly the class
 // of silent data loss this app has been bitten by. Callers must surface it.
 export async function saveDrivers(drivers) {
-  await setDoc(doc(db, META, "drivers"), { drivers });
+  const { acked } = await trackWrite(setDoc(doc(db, META, "drivers"), { drivers }));
+  if (!acked) {
+    // Queued locally, not confirmed. Roster edits are rare and important enough
+    // that "maybe" is not an acceptable answer — callers alert on throw.
+    throw new Error(
+      "The server has not confirmed this roster change (connection problem?). " +
+        "It will keep retrying in the background — do not trust the roster until it syncs.",
+    );
+  }
 }
 
 export async function getDrivers() {
@@ -367,7 +464,8 @@ export async function saveReport(report) {
     updated_at: nowISO(),
     created_at: report.created_at || nowISO(),
   };
-  await setDoc(doc(db, REPORTS, id), meta, { merge: true });
+  const { acked } = await trackWrite(setDoc(doc(db, REPORTS, id), meta, { merge: true }));
+  if (!acked) meta._pendingSync = true;
   const bytes = pdf_data || pdf;
   if (bytes) {
     // A photo report runs several MB, so the data URI is split across chunk
@@ -378,17 +476,21 @@ export async function saveReport(report) {
     }
     const total = Math.ceil(bytes.length / PDF_CHUNK);
     for (let i = 0; i < total; i++) {
-      await setDoc(doc(db, REPORT_PDFS, `${id}__${i}`), {
-        report_id: id,
-        idx: i,
-        chunks: total,
-        data: bytes.slice(i * PDF_CHUNK, (i + 1) * PDF_CHUNK),
-      });
+      await trackWrite(
+        setDoc(doc(db, REPORT_PDFS, `${id}__${i}`), {
+          report_id: id,
+          idx: i,
+          chunks: total,
+          data: bytes.slice(i * PDF_CHUNK, (i + 1) * PDF_CHUNK),
+        }),
+      );
     }
-    await setDoc(
-      doc(db, REPORTS, id),
-      { pdf_chunks: total, pdf_dropped_oversize: false },
-      { merge: true },
+    await trackWrite(
+      setDoc(
+        doc(db, REPORTS, id),
+        { pdf_chunks: total, pdf_dropped_oversize: false },
+        { merge: true },
+      ),
     );
     return { ...meta, pdf_chunks: total };
   }
