@@ -16,6 +16,7 @@ import {
   LINE,
   setColor,
 } from "./pdfGenerator.js";
+import { getBrandLogo, logoSize } from "./brandLogo.js";
 
 const PAGE_MARGIN = 44;
 const HEADER_H = 88;
@@ -24,21 +25,37 @@ const BOTTOM = 54;
 const GREEN = [21, 128, 61];
 const RED = [185, 28, 28];
 
-// US M/D/YYYY from an ISO timestamp, parsed from the string so a review filed late
-// in the day can't print as the day before.
+// US MM/DD/YYYY from an ISO timestamp (or a plain YYYY-MM-DD), parsed from the
+// string so a review filed late in the day can't print as the day before. Every
+// date on the report goes through here, headers included — one format, no
+// exceptions.
 export function fmtReviewDate(iso) {
   const m = String(iso || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (!m) return String(iso || "").slice(0, 10);
-  return `${Number(m[2])}/${Number(m[3])}/${m[1]}`;
+  return `${m[2]}/${m[3]}/${m[1]}`;
 }
 
 const stars = (n) => "*".repeat(Math.max(0, Math.round(n))).padEnd(5, "-");
 const ratingRgb = (avg) => (avg >= 4.5 ? GREEN : avg >= 3.5 ? TEXT_DARK : RED);
 
-// The Davis mark, drawn rather than loaded: it is a rounded blue square with a "D",
-// exactly as the app renders it, so there is no image asset to ship or go missing.
-// (If a real logo file ever lands, this is the one place to swap it for loadImage.)
-export function drawBrandMark(doc, x, y, size, { onDark = false } = {}) {
+// The Davis mark. If a logo has been uploaded (Reviews tab → "Logo"), that image is
+// drawn; otherwise this falls back to the rounded blue square with a "D" the app
+// renders, so a report is never blank-headed while no logo is set.
+export function drawBrandMark(doc, x, y, size, { onDark = false, logo = null } = {}) {
+  // An uploaded logo wins: draw it letterboxed inside the square the mark occupies,
+  // so a wide wordmark keeps its proportions instead of being squashed.
+  if (logo && logo.dataUri) {
+    const nat = logo.size || { w: 1, h: 1 };
+    const scale = Math.min(size / nat.w, size / nat.h);
+    const w = nat.w * scale;
+    const h = nat.h * scale;
+    try {
+      doc.addImage(logo.dataUri, x + (size - w) / 2, y + (size - h) / 2, w, h);
+      return;
+    } catch {
+      /* unreadable image — fall through to the drawn mark */
+    }
+  }
   if (onDark) {
     doc.setFillColor(255, 255, 255);
   } else {
@@ -54,12 +71,12 @@ export function drawBrandMark(doc, x, y, size, { onDark = false } = {}) {
 
 // This goes to CUSTOMERS, so the first thing on the page is who it's from and what
 // window it covers — not an internal report title.
-function drawBanner(doc, { title, subtitle, periodText, rangeText, generatedOn }) {
+function drawBanner(doc, { title, subtitle, periodText, rangeText, logo }) {
   const w = doc.internal.pageSize.getWidth();
   setColor(doc, DAVIS_BLUE, "fill");
   doc.rect(0, 0, w, HEADER_H, "F");
 
-  drawBrandMark(doc, PAGE_MARGIN, 20, 34, { onDark: true });
+  drawBrandMark(doc, PAGE_MARGIN, 20, 34, { onDark: true, logo });
 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(15);
@@ -76,18 +93,17 @@ function drawBanner(doc, { title, subtitle, periodText, rangeText, generatedOn }
   doc.setFontSize(9);
   const right = [periodText, subtitle].filter(Boolean).join("  ·  ");
   if (right) doc.text(right, w - PAGE_MARGIN, 76, { align: "right" });
-  doc.setFontSize(8);
-  doc.text(
-    [rangeText, `Generated ${generatedOn}`].filter(Boolean).join("  ·  "),
-    w - PAGE_MARGIN,
-    36,
-    { align: "right" },
-  );
+  // Just the window this covers — no "generated on" line. The customer cares what
+  // period the reviews are from, not when the file was made.
+  if (rangeText) {
+    doc.setFontSize(8);
+    doc.text(rangeText, w - PAGE_MARGIN, 36, { align: "right" });
+  }
 }
 
-function drawRunningHeader(doc, { title }) {
+function drawRunningHeader(doc, { title, logo }) {
   const w = doc.internal.pageSize.getWidth();
-  drawBrandMark(doc, PAGE_MARGIN, 12, 16);
+  drawBrandMark(doc, PAGE_MARGIN, 12, 16, { logo });
   doc.setFont("helvetica", "bold");
   doc.setFontSize(9);
   setColor(doc, DAVIS_BLUE, "text");
@@ -96,7 +112,7 @@ function drawRunningHeader(doc, { title }) {
   doc.line(PAGE_MARGIN, 34, w - PAGE_MARGIN, 34);
 }
 
-function drawFooter(doc, page, total, generatedOn) {
+function drawFooter(doc, page, total) {
   const w = doc.internal.pageSize.getWidth();
   const h = doc.internal.pageSize.getHeight();
   setColor(doc, LINE, "draw");
@@ -104,7 +120,6 @@ function drawFooter(doc, page, total, generatedOn) {
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8);
   setColor(doc, TEXT_MUTED, "text");
-  doc.text(`Generated ${generatedOn}`, PAGE_MARGIN, h - 20);
   doc.text(`Page ${page} of ${total}`, w - PAGE_MARGIN, h - 20, { align: "right" });
 }
 
@@ -229,7 +244,9 @@ export async function generateReviewsReport({
   const pageW = doc.internal.pageSize.getWidth();
   const pageH = doc.internal.pageSize.getHeight();
   const contentW = pageW - PAGE_MARGIN * 2;
-  const generatedOn = fmtReviewDate(new Date().toISOString());
+  // Decoded once per report, not once per page.
+  const logoUri = getBrandLogo();
+  const logo = logoUri ? { dataUri: logoUri, size: await logoSize(logoUri) } : null;
   const rows = reviews || [];
 
   // Layout pass first, so "Page X of Y" is right before anything is drawn.
@@ -251,7 +268,7 @@ export async function generateReviewsReport({
   for (let p = 0; p < totalPages; p++) {
     if (p > 0 || appending) doc.addPage();
     if (p === 0) {
-      drawBanner(doc, { title, subtitle, periodText, rangeText, generatedOn });
+      drawBanner(doc, { title, subtitle, periodText, rangeText, logo });
       drawSummary(doc, rows, PAGE_MARGIN, HEADER_H + 20, contentW);
       if (!rows.length) {
         doc.setFont("helvetica", "italic");
@@ -260,13 +277,13 @@ export async function generateReviewsReport({
         doc.text("No reviews in this period.", PAGE_MARGIN, HEADER_H + 20 + summaryH + 16);
       }
     } else {
-      drawRunningHeader(doc, { title });
+      drawRunningHeader(doc, { title, logo });
     }
     for (const item of placed) {
       if (item.page !== p) continue;
       drawReview(doc, item.r, PAGE_MARGIN, item.y, contentW);
     }
-    drawFooter(doc, p + 1, totalPages, generatedOn);
+    drawFooter(doc, p + 1, totalPages);
   }
   return doc;
 }
