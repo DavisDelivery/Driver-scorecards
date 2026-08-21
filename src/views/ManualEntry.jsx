@@ -85,6 +85,38 @@ function AttemptStatusBadge({ a }) {
 // Config presets for the manual-entry tabs. Both pull a PRO from NuVizz, attribute
 // it to a driver, and log it as a manual incident; they differ only in copy,
 // category, and whether they carry a classification dropdown.
+// Its own category, so every existing chart, rollup and leaderboard ignores it by
+// construction: they all enumerate the categories they count, and this isn't one.
+export const UNABLE_TO_TRACK = "unable_to_track";
+
+export const UNABLE_TO_TRACK_CONFIG = {
+  category: UNABLE_TO_TRACK,
+  color: "#64748b",
+  // Never a driver fault: the record is that we couldn't attribute the PRO, not that
+  // somebody did something wrong.
+  fault: "",
+  heading: "Unable to Track",
+  logTitle: "Unable-to-Track Log",
+  leaderLabel: "Most unable-to-track",
+  addLabel: "Log Unable to Track",
+  recordNoun: "unable to track",
+  deleteNoun: "unable-to-track",
+  reasonLabel: "Unable to find / track driver",
+  driverOptional: true,
+  classify: {
+    label: "What couldn't be found",
+    field: "untracked_reason",
+    placeholder: "— Select reason —",
+    options: [
+      "Driver could not find the PRO",
+      "No driver on the stop",
+      "PRO not in NuVizz",
+      "Stop not found",
+      "Multiple legs — driver unclear",
+    ],
+  },
+};
+
 export const FF_CONFIG = {
   category: "forgotten_freight",
   color: "#f97316",
@@ -101,6 +133,19 @@ export const FF_CONFIG = {
     field: "forgotten_item",
     placeholder: "— Select item —",
     options: ["Skid", "Peanut", "Bubble Wrap", "Foam", "Box", "Pallet Jack"],
+  },
+  // Not everything you look up is forgotten freight. When the PRO can't be tracked to
+  // a driver — no driver on the stop, the PRO isn't in NuVizz, the driver can't find
+  // the freight — picking this diverts the entry to its own category, so it is on
+  // record without landing in the forgotten-freight counts, charts or leaderboard
+  // (which read category === "forgotten_freight" and never see it).
+  divert: {
+    option: "Unable to find / track driver",
+    category: UNABLE_TO_TRACK,
+    reasonLabel: "Unable to find / track driver",
+    // The whole point is that the driver may be unknown, so this one can save without.
+    allowNoDriver: true,
+    note: 'Logged under "Unable to Track" — kept out of Forgotten Freight counts and charts. A driver is optional here.',
   },
 };
 
@@ -732,12 +777,19 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     }
   }
 
+  // Picking the divert option turns this entry into a different kind of record: its
+  // own category, no fault, and a driver that may be unknown.
+  const diverted = !!(config.divert && classifyValue === config.divert.option);
+  const driverOptional = !!config.driverOptional || (diverted && config.divert.allowNoDriver);
+  const saveCategory = diverted ? config.divert.category : config.category;
+
   async function doSave() {
-    if (!pull || !driverId) return;
+    if (!pull) return;
+    if (!driverId && !driverOptional) return;
     // Flag a duplicate PRO before saving: list who it's already charged to and the
     // date(s) it was logged under, then confirm whether to add it again.
     const dups = incidents.filter(
-      (i) => i.category === config.category && i.pro_number === pull.pro,
+      (i) => i.category === saveCategory && i.pro_number === pull.pro,
     );
     if (dups.length) {
       const lines = dups
@@ -765,12 +817,12 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     const incident = {
       id: `i_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       pro_number: pull.pro,
-      category: config.category,
-      fault: config.fault ?? "driver",
+      category: saveCategory,
+      fault: diverted ? "" : config.fault ?? "driver",
       no_fault: false,
-      driver_id: drv.id,
-      driver_name: drv.name,
-      driver_raw: s.driverName || drv.name,
+      driver_id: drv?.id || "",
+      driver_name: drv?.name || "",
+      driver_raw: s.driverName || drv?.name || "",
       nuvizz_driver_id: s.driverId || null,
       nuvizz_load_nbr: s.loadNbr || null,
       nuvizz_vehicle: s.vehicleNbr || null,
@@ -779,7 +831,9 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       to_state: s.to?.state || "",
       zip_code: s.to?.zip || "",
       delivered_date: delivered,
-      reason: buildReason(classifyValue),
+      reason: diverted
+        ? `${config.divert.reasonLabel} (manual entry)`
+        : buildReason(classifyValue),
       notes: notes || "",
       sources: [],
       report_id: null,
@@ -802,10 +856,14 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         );
       } else {
         setSavedWarn(false);
+        const who = drv ? `charged to ${drv.name}` : "logged with no driver";
+        // A diverted entry does NOT appear in this tab's log — say where it went, or
+        // it reads as a save that vanished.
+        const where = diverted ? ' — find it under "Unable to Track"' : "";
         setSavedMsg(
           saved?.photos_dropped_oversize
-            ? `Saved — ${pull.pro} charged to ${drv.name} under ${fmtMDY(delivered)}, but its ${photos.length} photo${photos.length === 1 ? "" : "s"} were too large to store.`
-            : `Saved — ${pull.pro} charged to ${drv.name} under ${fmtMDY(delivered)} (${photos.length} photo${photos.length === 1 ? "" : "s"}).`,
+            ? `Saved — ${pull.pro} ${who} under ${fmtMDY(delivered)}, but its ${photos.length} photo${photos.length === 1 ? "" : "s"} were too large to store${where}.`
+            : `Saved — ${pull.pro} ${who} under ${fmtMDY(delivered)} (${photos.length} photo${photos.length === 1 ? "" : "s"})${where}.`,
         );
       }
       // Jump the log view to the date just logged so the new entry is visible.
@@ -1126,14 +1184,26 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                           {it}
                         </option>
                       ))}
+                      {config.divert && (
+                        <option value={config.divert.option}>{config.divert.option}</option>
+                      )}
                     </select>
+                    {diverted && (
+                      <div className="meta" style={{ marginTop: 4, maxWidth: 260 }}>
+                        {config.divert.note}
+                      </div>
+                    )}
                   </div>
                 )}
                 <div className="ff-charge-col">
-                  <div className="dd-k">Charge to driver</div>
+                  <div className="dd-k">
+                    {driverOptional ? "Driver (optional)" : "Charge to driver"}
+                  </div>
                   <div className="ff-charge-driver">
                     <select value={driverId} onChange={(e) => setDriverId(e.target.value)}>
-                      <option value="">— Select driver —</option>
+                      <option value="">
+                        {driverOptional ? "— Unknown driver —" : "— Select driver —"}
+                      </option>
                       {driverOptions}
                     </select>
                     {matched && s.driverName && (
@@ -1157,9 +1227,9 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                 <button
                   className="btn primary"
                   onClick={doSave}
-                  disabled={!driverId || saving}
+                  disabled={(!driverId && !driverOptional) || saving}
                 >
-                  {saving ? "Saving…" : config.addLabel}
+                  {saving ? "Saving…" : diverted ? "Log Unable to Track" : config.addLabel}
                 </button>
               </div>
             </div>
