@@ -6,6 +6,11 @@
   waiting for approval. Don't stop to ask. Still hold off if a build fails, a check is
   red, or the change turns out to be riskier than described — say so instead of merging.
 - Report what shipped in plain terms afterwards, including anything skipped or uncertain.
+- **Every merge bumps the version.** No change reaches `main` without `APP_VERSION` in
+  `src/App.jsx` going up in the same PR, and `version` in `package.json` set to match —
+  the number is printed in the sidebar, so it is how anyone tells which build a browser
+  is actually running. Patch for a fix or a wording/doc change, minor for a new screen,
+  control or report. Bump it as part of the change, not as a follow-up commit.
 
 ## Data layer (Firestore, `src/data/firebase.js`)
 
