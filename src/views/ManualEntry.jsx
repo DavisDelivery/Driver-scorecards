@@ -14,6 +14,7 @@ import {
 import { matchDriver } from "../data/driverMatch.js";
 import {
   fetchAttemptsForDay,
+  fetchAttemptsRange,
   deleteAttempt,
   todayET,
   yesterdayET,
@@ -211,6 +212,48 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   const [feedDeletingId, setFeedDeletingId] = React.useState(null);
   // The feed row whose detail/activity-history modal is open.
   const [stopDetail, setStopDetail] = React.useState(null);
+  // Every attempt in the ANALYTICS period, not just the day the log is showing.
+  // The auto attempts are the bulk of this tab and are NOT saved as incidents, so
+  // without this the charts and totals only ever saw the handful that were — a
+  // month with 132 real attempts across 38 drivers charted as a near-empty panel.
+  const [periodFeed, setPeriodFeed] = React.useState({
+    status: "idle",
+    rows: [],
+    capped: false,
+    totalDays: 0,
+  });
+  // Per-day cache, so moving between overlapping periods refetches only new days.
+  const periodCache = React.useRef(new Map());
+
+  React.useEffect(() => {
+    if (!feedEnabled) return;
+    const { start, end } = logPeriod.win;
+    if (!start || !end) return;
+    const controller = new AbortController();
+    let active = true;
+    setPeriodFeed((f) => ({ ...f, status: "loading" }));
+    fetchAttemptsRange(start, end, {
+      signal: controller.signal,
+      cache: periodCache.current,
+    })
+      .then((r) => {
+        if (!active) return;
+        setPeriodFeed({
+          status: "ready",
+          rows: r.rows,
+          capped: r.capped,
+          totalDays: r.totalDays,
+        });
+      })
+      .catch((e) => {
+        if (!active || e.name === "AbortError") return;
+        setPeriodFeed({ status: "error", rows: [], capped: false, totalDays: 0 });
+      });
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [feedEnabled, logPeriod.win, feedNonce]);
 
   React.useEffect(() => {
     if (!feedEnabled) return;
@@ -449,6 +492,51 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   // Per-driver rollup for the current period: who made mistakes, and how many.
   // Deactivated drivers are left out — this chart is "who am I managing", not a
   // record of the period. Their rows stay in the log and in every count below.
+  // The period's auto attempts, turned into records the charts can count.
+  //
+  // Attribution order matters: a saved reassignment WINS, because that's an operator
+  // correcting the feed. Then the feed's own morning-plan driver, matched to the
+  // roster so "Ben  Paintsil" and "Ben Paintsil" are one bar rather than two.
+  // Anything still nameless stays nameless rather than being guessed onto someone.
+  const feedRecords = React.useMemo(() => {
+    if (!feedEnabled) return [];
+    const overrides = new Map();
+    for (const i of logIncidents) {
+      if (!i.attempt_stop_nbr) continue;
+      overrides.set(
+        `${i.attempt_stop_nbr}|${(i.delivered_date || "").slice(0, 10)}`,
+        i,
+      );
+    }
+    return periodFeed.rows.map((a) => {
+      const ov = overrides.get(`${a.stopNbr}|${a.date}`);
+      const matched = ov ? null : matchDriver(a.originalDriverName || "", drivers);
+      return {
+        id: `feed:${a.date}:${a.stopNbr}`,
+        pro_number: a.shipmentNbr || a.stopNbr,
+        category: config.category,
+        driver_id: ov?.driver_id || matched?.id || null,
+        driver_name: ov?.driver_name || matched?.name || a.originalDriverName || "",
+        driver_raw: a.originalDriverName || "",
+        customer: a.businessName || "",
+        to_city: a.city || "",
+        to_state: a.state || "",
+        delivered_date: a.date,
+        created_at: a.detectedAt || a.date,
+        notes: a.note || "",
+        from_feed: true,
+      };
+    });
+  }, [feedEnabled, periodFeed.rows, logIncidents, drivers, config.category]);
+
+  // What the analytics panel counts. On the feed tab that's the auto attempts plus
+  // any hand-entered ones — but NOT the reassignment rows, which are the attribution
+  // for a feed row and would otherwise count that attempt twice.
+  const analyticsRecords = React.useMemo(() => {
+    if (!feedEnabled) return logIncidents;
+    return [...feedRecords, ...logIncidents.filter((i) => !i.attempt_stop_nbr)];
+  }, [feedEnabled, feedRecords, logIncidents]);
+
   // Rows for the ANALYTICS period, whatever the log below happens to be showing.
   // On the feed-backed tab the log is a single day, but the by-driver breakdown has
   // to cover the selected period like every other stat in the panel above it — and
@@ -456,11 +544,11 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   // hides, because those rows are exactly where an auto attempt's driver lives.
   const periodRows = React.useMemo(() => {
     const { start, end } = logPeriod.win;
-    return logIncidents.filter((i) => {
+    return analyticsRecords.filter((i) => {
       const d = (i.delivered_date || i.created_at || "").slice(0, 10);
       return d && d >= start && d <= end;
     });
-  }, [logIncidents, logPeriod.win]);
+  }, [analyticsRecords, logPeriod.win]);
 
   const byDriver = React.useMemo(() => {
     const hidden = hiddenDriverIds(drivers);
@@ -1083,7 +1171,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       <ManualEntryAnalytics
         title={config.heading}
         color={config.color || "var(--davis-blue)"}
-        records={logIncidents}
+        records={analyticsRecords}
         drivers={drivers}
         onPeriodChange={setLogPeriod}
         leaderLabel={config.leaderLabel}
@@ -1107,6 +1195,14 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                 <span className="meta">
                   {" "}· {byDriver.length} driver{byDriver.length === 1 ? "" : "s"},{" "}
                   {periodRows.length} entr{periodRows.length === 1 ? "y" : "ies"}
+                  {feedEnabled && periodFeed.status === "loading" && " · loading the period…"}
+                  {/* The auto attempts are fetched a day at a time, so a multi-month
+                      window would be hundreds of requests. Say the range is too wide
+                      rather than drawing a chart that silently omits them. */}
+                  {feedEnabled && periodFeed.capped &&
+                    ` · auto attempts not included over ${periodFeed.totalDays} days — pick a month or less`}
+                  {feedEnabled && periodFeed.status === "error" &&
+                    " · couldn't load the period's auto attempts"}
                 </span>
               </span>
               {/* Always-visible way to print one driver's report. Bound to the
