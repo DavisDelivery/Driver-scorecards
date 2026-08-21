@@ -3,6 +3,10 @@ import { getReviews } from "../data/reviews.js";
 import { getDrivers } from "../data/firebase.js";
 import { fetchStopData } from "../parsers/nuvizzClient.js";
 import { matchDriver } from "../data/driverMatch.js";
+import {
+  generateReviewsReport,
+  reviewsReportFilename,
+} from "../reports/reviewsReport.js";
 
 // Per-browser cache of PRO → resolved driver so we don't re-hit NuVizz each load.
 const ATTR_CACHE = "dds_review_pro_driver";
@@ -72,6 +76,11 @@ export default function Reviews({ incidents = [] }) {
   // via NuVizz. { [pro]: { driverId, driverName, status } }
   const [attrib, setAttrib] = useState(() => readAttrCache());
   const [resolving, setResolving] = useState(0); // # of PROs still resolving
+  // How the comment list is ordered, and how many of it are shown.
+  const [reviewSort, setReviewSort] = useState("newest");
+  const [showAll, setShowAll] = useState(false);
+  const [printScope, setPrintScope] = useState("");   // "" = every driver
+  const [printing, setPrinting] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -234,13 +243,96 @@ export default function Reviews({ incidents = [] }) {
     return arr;
   }, [byDriver, sortKey, sortDir]);
 
+  const REVIEW_SORTS = [
+    ["newest", "Newest"],
+    ["oldest", "Oldest"],
+    ["lowest", "Lowest rated"],
+    ["highest", "Highest rated"],
+  ];
+  const PAGE = 50;
+
+  // Ordered comment list. Rating sorts break ties by date so an equal-star run still
+  // reads chronologically rather than in whatever order the source happened to send.
+  const sortedReviews = useMemo(() => {
+    const t = (r) => new Date(r.submittedAt || 0).getTime();
+    const arr = [...reviews];
+    arr.sort((a, b) => {
+      if (reviewSort === "oldest") return t(a) - t(b);
+      if (reviewSort === "lowest")
+        return (a.rating || 0) - (b.rating || 0) || t(b) - t(a);
+      if (reviewSort === "highest")
+        return (b.rating || 0) - (a.rating || 0) || t(b) - t(a);
+      return t(b) - t(a);
+    });
+    return arr;
+  }, [reviews, reviewSort]);
+
+  // The list is capped by default, but the cap is stated and liftable — silently
+  // truncating is how you end up trusting a list that isn't the whole list.
   const recent = useMemo(
-    () =>
-      [...reviews]
-        .sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt))
-        .slice(0, 50),
-    [reviews]
+    () => (showAll ? sortedReviews : sortedReviews.slice(0, PAGE)),
+    [sortedReviews, showAll]
   );
+
+  // Reviews as the report wants them: the driver and customer this view resolved,
+  // not the bare PRO the source sends.
+  const reportRows = (revs) =>
+    revs.map((r) => ({
+      ...r,
+      driverName: driverFor(r) || "Unattributed",
+      customer: customerFor(r)?.name || "",
+    }));
+
+  async function printReviews() {
+    setPrinting(true);
+    try {
+      const scoped = printScope
+        ? sortedReviews.filter((r) => (driverFor(r) || "Unattributed") === printScope)
+        : sortedReviews;
+      const doc = await generateReviewsReport({
+        title: printScope || "All Drivers",
+        subtitle: `${scoped.length} review${scoped.length === 1 ? "" : "s"} · ${
+          REVIEW_SORTS.find(([v]) => v === reviewSort)?.[1] || "Newest"
+        } first`,
+        reviews: reportRows(scoped),
+      });
+      doc.save(reviewsReportFilename(printScope || "All Drivers"));
+    } catch (e) {
+      alert("Could not build the report: " + (e?.message || e));
+    } finally {
+      setPrinting(false);
+    }
+  }
+
+  // One PDF, every driver in turn, each starting on a fresh page.
+  async function printAllDriverReviews() {
+    setPrinting(true);
+    try {
+      const names = sortedDrivers.map((d) => d.driver);
+      let doc = null;
+      for (const name of names) {
+        const scoped = sortedReviews.filter(
+          (r) => (driverFor(r) || "Unattributed") === name,
+        );
+        if (!scoped.length) continue;
+        doc = await generateReviewsReport({
+          title: name,
+          subtitle: `${scoped.length} review${scoped.length === 1 ? "" : "s"}`,
+          reviews: reportRows(scoped),
+          doc,
+        });
+      }
+      if (!doc) {
+        alert("No reviews to print.");
+        return;
+      }
+      doc.save(reviewsReportFilename("All Drivers by driver"));
+    } catch (e) {
+      alert("Could not build the report: " + (e?.message || e));
+    } finally {
+      setPrinting(false);
+    }
+  }
 
   const toggleSort = (key) => {
     if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -302,6 +394,35 @@ export default function Reviews({ incidents = [] }) {
             title="Re-check every unattributed review's driver from NuVizz"
           >
             Re-attribute
+          </button>
+          <select
+            value={printScope}
+            onChange={(e) => setPrintScope(e.target.value)}
+            aria-label="Driver to print reviews for"
+            style={{ maxWidth: 210 }}
+          >
+            <option value="">All drivers</option>
+            {sortedDrivers.map((d) => (
+              <option key={d.driver} value={d.driver}>
+                {d.driver} ({d.count})
+              </option>
+            ))}
+          </select>
+          <button
+            className="btn primary sm"
+            onClick={printReviews}
+            disabled={printing || loading || !reviews.length}
+            title="PDF of these reviews, in the order shown"
+          >
+            {printing ? "Building PDF…" : "📄 Print reviews"}
+          </button>
+          <button
+            className="btn ghost sm"
+            onClick={printAllDriverReviews}
+            disabled={printing || loading || !reviews.length}
+            title="One PDF with every driver's reviews — each driver starts on a new page"
+          >
+            📄 Print all by driver
           </button>
         </div>
       </div>
@@ -397,8 +518,31 @@ export default function Reviews({ incidents = [] }) {
 
       {/* Recent reviews */}
       <div style={{ ...card, padding: 0, overflow: "hidden" }}>
-        <div style={{ padding: "14px 18px", fontSize: "13px", fontWeight: 700, color: "#0a2744", borderBottom: "1px solid #eef1f5" }}>
-          Recent Reviews
+        <div style={{ padding: "14px 18px", borderBottom: "1px solid #eef1f5", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+          <span style={{ fontSize: "13px", fontWeight: 700, color: "#0a2744" }}>
+            Recent Reviews
+            <span style={{ fontWeight: 400, color: "#97a3b3" }}>
+              {" "}· showing {recent.length} of {sortedReviews.length}
+            </span>
+          </span>
+          <span style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+            <div className="month-picker" style={{ margin: 0 }}>
+              {REVIEW_SORTS.map(([val, label]) => (
+                <button
+                  key={val}
+                  className={`month-btn ${reviewSort === val ? "active" : ""}`}
+                  onClick={() => setReviewSort(val)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {sortedReviews.length > PAGE && (
+              <button className="btn ghost sm" onClick={() => setShowAll((v) => !v)}>
+                {showAll ? `Show first ${PAGE}` : `Show all ${sortedReviews.length}`}
+              </button>
+            )}
+          </span>
         </div>
         <div>
           {recent.map((r) => (
