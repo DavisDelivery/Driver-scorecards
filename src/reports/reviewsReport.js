@@ -35,30 +35,65 @@ export function fmtReviewDate(iso) {
 const stars = (n) => "*".repeat(Math.max(0, Math.round(n))).padEnd(5, "-");
 const ratingRgb = (avg) => (avg >= 4.5 ? GREEN : avg >= 3.5 ? TEXT_DARK : RED);
 
-function drawBanner(doc, { title, subtitle, generatedOn }) {
+// The Davis mark, drawn rather than loaded: it is a rounded blue square with a "D",
+// exactly as the app renders it, so there is no image asset to ship or go missing.
+// (If a real logo file ever lands, this is the one place to swap it for loadImage.)
+export function drawBrandMark(doc, x, y, size, { onDark = false } = {}) {
+  if (onDark) {
+    doc.setFillColor(255, 255, 255);
+  } else {
+    setColor(doc, DAVIS_BLUE, "fill");
+  }
+  doc.roundedRect(x, y, size, size, size * 0.17, size * 0.17, "F");
+  doc.setFont("courier", "bold");
+  doc.setFontSize(size * 0.62);
+  if (onDark) setColor(doc, DAVIS_BLUE, "text");
+  else doc.setTextColor(255, 255, 255);
+  doc.text("D", x + size / 2, y + size * 0.72, { align: "center" });
+}
+
+// This goes to CUSTOMERS, so the first thing on the page is who it's from and what
+// window it covers — not an internal report title.
+function drawBanner(doc, { title, subtitle, periodText, rangeText, generatedOn }) {
   const w = doc.internal.pageSize.getWidth();
   setColor(doc, DAVIS_BLUE, "fill");
   doc.rect(0, 0, w, HEADER_H, "F");
+
+  drawBrandMark(doc, PAGE_MARGIN, 20, 34, { onDark: true });
+
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(9);
+  doc.setFontSize(15);
   doc.setTextColor(255, 255, 255);
-  doc.text("DAVIS DELIVERY — CUSTOMER REVIEWS", PAGE_MARGIN, 30);
-  doc.setFontSize(20);
-  doc.text(String(title || "All Drivers"), PAGE_MARGIN, 58);
+  doc.text("DAVIS DELIVERY", PAGE_MARGIN + 46, 36);
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
-  if (subtitle) doc.text(String(subtitle), PAGE_MARGIN, 76);
-  doc.text(`Generated ${generatedOn}`, w - PAGE_MARGIN, 30, { align: "right" });
+  doc.text("Customer Delivery Reviews", PAGE_MARGIN + 46, 50);
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(13);
+  doc.text(String(title || "All Drivers"), PAGE_MARGIN, 76);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(9);
+  const right = [periodText, subtitle].filter(Boolean).join("  ·  ");
+  if (right) doc.text(right, w - PAGE_MARGIN, 76, { align: "right" });
+  doc.setFontSize(8);
+  doc.text(
+    [rangeText, `Generated ${generatedOn}`].filter(Boolean).join("  ·  "),
+    w - PAGE_MARGIN,
+    36,
+    { align: "right" },
+  );
 }
 
 function drawRunningHeader(doc, { title }) {
   const w = doc.internal.pageSize.getWidth();
+  drawBrandMark(doc, PAGE_MARGIN, 12, 16);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(9);
   setColor(doc, DAVIS_BLUE, "text");
-  doc.text(`${title} — Customer Reviews`, PAGE_MARGIN, 26);
+  doc.text(`Davis Delivery — ${title}`, PAGE_MARGIN + 22, 24);
   setColor(doc, LINE, "draw");
-  doc.line(PAGE_MARGIN, 32, w - PAGE_MARGIN, 32);
+  doc.line(PAGE_MARGIN, 34, w - PAGE_MARGIN, 34);
 }
 
 function drawFooter(doc, page, total, generatedOn) {
@@ -73,33 +108,67 @@ function drawFooter(doc, page, total, generatedOn) {
   doc.text(`Page ${page} of ${total}`, w - PAGE_MARGIN, h - 20, { align: "right" });
 }
 
-// Summary strip: how many, the average, and how many were 3 stars or worse — the
-// three numbers anyone reads first.
+// What a customer reads first: how many, the average out of five, and the share
+// rated 4 stars or better — plus the distribution, so the headline number is shown
+// to be earned rather than asserted. The low-star count stays in: a report that
+// hides its bad reviews is not worth showing anyone.
+const SUMMARY_H = 108;
+
 function drawSummary(doc, revs, x, y, w) {
   const n = revs.length;
   const avg = n ? revs.reduce((s, r) => s + (r.rating || 0), 0) / n : 0;
   const low = revs.filter((r) => (r.rating || 0) <= 3).length;
-  setColor(doc, LINE, "draw");
+  const good = revs.filter((r) => (r.rating || 0) >= 4).length;
+  const pct = n ? Math.round((good / n) * 100) : 0;
+
   doc.setDrawColor(...LINE);
-  doc.roundedRect(x, y, w, 46, 3, 3);
+  doc.roundedRect(x, y, w, SUMMARY_H, 3, 3);
+
   const cells = [
     ["REVIEWS", String(n), TEXT_DARK],
-    ["AVERAGE", n ? avg.toFixed(2) : "—", ratingRgb(avg)],
+    ["AVERAGE RATING", n ? `${avg.toFixed(2)} / 5` : "—", ratingRgb(avg)],
+    ["RATED 4 STARS OR BETTER", n ? `${pct}%` : "—", pct >= 80 ? GREEN : TEXT_DARK],
     ["3 STARS OR LESS", String(low), low ? RED : TEXT_DARK],
   ];
   const cw = w / cells.length;
   cells.forEach(([label, value, rgb], i) => {
     const cx = x + cw * i + 12;
     doc.setFont("helvetica", "bold");
-    doc.setFontSize(16);
+    doc.setFontSize(17);
     setColor(doc, rgb, "text");
-    doc.text(value, cx, y + 26);
+    doc.text(value, cx, y + 28);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(6.5);
+    setColor(doc, TEXT_MUTED, "text");
+    doc.text(label, cx, y + 40);
+  });
+
+  // Distribution: one bar per star level, widest bar = the biggest bucket.
+  const barX = x + 12;
+  const barW = w - 24 - 60;
+  const top = y + 54;
+  const max = Math.max(1, ...[5, 4, 3, 2, 1].map((st) => revs.filter((r) => r.rating === st).length));
+  [5, 4, 3, 2, 1].forEach((st, i) => {
+    const count = revs.filter((r) => r.rating === st).length;
+    const by = top + i * 10;
     doc.setFont("helvetica", "normal");
     doc.setFontSize(7);
     setColor(doc, TEXT_MUTED, "text");
-    doc.text(label, cx, y + 38);
+    doc.text(`${st}`, barX, by + 5);
+    doc.setFillColor(238, 241, 245);
+    doc.roundedRect(barX + 10, by, barW, 6, 1, 1, "F");
+    if (count) {
+      setColor(doc, st >= 4 ? GREEN : st === 3 ? TEXT_MUTED : RED, "fill");
+      doc.roundedRect(barX + 10, by, Math.max(2, (count / max) * barW), 6, 1, 1, "F");
+    }
+    setColor(doc, TEXT_MUTED, "text");
+    doc.text(
+      `${count}${n ? `  ·  ${Math.round((count / n) * 100)}%` : ""}`,
+      barX + 16 + barW,
+      by + 5,
+    );
   });
-  return 46;
+  return SUMMARY_H;
 }
 
 // One review: stars + driver + date on the head line, then customer/PRO, then the
@@ -150,6 +219,8 @@ function drawReview(doc, r, x, y, w) {
 export async function generateReviewsReport({
   title,
   subtitle,
+  periodText,
+  rangeText,
   reviews,
   doc: existingDoc,
 }) {
@@ -162,7 +233,7 @@ export async function generateReviewsReport({
   const rows = reviews || [];
 
   // Layout pass first, so "Page X of Y" is right before anything is drawn.
-  const summaryH = 46 + 18;
+  const summaryH = SUMMARY_H + 18;
   const placed = [];
   let page = 0;
   let y = HEADER_H + 20 + summaryH;
@@ -180,13 +251,13 @@ export async function generateReviewsReport({
   for (let p = 0; p < totalPages; p++) {
     if (p > 0 || appending) doc.addPage();
     if (p === 0) {
-      drawBanner(doc, { title, subtitle, generatedOn });
+      drawBanner(doc, { title, subtitle, periodText, rangeText, generatedOn });
       drawSummary(doc, rows, PAGE_MARGIN, HEADER_H + 20, contentW);
       if (!rows.length) {
         doc.setFont("helvetica", "italic");
         doc.setFontSize(10);
         setColor(doc, TEXT_MUTED, "text");
-        doc.text("No reviews in this selection.", PAGE_MARGIN, HEADER_H + 20 + summaryH + 16);
+        doc.text("No reviews in this period.", PAGE_MARGIN, HEADER_H + 20 + summaryH + 16);
       }
     } else {
       drawRunningHeader(doc, { title });

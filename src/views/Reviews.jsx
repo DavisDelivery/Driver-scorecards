@@ -7,6 +7,7 @@ import {
   generateReviewsReport,
   reviewsReportFilename,
 } from "../reports/reviewsReport.js";
+import { PERIODS, periodWindow, periodLabel, toYMD } from "../data/period.js";
 
 // Per-browser cache of PRO → resolved driver so we don't re-hit NuVizz each load.
 const ATTR_CACHE = "dds_review_pro_driver";
@@ -66,7 +67,7 @@ function ratingColor(avg) {
 // usually one we've already logged), and only otherwise from the per-PRO NuVizz
 // lookup this view was already making to attribute the driver.
 export default function Reviews({ incidents = [] }) {
-  const [reviews, setReviews] = useState([]);
+  const [allReviews, setAllReviews] = useState([]);
   const [drivers, setDrivers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
@@ -81,12 +82,18 @@ export default function Reviews({ incidents = [] }) {
   const [showAll, setShowAll] = useState(false);
   const [printScope, setPrintScope] = useState("");   // "" = every driver
   const [printing, setPrinting] = useState(false);
+  // Period the whole page is scoped to — the same pills every other tab uses, so a
+  // range means the same thing here as it does there. Defaults wide (12M) because
+  // reviews are sparse and a 30-day default would look like most of them vanished.
+  const [periodSel, setPeriodSel] = useState("12");
+  const [rangeFrom, setRangeFrom] = useState("");
+  const [rangeTo, setRangeTo] = useState("");
 
   useEffect(() => {
     (async () => {
       try {
         const [revs, drvs] = await Promise.all([getReviews(), getDrivers()]);
-        setReviews(revs);
+        setAllReviews(revs);
         setDrivers(drvs);
         resolveAttributions(revs, drvs);
       } catch (e) {
@@ -97,6 +104,25 @@ export default function Reviews({ incidents = [] }) {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const win = useMemo(
+    () => periodWindow(periodSel, rangeFrom, rangeTo),
+    [periodSel, rangeFrom, rangeTo],
+  );
+  const periodText = useMemo(
+    () => periodLabel(periodSel, rangeFrom, rangeTo),
+    [periodSel, rangeFrom, rangeTo],
+  );
+  // Everything below counts THIS window: the KPIs, the distribution, the by-driver
+  // table, the comment list and the report. One control, one answer.
+  const reviews = useMemo(
+    () =>
+      allReviews.filter((r) => {
+        const d = String(r.submittedAt || "").slice(0, 10);
+        return d && d >= win.start && d <= win.end;
+      }),
+    [allReviews, win],
+  );
 
   // PRO -> customer from what's already in Firestore. Costs nothing: these are the
   // incidents the app has loaded anyway, and a reviewed delivery is often one we
@@ -291,9 +317,9 @@ export default function Reviews({ incidents = [] }) {
         : sortedReviews;
       const doc = await generateReviewsReport({
         title: printScope || "All Drivers",
-        subtitle: `${scoped.length} review${scoped.length === 1 ? "" : "s"} · ${
-          REVIEW_SORTS.find(([v]) => v === reviewSort)?.[1] || "Newest"
-        } first`,
+        subtitle: `${scoped.length} review${scoped.length === 1 ? "" : "s"}`,
+        periodText,
+        rangeText: win.start && win.end ? `${win.start} to ${win.end}` : "",
         reviews: reportRows(scoped),
       });
       doc.save(reviewsReportFilename(printScope || "All Drivers"));
@@ -318,6 +344,8 @@ export default function Reviews({ incidents = [] }) {
         doc = await generateReviewsReport({
           title: name,
           subtitle: `${scoped.length} review${scoped.length === 1 ? "" : "s"}`,
+          periodText,
+          rangeText: win.start && win.end ? `${win.start} to ${win.end}` : "",
           reviews: reportRows(scoped),
           doc,
         });
@@ -389,7 +417,7 @@ export default function Reviews({ incidents = [] }) {
           )}
           <button
             className="btn ghost sm"
-            onClick={() => resolveAttributions(reviews, drivers, true)}
+            onClick={() => resolveAttributions(allReviews, drivers, true)}
             disabled={resolving > 0 || loading}
             title="Re-check every unattributed review's driver from NuVizz"
           >
@@ -425,6 +453,37 @@ export default function Reviews({ incidents = [] }) {
             📄 Print all by driver
           </button>
         </div>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "10px", flexWrap: "wrap", minWidth: 0 }}>
+        <div className="month-picker" style={{ margin: 0 }}>
+          {PERIODS.map(([val, label]) => (
+            <button
+              key={val}
+              className={`month-btn ${periodSel === val ? "active" : ""}`}
+              onClick={() => setPeriodSel(val)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {periodSel === "range" && (
+          <div className="custom-range">
+            <input
+              type="date"
+              value={rangeFrom}
+              max={toYMD(new Date())}
+              onChange={(e) => setRangeFrom(e.target.value)}
+            />
+            <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-2)" }}>to</span>
+            <input
+              type="date"
+              value={rangeTo}
+              max={toYMD(new Date())}
+              onChange={(e) => setRangeTo(e.target.value)}
+            />
+          </div>
+        )}
       </div>
 
       {err && (
