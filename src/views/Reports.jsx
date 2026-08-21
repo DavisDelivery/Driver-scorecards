@@ -31,7 +31,7 @@ import {
 import { reportSpanLabel } from "../reports/reportNaming.js";
 import ReportDetail from "./ReportDetail.jsx";
 
-const DRIVER_FAULT_COLOR = "#1e5b92";
+const DRIVER_FAULT_COLOR = "#234294";
 
 // Weekly category columns surfaced in the dense table.
 const WEEK_COLS = [

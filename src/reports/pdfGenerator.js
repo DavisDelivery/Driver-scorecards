@@ -3,10 +3,12 @@
 // Photos live in the split photos:{id} blob, so the generator hydrates them for
 // ALL incidents up front (same source as the row drawer) before rendering.
 import { jsPDF } from "jspdf";
+import { resolveReportLogo, drawWordmark } from "./brandLogo.js";
 import { getIncidentPhotosBatch } from "../data/firebase.js";
 
 // Palette (RGB triples) matching the app theme.
-export const DAVIS_BLUE = [30, 91, 146];
+// The brand blue of the Davis Delivery Service logo, so print matches the artwork.
+export const DAVIS_BLUE = [35, 66, 148];
 const AMBER = [212, 160, 23];
 const RED = [220, 53, 69];
 const GREEN = [34, 170, 92];
@@ -202,20 +204,20 @@ export function fitDims(w, h, maxW, maxH) {
   return { w: w * scale, h: h * scale };
 }
 
-function drawCover(doc, incidents, meta) {
+function drawCover(doc, incidents, meta, logo) {
   const pageW = doc.internal.pageSize.getWidth();
   const pageH = doc.internal.pageSize.getHeight();
   const margin = 50;
 
   setColor(doc, DAVIS_BLUE, "fill");
   doc.rect(0, 0, pageW, 110, "F");
+  // The white cut of the lockup on the blue bar — the logo is the wordmark, so the
+  // company name isn't set in type beside it.
+  drawWordmark(doc, logo, margin, 22, 26, { onDark: true });
   doc.setTextColor(255, 255, 255);
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(11);
-  doc.text("DAVIS DELIVERY", margin, 42);
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
-  doc.text("DRIVER ACCOUNTABILITY REPORT", margin, 56);
+  doc.text("DRIVER ACCOUNTABILITY REPORT", margin, 62);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(26);
   doc.text(meta.title || "Weekly Photo Report", margin, 92);
@@ -525,7 +527,7 @@ async function drawContinuationCard(doc, inc, x, y, w, h, photos) {
   });
 }
 
-function drawPageHeader(doc, meta, page, total) {
+function drawPageHeader(doc, meta, page, total, logo) {
   const pageW = doc.internal.pageSize.getWidth();
   const margin = 40;
   // Taller bar with the text pushed down to ~y=30, clear of a printer's ~0.25"
@@ -533,10 +535,10 @@ function drawPageHeader(doc, meta, page, total) {
   setColor(doc, DAVIS_BLUE, "fill");
   doc.rect(0, 0, pageW, 40, "F");
   const textY = 30;
+  drawWordmark(doc, logo, margin, 11, 17, { onDark: true });
   doc.setTextColor(255, 255, 255);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(9);
-  doc.text("DAVIS DRIVER SCORECARD", margin, textY);
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8);
   doc.setTextColor(200, 215, 235);
@@ -547,6 +549,8 @@ function drawPageHeader(doc, meta, page, total) {
 // Build the full photo report (cover + 3 cards/page).
 export async function generatePhotoReport(incidents, meta = {}) {
   const doc = new jsPDF({ orientation: "portrait", unit: "pt", format: "letter" });
+  // White knockout: every bar this report draws the logo on is brand blue.
+  const logo = await resolveReportLogo({ onDark: true });
 
   // BUG 1: photos live in the separate photos:{id} blob, not on the light incident
   // record. Hydrate them for ALL incidents up front via the same batch source the
@@ -571,7 +575,7 @@ export async function generatePhotoReport(incidents, meta = {}) {
     return { ...inc, photo_urls: urls };
   });
 
-  drawCover(doc, hydrated, meta);
+  drawCover(doc, hydrated, meta, logo);
 
   // Flatten into a stream of items: a category header wherever the category
   // changes (incidents arrive grouped by category), then each incident card
@@ -628,7 +632,7 @@ export async function generatePhotoReport(incidents, meta = {}) {
 
   for (let p = 0; p < pages; p++) {
     doc.addPage();
-    drawPageHeader(doc, meta, p + 2, pages + 1);
+    drawPageHeader(doc, meta, p + 2, pages + 1, logo);
     for (const { item, page: itemPage, y: itemY } of placed) {
       if (itemPage !== p) continue;
       if (item.type === "header") {

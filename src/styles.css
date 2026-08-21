@@ -9,7 +9,7 @@
   --text-0: #111827;
   --text-1: #374151;
   --text-2: #6b7280;
-  --davis-blue: #1e5b92;
+  --davis-blue: #234294;
   --davis-blue-hot: #2e7abd;
   --davis-blue-bg: #eaf2fa;
   --accent-amber: #d4a017;
@@ -64,6 +64,19 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+/* The real Davis Delivery Service lockup. It is wide artwork, so it is sized by
+   height and left to keep its own ratio — never boxed into a square. */
+.brand-logo {
+  height: 30px;
+  width: auto;
+  max-width: 168px;
+  object-fit: contain;
+  flex: 0 0 auto;
+}
+.brand-logo.sm {
+  height: 22px;
+  max-width: 124px;
 }
 .brand-mark {
   width: 36px;
@@ -633,7 +646,7 @@ input:focus,
 select:focus,
 textarea:focus {
   border-color: var(--davis-blue);
-  box-shadow: 0 0 0 3px #1e5b921a;
+  box-shadow: 0 0 0 3px #2342941a;
 }
 label.field {
   display: block;
@@ -1129,8 +1142,13 @@ hr.div {
     padding: 20px 18px 18px;
     border-bottom: 1px solid var(--border);
     display: flex;
-    align-items: center;
-    gap: 12px;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .sidebar-brand .brand-logo {
+    height: 34px;
+    max-width: 100%;
   }
   .sidebar-brand .brand-mark {
     width: 38px;
@@ -1640,7 +1658,7 @@ table.data.analytics-subtable th {
   font-family: "JetBrains Mono", monospace;
   font-weight: 700;
   font-size: 14px;
-  color: #1e5b92;
+  color: #234294;
 }
 .dcs-l { display: block; font-size: 9px; color: #64748b; letter-spacing: 0.02em; }
 .driver-srcvol { display: flex; gap: 5px; margin-top: 8px; }
@@ -1706,7 +1724,7 @@ table.data.analytics-subtable th {
   padding: 9px;
   font-family: "JetBrains Mono", monospace;
   font-size: 11px;
-  color: #1e5b92;
+  color: #234294;
   cursor: pointer;
   letter-spacing: 0.03em;
 }
@@ -2201,7 +2219,7 @@ table.data.analytics-subtable th {
   .ff-edit-row { flex-direction: column; align-items: stretch; gap: 10px; }
 }
 .btn.primary {
-  background: #1e5b92;
+  background: #234294;
   color: #fff;
   border: none;
   border-radius: 7px;
