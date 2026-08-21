@@ -155,14 +155,23 @@ export default function Ingest({ drivers, onReportCreated, onNavigateToReport })
 
       await saveIncidentsBatch(tagged, (progress) => setSaveProgress(progress));
 
+      let rollupWarning = "";
       try {
         await rollupReportToHistory(tagged, report.id);
       } catch (err) {
-        console.warn("rollup to history failed (non-fatal):", err);
+        // Deliberate: the report and its incidents ARE saved at this point, so a
+        // failed history rollup must not abort the save — but per the no-swallow
+        // rule it has to be SAID, because Trends reads history and now diverges
+        // until the report is re-rolled (regenerate/resync from Report Detail).
+        console.warn("rollup to history failed:", err);
+        rollupWarning =
+          "\n\nWARNING: history totals could not be updated (" +
+          (err?.message || err) +
+          "). Trends may lag until this report is re-synced from Report Detail.";
       }
 
       onReportCreated?.(report.id);
-      alert(`Saved "${report.name}" with ${incidents.length} incidents.`);
+      alert(`Saved "${report.name}" with ${incidents.length} incidents.` + rollupWarning);
       if (onNavigateToReport) onNavigateToReport(report.id);
 
       // Reset state
