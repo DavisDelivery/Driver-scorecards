@@ -1,5 +1,5 @@
 import React from "react";
-import { getHistory, saveDrivers, saveIncidentsBatch } from "../data/firebase.js";
+import { getHistory, updateRoster, saveIncidentsBatch } from "../data/firebase.js";
 import { ROLES, newDriverId } from "../data/drivers.js";
 import DriverModal, { ymKey } from "./DriverModal.jsx";
 
@@ -136,31 +136,34 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
       return;
     }
     const isEdit = formOpen !== "add";
-    const dupe = drivers.find(
-      (d) =>
-        d.name.trim().toLowerCase() === name.toLowerCase() &&
-        (!isEdit || d.id !== formOpen.id),
-    );
-    if (dupe) {
-      setFormError(
-        dupe.active === false
-          ? `${dupe.name} already exists but is inactive — reactivate them instead of adding a duplicate.`
-          : `${dupe.name} is already on the roster.`,
-      );
-      return;
-    }
     setSavingRoster(true);
     try {
-      const next = isEdit
-        ? drivers.map((d) =>
-            d.id === formOpen.id ? { ...d, name, role: formRole } : d,
-          )
-        : [...drivers, { id: newDriverId(), name, role: formRole, active: true }];
-      await saveDrivers(next);
+      // The mutator runs on the roster AS IT IS ON THE SERVER, not this tab's
+      // possibly-stale copy — so a duplicate added seconds ago by someone else is
+      // caught, and this save can't erase anyone else's concurrent change.
+      await updateRoster((current) => {
+        const dupe = current.find(
+          (d) =>
+            d.name.trim().toLowerCase() === name.toLowerCase() &&
+            (!isEdit || d.id !== formOpen.id),
+        );
+        if (dupe) {
+          throw new Error(
+            dupe.active === false
+              ? `${dupe.name} already exists but is inactive — reactivate them instead of adding a duplicate.`
+              : `${dupe.name} is already on the roster.`,
+          );
+        }
+        return isEdit
+          ? current.map((d) =>
+              d.id === formOpen.id ? { ...d, name, role: formRole } : d,
+            )
+          : [...current, { id: newDriverId(), name, role: formRole, active: true }];
+      });
       onUpdate && onUpdate();
       closeForm();
     } catch (err) {
-      setFormError(`Save failed: ${err.message}`);
+      setFormError(err.message);
     } finally {
       setSavingRoster(false);
     }
@@ -178,10 +181,9 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
       return;
     setSavingRoster(true);
     try {
-      const next = drivers.map((d) =>
-        d.id === driver.id ? { ...d, active: false } : d,
+      await updateRoster((current) =>
+        current.map((d) => (d.id === driver.id ? { ...d, active: false } : d)),
       );
-      await saveDrivers(next);
       onUpdate && onUpdate();
     } catch (err) {
       alert(`Could not deactivate ${driver.name} — the change was NOT saved.\n\n${err.message}`);
@@ -208,8 +210,7 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
     }
     setSavingRoster(true);
     try {
-      const next = drivers.filter((d) => d.id !== driver.id);
-      await saveDrivers(next);
+      await updateRoster((current) => current.filter((d) => d.id !== driver.id));
       onUpdate && onUpdate();
     } catch (err) {
       alert(`Could not remove ${driver.name} — the change was NOT saved.\n\n${err.message}`);
@@ -295,7 +296,9 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
         );
       }
       const drop = new Set(stubRows.map((s) => s.driver.id));
-      await saveDrivers(drivers.filter((d) => !drop.has(d.id)));
+      // Filter by id on the FRESH roster: rows someone added since this screen
+      // loaded survive, and already-removed ids are a no-op.
+      await updateRoster((current) => current.filter((d) => !drop.has(d.id)));
       onUpdate && onUpdate();
     } catch (err) {
       alert(`Cleanup failed — the roster was NOT changed.\n\n${err.message}`);
@@ -307,10 +310,9 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
   async function reactivateDriver(driver) {
     setSavingRoster(true);
     try {
-      const next = drivers.map((d) =>
-        d.id === driver.id ? { ...d, active: true } : d,
+      await updateRoster((current) =>
+        current.map((d) => (d.id === driver.id ? { ...d, active: true } : d)),
       );
-      await saveDrivers(next);
       onUpdate && onUpdate();
     } catch (err) {
       alert(`Could not reactivate ${driver.name} — the change was NOT saved.\n\n${err.message}`);

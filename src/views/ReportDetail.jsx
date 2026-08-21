@@ -84,7 +84,7 @@ export default function ReportDetail({
       return;
     }
     if (trimmed !== report.name) {
-      await saveReport({ ...report, name: trimmed });
+      await saveReport({ id: report.id, name: trimmed });
       onReportUpdated?.();
     }
     setRenaming(false);
@@ -203,8 +203,7 @@ export default function ReportDetail({
       const dataUri = doc.output("datauristring");
       const filename = `${(report.name || "report").replace(/[^a-z0-9-_ ]/gi, "_")}.pdf`;
       downloadPdf(doc, filename);
-      await saveReport({
-        ...report,
+      await saveReport({ id: report.id,
         pdf_data: dataUri,
         incident_count: incidents.length,
       });
