@@ -32,6 +32,10 @@ export const APP_VERSION = "0.13.0";
 const APP_HOST =
   typeof window !== "undefined" && window.location ? window.location.host : "";
 
+// Sidebar order, top to bottom: the day-to-day entry screens first, then the
+// analysis screens, and the roster last — it's set up once and rarely revisited.
+// "New Report" is deliberately NOT here: it lives on the Reports tab, and listing
+// it twice made one screen look like two places. `n` still jumps straight to it.
 const TABS = [
   { id: "dashboard", label: "Scorecard", icon: "◫", shortcut: "d" },
   { id: "reports", label: "Reports", icon: "▦", shortcut: "r" },
@@ -39,12 +43,11 @@ const TABS = [
   { id: "misdeliveries", label: "Mis-Deliveries", icon: "⇄", shortcut: "m" },
   { id: "attempts", label: "Attempts", icon: "↻", shortcut: "a" },
   { id: "compliments", label: "Compliments", icon: "✦", shortcut: "c" },
-  { id: "ingest", label: "New Report", icon: "+", shortcut: "n" },
-  { id: "incidents", label: "All Incidents", icon: "⚠", shortcut: "i" },
   { id: "trends", label: "Trends", icon: "◭", shortcut: "t" },
-  { id: "drivers", label: "Drivers", icon: "◉", shortcut: "v" },
   { id: "reviews", label: "Reviews", icon: "★", shortcut: "e" },
+  { id: "incidents", label: "All Incidents", icon: "⚠", shortcut: "i" },
   { id: "history", label: "History Import", icon: "↥", shortcut: "h" },
+  { id: "drivers", label: "Drivers", icon: "◉", shortcut: "v" },
 ];
 
 export default function App() {
