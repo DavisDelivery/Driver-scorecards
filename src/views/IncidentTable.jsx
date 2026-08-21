@@ -9,6 +9,7 @@ import {
   saveIncident,
   deleteIncident,
   deleteIncidentsBatch,
+  scheduleReportResync,
   getIncidentPhotos,
   getIncidentPhotosBatch,
 } from "../data/firebase.js";
@@ -423,12 +424,25 @@ export default function IncidentTable({
     (Array.isArray(inc.sources) && inc.sources.includes("laters")) ||
     inc.category === "late";
 
+  // A failed save was console.error'd while the optimistic patch stayed on
+  // screen — the edit LOOKED saved and wasn't. Real rejections now alert and
+  // re-read the truth. (Offline is not a rejection: the write queues and the
+  // app-level unsynced banner reports it.)
+  const editFailed = (what, err) => {
+    alert(`${what} was NOT saved: ${err.message}`);
+    onUpdate?.();
+  };
+  // Any edit to an incident that belongs to a report can change that report's
+  // totals, bounds, or PDF — keep the report in sync (debounced).
+  const touchReport = (inc) => scheduleReportResync(inc?.report_id);
+
   async function changeLateReason(inc, late_reason) {
     patchRow(inc.id, { late_reason });
     try {
       await saveIncident({ ...inc, late_reason });
+      touchReport(inc);
     } catch (err) {
-      console.error("late reason save failed", err);
+      editFailed("The late reason", err);
     }
   }
 
@@ -436,8 +450,9 @@ export default function IncidentTable({
     patchRow(inc.id, { fault });
     try {
       await saveIncident({ ...inc, fault });
+      touchReport(inc);
     } catch (err) {
-      console.error("save fault failed", err);
+      editFailed("The fault change", err);
     }
     onUpdate?.();
   }
@@ -447,19 +462,21 @@ export default function IncidentTable({
     patchRow(inc.id, patch);
     try {
       await saveIncident({ ...inc, ...patch });
+      touchReport(inc);
     } catch (err) {
-      console.error("save driver failed", err);
+      editFailed("The driver change", err);
     }
     onUpdate?.();
   }
-  // Persist an edit from the inline drawer (optimistic; errors logged).
+  // Persist an edit from the inline drawer (optimistic; failures surface).
   async function saveFromDrawer(inc, patch) {
     patchRow(inc.id, patch);
     try {
       await saveIncident({ ...inc, ...patch });
+      touchReport(inc);
       onUpdate?.();
     } catch (err) {
-      console.error("drawer save failed", err);
+      editFailed("The edit", err);
     }
   }
   async function removeIncident(id) {
@@ -475,9 +492,11 @@ export default function IncidentTable({
       return n;
     });
     try {
+      const inc = rows.find((x) => x.id === id);
       await deleteIncident(id);
+      touchReport(inc);
     } catch (err) {
-      console.error("delete failed", err);
+      editFailed("The delete", err);
     }
     onUpdate?.();
   }
@@ -490,12 +509,17 @@ export default function IncidentTable({
       )
     ) {
       const set = new Set(ids);
+      // Reports whose rows are going away — each needs its rollup re-derived.
+      const reportIds = new Set(
+        rows.filter((x) => set.has(x.id) && x.report_id).map((x) => x.report_id),
+      );
       setRows((prev) => prev.filter((x) => !set.has(x.id))); // optimistic
       setSelected(new Set());
       try {
         await deleteIncidentsBatch(ids);
+        for (const rid of reportIds) scheduleReportResync(rid);
       } catch (err) {
-        console.error("bulk delete failed", err);
+        editFailed("The bulk delete", err);
       }
       onUpdate?.();
     }
@@ -851,6 +875,7 @@ export default function IncidentTable({
           drivers={drivers}
           onClose={() => setEditing(null)}
           onSaved={() => {
+            touchReport(editing);
             setEditing(null);
             onUpdate?.();
           }}

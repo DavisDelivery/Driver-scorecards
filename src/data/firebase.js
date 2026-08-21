@@ -33,6 +33,7 @@ import {
   runTransaction,
 } from "firebase/firestore";
 import { db } from "./firebaseApp.js";
+import { reportDateBounds, reportSpanLabel } from "../reports/reportNaming.js";
 
 // All collections are dds_-prefixed: davismarginiq is a shared Davis Firebase
 // project, and the prefix guarantees this app can never collide with another
@@ -366,35 +367,26 @@ export async function getIncidentsForReport(reportId) {
 
 // Delete every incident (and its photo doc) tied to a report.
 export async function deleteIncidentsForReport(reportId) {
-  try {
-    const q = query(
-      collection(db, INCIDENTS),
-      where("report_id", "==", reportId),
-    );
-    const snap = await getDocs(q);
-    await deleteIdsWithPhotos(snap.docs.map((d) => d.id));
-  } catch (err) {
-    console.warn("deleteIncidentsForReport failed:", err.message);
-  }
+  const q = query(
+    collection(db, INCIDENTS),
+    where("report_id", "==", reportId),
+  );
+  const snap = await getDocs(q);
+  await deleteIdsWithPhotos(snap.docs.map((d) => d.id));
 }
 
+// Deletes THROW on failure. They used to console.warn and resolve, which meant a
+// rules denial or transport error looked exactly like success — the row vanished
+// from the screen and reappeared on the next reload. Callers all have catches.
 export async function deleteIncident(id) {
-  try {
-    await deleteDoc(doc(db, INCIDENTS, id));
-    for (const ref of await photoDocRefs(id)) {
-      await deleteDoc(ref).catch(() => {});
-    }
-  } catch (err) {
-    console.warn("deleteIncident failed:", err.message);
+  await trackWrite(deleteDoc(doc(db, INCIDENTS, id)));
+  for (const ref of await photoDocRefs(id)) {
+    await trackWrite(deleteDoc(ref));
   }
 }
 
 export async function deleteIncidentsBatch(ids) {
-  try {
-    await deleteIdsWithPhotos(ids);
-  } catch (err) {
-    console.warn("deleteIncidentsBatch failed:", err.message);
-  }
+  await deleteIdsWithPhotos(ids);
 }
 
 // Batch-delete incident docs plus every photo doc that belongs to them (the
@@ -405,7 +397,7 @@ async function deleteIdsWithPhotos(ids) {
     const slice = ids.slice(i, i + CHUNK);
     const batch = writeBatch(db);
     for (const id of slice) batch.delete(doc(db, INCIDENTS, id));
-    await batch.commit();
+    await trackWrite(batch.commit());
     for (const id of slice) {
       for (const ref of await photoDocRefs(id)) {
         await deleteDoc(ref).catch(() => {});
@@ -577,13 +569,9 @@ export async function getReportWithPdf(id) {
 }
 
 export async function deleteReport(id) {
-  try {
-    await deleteDoc(doc(db, REPORTS, id));
-    for (const ref of await pdfDocRefs(id)) {
-      await deleteDoc(ref).catch(() => {});
-    }
-  } catch (err) {
-    console.warn("deleteReport failed:", err.message);
+  await trackWrite(deleteDoc(doc(db, REPORTS, id)));
+  for (const ref of await pdfDocRefs(id)) {
+    await trackWrite(deleteDoc(ref));
   }
 }
 
@@ -946,6 +934,59 @@ export async function rollupReportToHistory(incidents, reportId) {
     };
   });
   return result;
+}
+
+// Re-derive everything a report's edits can invalidate: its history rollup, its
+// incident count and date bounds, and whether the stored PDF still matches. This
+// is what makes a COMPLETED report editable — every add/remove/edit seam calls
+// it (debounced below), so Trends and the Dashboard can never quietly diverge
+// from what the report now contains. Throws on failure.
+export async function resyncReportRollup(reportId) {
+  if (!reportId) return null;
+  const list = await getIncidentsForReport(reportId);
+  const result = await rollupReportToHistory(list, reportId);
+  const metaSnap = await getDoc(doc(db, REPORTS, reportId));
+  if (metaSnap.exists()) {
+    const meta = metaSnap.data();
+    const patch = { incident_count: list.length };
+    if (list.length) {
+      const { starts_at, ends_at } = reportDateBounds(list);
+      patch.starts_at = starts_at;
+      patch.ends_at = ends_at;
+      patch.range_label = reportSpanLabel({
+        starts_at,
+        ends_at,
+        week_ending: meta.week_ending,
+      });
+    }
+    // The stored PDF was rendered from the OLD contents; flag it rather than
+    // silently serving a snapshot that no longer matches the report.
+    if (meta.pdf_chunks || meta.pdf_data !== undefined) patch.pdf_stale = true;
+    await trackWrite(setDoc(doc(db, REPORTS, reportId), patch, { merge: true }));
+  }
+  return result;
+}
+
+// Debounced per report, so five quick edits in a row cost one rollup, not five.
+// Background failures are logged AND leave pdf_stale/history stale — the manual
+// "Re-sync totals" button in Report Detail is the recovery path and surfaces
+// errors properly.
+const resyncTimers = new Map();
+export function scheduleReportResync(reportId, delay = 1500) {
+  if (!reportId) return;
+  clearTimeout(resyncTimers.get(reportId));
+  resyncTimers.set(
+    reportId,
+    setTimeout(() => {
+      resyncTimers.delete(reportId);
+      resyncReportRollup(reportId).catch((err) =>
+        console.warn(
+          `report ${reportId} resync failed — history may lag until re-synced from Report Detail:`,
+          err.message,
+        ),
+      );
+    }, delay),
+  );
 }
 
 export async function deleteAllHistory() {
