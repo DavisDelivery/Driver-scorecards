@@ -7,6 +7,7 @@ import {
   getReports,
   flushPendingIncidents,
   countPendingIncidents,
+  onPendingWritesChange,
 } from "./data/firebase.js";
 import Dashboard from "./views/Dashboard.jsx";
 import Ingest from "./views/Ingest.jsx";
@@ -94,6 +95,27 @@ export default function App() {
         console.warn("Pending-sync flush failed:", err.message);
       }
     })();
+  }, []);
+
+  // The pending banner follows the write tracker LIVE: it appears the moment a
+  // write outlives its ack window and clears the moment the server catches up —
+  // not only when someone happens to save or refocus the tab.
+  useEffect(() => {
+    let alive = true;
+    const off = onPendingWritesChange((n) => {
+      if (!alive) return;
+      if (n > 0) setPendingSync(n);
+      else
+        // Tracker drained — but writes queued by an EARLIER session aren't in it,
+        // so confirm with the SDK before clearing the warning.
+        flushPendingIncidents()
+          .then(({ remaining }) => alive && setPendingSync(remaining))
+          .catch(() => {});
+    });
+    return () => {
+      alive = false;
+      off();
+    };
   }, []);
 
   // Keyboard navigation: "g" then a tab shortcut; "n" → new report; "/" → search.
