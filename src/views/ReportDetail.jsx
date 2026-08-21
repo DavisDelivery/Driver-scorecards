@@ -6,11 +6,14 @@ import {
   saveReport,
   getReportWithPdf,
   saveIncident,
+  rollupReportToHistory,
+  resyncReportRollup,
 } from "../data/firebase.js";
 import { fetchPhotosForProsBatch } from "../parsers/nuvizzClient.js";
 import { generatePhotoReport, downloadPdf } from "../reports/pdfGenerator.js";
 import { reportSpanLabel } from "../reports/reportNaming.js";
 import IncidentTable from "./IncidentTable.jsx";
+import IncidentEditor from "./IncidentEditor.jsx";
 
 export default function ReportDetail({
   report,
@@ -22,6 +25,11 @@ export default function ReportDetail({
 }) {
   const [incidents, setIncidents] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [deleting, setDeleting] = useState(false);
+  const [resyncing, setResyncing] = useState(false);
+  // "add" opens IncidentEditor seeded with this report's id, so a completed
+  // report can grow rows after the fact.
+  const [adding, setAdding] = useState(false);
   const [name, setName] = useState(report?.name || "");
   const [renaming, setRenaming] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -55,13 +63,44 @@ export default function ReportDetail({
 
   async function handleDelete() {
     if (
-      confirm(
+      !confirm(
         `Delete report "${report.name}" AND all ${incidents.length} of its incidents?\n\nThis cannot be undone.`,
       )
-    ) {
+    )
+      return;
+    setDeleting(true);
+    try {
       await deleteIncidentsForReport(report.id);
+      // Reverse this report's contribution to history — deleting used to leave
+      // its counts in Trends forever. Done before the report doc goes, so a
+      // failure here still leaves the Re-sync button available.
+      await rollupReportToHistory([], report.id);
       await deleteReport(report.id);
       onDeleted?.();
+    } catch (err) {
+      alert(
+        `Delete did not complete: ${err.message}\n\nNothing is lost — re-open the report and try again.`,
+      );
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  // Manual recovery path: re-derive history totals, counts, bounds and the
+  // PDF-stale flag from the report's CURRENT rows. The background resync after
+  // each edit does the same thing; this button exists so a failure there (or a
+  // rollup that failed during ingest) has a visible, honest retry.
+  async function handleResync() {
+    setResyncing(true);
+    try {
+      await resyncReportRollup(report.id);
+      onReportUpdated?.();
+      await load(true);
+      alert("History totals re-synced from this report's current incidents.");
+    } catch (err) {
+      alert(`Re-sync failed: ${err.message}`);
+    } finally {
+      setResyncing(false);
     }
   }
 
@@ -206,13 +245,17 @@ export default function ReportDetail({
       await saveReport({ id: report.id,
         pdf_data: dataUri,
         incident_count: incidents.length,
+        // Regenerated from the current rows — the stored copy is fresh again.
+        pdf_stale: false,
       });
       onReportUpdated?.();
     } catch (err) {
       alert("PDF generation failed: " + err.message);
+    } finally {
+      // Not in a finally before: a hung save stranded "Generating..." forever.
+      setGenerating(false);
+      setProgress({ done: 0, total: 0, pro: "" });
     }
-    setGenerating(false);
-    setProgress({ done: 0, total: 0, pro: "" });
   }
 
   const withPhotos = incidents.filter(
@@ -327,8 +370,16 @@ export default function ReportDetail({
           {generating ? "Generating..." : "📄 Generate PDF"}
         </button>
         {report.pdf_data !== undefined && (
-          <button className="btn secondary" onClick={downloadLastPdf}>
-            ↓ Download Last PDF
+          <button
+            className="btn secondary"
+            onClick={downloadLastPdf}
+            title={
+              report.pdf_stale
+                ? "The report changed after this PDF was generated — regenerate for a current copy"
+                : "Download the stored PDF"
+            }
+          >
+            ↓ Download Last PDF{report.pdf_stale ? " (out of date)" : ""}
           </button>
         )}
         <button className="btn secondary" onClick={pullMissingPhotos} disabled={pulling}>
@@ -336,9 +387,24 @@ export default function ReportDetail({
             ? `Fetching ${progress.done}/${progress.total}...`
             : `📸 Pull Missing Photos (${incidents.length - withPhotos})`}
         </button>
+        <button
+          className="btn secondary"
+          onClick={() => setAdding(true)}
+          title="Add an incident to this report — it counts in the report's totals and history like any ingested row"
+        >
+          ＋ Add Incident
+        </button>
+        <button
+          className="btn secondary"
+          onClick={handleResync}
+          disabled={resyncing}
+          title="Re-derive history totals, counts and date range from this report's current incidents"
+        >
+          {resyncing ? "Re-syncing..." : "↻ Re-sync totals"}
+        </button>
         <div className="toolbar-spacer" />
-        <button className="btn danger" onClick={handleDelete}>
-          Delete Report
+        <button className="btn danger" onClick={handleDelete} disabled={deleting}>
+          {deleting ? "Deleting..." : "Delete Report"}
         </button>
       </div>
 
@@ -353,6 +419,30 @@ export default function ReportDetail({
           groupBy="category"
           showBulkActions
           showFilters
+        />
+      )}
+      {adding && (
+        <IncidentEditor
+          incident={{
+            report_id: report.id,
+            week_ending: report.week_ending || "",
+            category: "damage",
+            fault: "driver",
+            sources: [],
+          }}
+          drivers={drivers}
+          onClose={() => setAdding(false)}
+          onSaved={async () => {
+            setAdding(false);
+            // A new row changes the report's totals and possibly its date range.
+            try {
+              await resyncReportRollup(report.id);
+            } catch (err) {
+              alert(`The incident saved, but totals could not be re-synced: ${err.message}`);
+            }
+            onReportUpdated?.();
+            load(true);
+          }}
         />
       )}
     </div>
