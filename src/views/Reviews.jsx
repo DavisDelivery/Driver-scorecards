@@ -6,7 +6,9 @@ import { matchDriver } from "../data/driverMatch.js";
 import {
   generateReviewsReport,
   reviewsReportFilename,
+  fmtReviewDate,
 } from "../reports/reviewsReport.js";
+import { getBrandLogo, setBrandLogo } from "../reports/brandLogo.js";
 import { PERIODS, periodWindow, periodLabel, toYMD } from "../data/period.js";
 import { clickStatus, clickLabel, rollupClicks, fmtRate } from "../data/reviewClicks.js";
 
@@ -136,6 +138,8 @@ export default function Reviews({ incidents = [] }) {
   const [showAll, setShowAll] = useState(false);
   const [printScope, setPrintScope] = useState("");   // "" = every driver
   const [printing, setPrinting] = useState(false);
+  // The logo the printed report puts in its banner, kept in this browser.
+  const [logo, setLogo] = useState(() => getBrandLogo());
   // Period the whole page is scoped to — the same pills every other tab uses, so a
   // range means the same thing here as it does there. Defaults wide (12M) because
   // reviews are sparse and a 30-day default would look like most of them vanished.
@@ -370,6 +374,10 @@ export default function Reviews({ incidents = [] }) {
     [sortedReviews, showAll]
   );
 
+  // The window, printed the way every other date on the report is printed.
+  const rangeText =
+    win.start && win.end ? `${fmtReviewDate(win.start)} to ${fmtReviewDate(win.end)}` : "";
+
   // Reviews as the report wants them: the driver and customer this view resolved,
   // not the bare PRO the source sends.
   const reportRows = (revs) =>
@@ -378,6 +386,34 @@ export default function Reviews({ incidents = [] }) {
       driverName: driverFor(r) || "Unattributed",
       customer: customerFor(r)?.name || "",
     }));
+
+  // Read the picked file as a data URI: jsPDF needs the bytes at print time, and a
+  // blob URL wouldn't survive a reload.
+  function onPickLogo(e) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // let the same file be re-picked after a remove
+    if (!file) return;
+    if (!/^image\/(png|jpeg|gif|webp)$/.test(file.type)) {
+      alert("Please pick a PNG, JPG, GIF or WEBP image.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const uri = String(reader.result || "");
+      if (!setBrandLogo(uri)) {
+        alert("Couldn't save the logo in this browser (storage is full or blocked).");
+        return;
+      }
+      setLogo(uri);
+    };
+    reader.onerror = () => alert("Couldn't read that image.");
+    reader.readAsDataURL(file);
+  }
+
+  function removeLogo() {
+    setBrandLogo("");
+    setLogo("");
+  }
 
   async function printReviews() {
     setPrinting(true);
@@ -389,7 +425,7 @@ export default function Reviews({ incidents = [] }) {
         title: printScope || "All Drivers",
         subtitle: `${scoped.length} review${scoped.length === 1 ? "" : "s"}`,
         periodText,
-        rangeText: win.start && win.end ? `${win.start} to ${win.end}` : "",
+        rangeText,
         reviews: reportRows(scoped),
       });
       doc.save(reviewsReportFilename(printScope || "All Drivers"));
@@ -415,7 +451,7 @@ export default function Reviews({ incidents = [] }) {
           title: name,
           subtitle: `${scoped.length} review${scoped.length === 1 ? "" : "s"}`,
           periodText,
-          rangeText: win.start && win.end ? `${win.start} to ${win.end}` : "",
+          rangeText,
           reviews: reportRows(scoped),
           doc,
         });
@@ -493,6 +529,28 @@ export default function Reviews({ incidents = [] }) {
           >
             Re-attribute
           </button>
+          <label
+            className="btn ghost sm"
+            title="The logo printed in the report banner (PNG or JPG). Saved in this browser."
+            style={{ display: "inline-flex", alignItems: "center", gap: "6px", cursor: "pointer" }}
+          >
+            {logo ? (
+              <img
+                src={logo}
+                alt="Report logo"
+                style={{ height: "16px", maxWidth: "60px", objectFit: "contain" }}
+              />
+            ) : (
+              "🖼️"
+            )}
+            {logo ? "Change logo" : "Add logo"}
+            <input type="file" accept="image/*" onChange={onPickLogo} style={{ display: "none" }} />
+          </label>
+          {logo && (
+            <button className="btn ghost sm" onClick={removeLogo} title="Print the default D mark instead">
+              Remove logo
+            </button>
+          )}
           <select
             value={printScope}
             onChange={(e) => setPrintScope(e.target.value)}
