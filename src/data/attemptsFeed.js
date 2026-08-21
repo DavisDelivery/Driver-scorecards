@@ -286,6 +286,63 @@ export async function fetchAttemptsForDay(
   };
 }
 
+// Every day in [start, end] inclusive, as YYYY-MM-DD.
+export function daysInRange(start, end, cap = 400) {
+  const out = [];
+  let d = start;
+  while (d <= end && out.length < cap) {
+    out.push(d);
+    d = shiftDay(d, 1);
+  }
+  return out;
+}
+
+// The settled attempts for a whole PERIOD, by asking for each day.
+//
+// The feed is per-day by design, so a period means N requests — but each one is a
+// small Firestore read (no vendor traffic), and 30 days comes back in a few seconds
+// at this concurrency. It is capped anyway: a 3M/6M/12M window would be hundreds of
+// requests, so past `maxDays` this returns what it got and reports `capped` so the
+// caller can say the range is too wide rather than quietly showing a partial answer.
+export async function fetchAttemptsRange(
+  start,
+  end,
+  { signal, maxDays = 45, concurrency = 6, cache } = {},
+) {
+  const all = daysInRange(start, end);
+  const capped = all.length > maxDays;
+  const days = capped ? [] : all;
+  const byDay = new Map();
+  let failed = 0;
+  for (let i = 0; i < days.length; i += concurrency) {
+    const slice = days.slice(i, i + concurrency);
+    const got = await Promise.all(
+      slice.map(async (d) => {
+        const hit = cache?.get(d);
+        if (hit) return [d, hit];
+        try {
+          const j = await fetchAttempts(d, { signal });
+          const rows = (j.attempts || []).map((a) => ({ ...a, date: d }));
+          cache?.set(d, rows);
+          return [d, rows];
+        } catch (err) {
+          if (err?.name === "AbortError") throw err;
+          failed++;
+          return [d, []];
+        }
+      }),
+    );
+    for (const [d, rows] of got) byDay.set(d, rows);
+  }
+  return {
+    rows: [...byDay.values()].flat(),
+    days: days.length,
+    totalDays: all.length,
+    capped,
+    failed,
+  };
+}
+
 // The portal's Activity Timeline for ONE stop: Stop Planned / Dispatched / Updated /
 // Unplanned, each with the time, the person who did it, their company, and the route.
 // This is the only place that says who actually had an order before it was unplanned
