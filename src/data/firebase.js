@@ -406,6 +406,150 @@ async function deleteIdsWithPhotos(ids) {
   }
 }
 
+// ---- work-in-progress drafts ---------------------------------------------
+// The New Report tab used to hold hours of parse + enrichment + typing purely in
+// React state — one tab switch and it was gone, and no other user could ever see
+// it. Drafts live in Firestore like everything else: autosaved as the user
+// works, resumable from any browser by anyone.
+//
+// Layout (1 MB cap respected, per this project's scars):
+//   dds_report_drafts/{id}        → small meta {kind, name, counts, chunks, updated_at}
+//   dds_report_drafts/{id}__c{i}  → JSON chunks of the light state (700 KB each)
+//   dds_report_drafts/{id}__p{k}  → ONE photo per doc (photos never share a doc)
+// Photo bytes are stripped from the JSON and stored once per photo — in memory
+// they exist in triplicate (photo_urls + photo_meta.dataUri + photo_meta.url),
+// which serialized would put a single 3-photo incident over the document cap.
+
+const REPORT_DRAFTS = "dds_report_drafts";
+
+export function newDraftId() {
+  return `d_${Date.now()}_${rand()}`;
+}
+
+// Save the light draft state (no photo bytes). Returns { acked } so the caller
+// can show "saved to cloud" vs "not confirmed by the server" honestly.
+export async function saveReportDraft(id, { kind = "ingest", name = "", week_ending = "", state = {} }) {
+  const json = JSON.stringify(state);
+  const total = Math.max(1, Math.ceil(json.length / PDF_CHUNK));
+  let acked = true;
+  for (let i = 0; i < total; i++) {
+    const r = await trackWrite(
+      setDoc(doc(db, REPORT_DRAFTS, `${id}__c${i}`), {
+        draft_id: id,
+        idx: i,
+        chunks: total,
+        data: json.slice(i * PDF_CHUNK, (i + 1) * PDF_CHUNK),
+      }),
+    );
+    acked = acked && r.acked;
+  }
+  const r = await trackWrite(
+    setDoc(
+      doc(db, REPORT_DRAFTS, id),
+      {
+        id,
+        kind,
+        name,
+        week_ending,
+        incident_count: state.incidents?.length || 0,
+        chunks: total,
+        size: json.length,
+        updated_at: nowISO(),
+      },
+      { merge: true },
+    ),
+  );
+  return { acked: acked && r.acked };
+}
+
+// Photos are written once, when enrichment finishes — not on every keystroke.
+// rows: [{ key, incident_idx, idx, url }]
+export async function saveReportDraftPhotos(id, rows) {
+  let stored = 0;
+  let oversize = 0;
+  for (const p of rows) {
+    if (!p?.url) continue;
+    if (p.url.length > PHOTO_MAX) {
+      oversize++;
+      continue;
+    }
+    await trackWrite(
+      setDoc(doc(db, REPORT_DRAFTS, `${id}__p${p.key}`), {
+        draft_id: id,
+        photo: true,
+        incident_idx: p.incident_idx,
+        idx: p.idx,
+        url: p.url,
+      }),
+    );
+    stored++;
+  }
+  await trackWrite(
+    setDoc(doc(db, REPORT_DRAFTS, id), { photo_count: stored, photos_dropped_oversize: oversize > 0 }, { merge: true }),
+  );
+  return { stored, oversize };
+}
+
+// Every draft of a kind, newest first — the "resume work in progress" list.
+export async function listReportDrafts(kind = "ingest") {
+  try {
+    const snap = await getDocs(
+      query(collection(db, REPORT_DRAFTS), where("kind", "==", kind)),
+    );
+    return snap.docs
+      .map((d) => d.data())
+      .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
+  } catch (err) {
+    console.warn("listReportDrafts failed:", err.message);
+    return [];
+  }
+}
+
+export async function loadReportDraft(id) {
+  const metaSnap = await getDoc(doc(db, REPORT_DRAFTS, id));
+  if (!metaSnap.exists()) return null;
+  const meta = metaSnap.data();
+  const chunkSnaps = await Promise.all(
+    Array.from({ length: meta.chunks || 1 }, (_, i) =>
+      getDoc(doc(db, REPORT_DRAFTS, `${id}__c${i}`)),
+    ),
+  );
+  const parts = chunkSnaps.filter((c) => c.exists()).map((c) => c.data());
+  if (parts.length !== (meta.chunks || 1)) {
+    throw new Error(
+      `Draft is incomplete on the server (${parts.length}/${meta.chunks} parts) — it may still be syncing from the browser it was typed in.`,
+    );
+  }
+  const state = JSON.parse(parts.sort((a, b) => a.idx - b.idx).map((p) => p.data).join(""));
+  // Re-attach photos to their incidents by index.
+  const photoSnap = await getDocs(
+    query(collection(db, REPORT_DRAFTS), where("draft_id", "==", id)),
+  );
+  for (const d of photoSnap.docs) {
+    const row = d.data();
+    if (!row.photo) continue;
+    const inc = state.incidents?.[row.incident_idx];
+    if (!inc) continue;
+    inc.photo_urls ||= [];
+    inc.photo_urls[row.idx] = row.url;
+  }
+  for (const inc of state.incidents || []) {
+    if (Array.isArray(inc.photo_urls)) inc.photo_urls = inc.photo_urls.filter(Boolean);
+  }
+  return { meta, state };
+}
+
+// Remove a draft and every chunk/photo doc that belongs to it. Throws on
+// failure like every other delete — a draft that looks discarded but survives
+// would resurface as a ghost "resume?" card.
+export async function deleteReportDraft(id) {
+  const snap = await getDocs(
+    query(collection(db, REPORT_DRAFTS), where("draft_id", "==", id)),
+  );
+  for (const d of snap.docs) await trackWrite(deleteDoc(d.ref));
+  await trackWrite(deleteDoc(doc(db, REPORT_DRAFTS, id)));
+}
+
 // ---- drivers -------------------------------------------------------------
 
 // Throws on failure — a swallowed error here meant an add/edit/deactivate looked

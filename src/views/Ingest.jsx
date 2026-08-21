@@ -1,5 +1,15 @@
-import React, { useState, useRef } from "react";
-import { saveReport, saveIncidentsBatch, rollupReportToHistory } from "../data/firebase.js";
+import React, { useState, useRef, useEffect } from "react";
+import {
+  saveReport,
+  saveIncidentsBatch,
+  rollupReportToHistory,
+  newDraftId,
+  saveReportDraft,
+  saveReportDraftPhotos,
+  listReportDrafts,
+  loadReportDraft,
+  deleteReportDraft,
+} from "../data/firebase.js";
 import { parseExcelFiles, buildIncidents, dedupeIncidents, resolveDriverId } from "../parsers/excelParser.js";
 import { fetchPhotosForProsBatch } from "../parsers/nuvizzClient.js";
 import { reportDateBounds, suggestReportName, reportSpanLabel } from "../reports/reportNaming.js";
@@ -50,6 +60,100 @@ export default function Ingest({ drivers, onReportCreated, onNavigateToReport })
   const [isEnriching, setIsEnriching] = useState(false);
   const [enrichProgress, setEnrichProgress] = useState({ done: 0, total: 0, pro: "" });
   const [enrichSummary, setEnrichSummary] = useState(null);
+
+  // ---------------------------------------------------------------------------
+  // Cloud draft: everything on this screen autosaves to Firestore as it changes,
+  // so switching tabs, closing the browser, or finishing on another machine (or
+  // as another person) loses nothing. Nothing is ever kept only in this tab.
+  // ---------------------------------------------------------------------------
+  const [draftId, setDraftId] = useState(null);
+  // "idle" | "saving" | "saved" | "unconfirmed" — shown next to the heading.
+  const [draftStatus, setDraftStatus] = useState("idle");
+  const [resumable, setResumable] = useState([]); // drafts found on mount
+  const [restoring, setRestoring] = useState(false);
+  const draftTimer = useRef(null);
+  const draftSeq = useRef(0);
+
+  // Offer to resume any draft left behind — by this browser or anyone else's.
+  useEffect(() => {
+    let alive = true;
+    listReportDrafts("ingest").then((list) => alive && setResumable(list));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Strip photo bytes for the JSON chunks; photos are stored one-per-doc.
+  const lightDraftState = () => ({
+    weekEnding,
+    reportName,
+    pendingReport,
+    parsedFiles,
+    incidents: incidents.map(({ photo_urls, photo_meta, ...rest }) => ({
+      ...rest,
+      photo_count: photo_urls?.length || 0,
+    })),
+  });
+
+  // Debounced autosave: any change to the work on screen reaches the cloud
+  // within ~1.5s. The status line tells the truth — "saved" only means the
+  // SERVER confirmed it, not that it sits queued in this browser.
+  useEffect(() => {
+    if (!pendingReport || !incidents.length || restoring) return;
+    const id = draftId || newDraftId();
+    if (!draftId) setDraftId(id);
+    const seq = ++draftSeq.current;
+    setDraftStatus("saving");
+    clearTimeout(draftTimer.current);
+    draftTimer.current = setTimeout(() => {
+      saveReportDraft(id, {
+        kind: "ingest",
+        name: reportName.trim() || pendingReport?.suggested_name || pendingReport?.name || "",
+        week_ending: weekEnding,
+        state: lightDraftState(),
+      })
+        .then(({ acked }) => {
+          if (draftSeq.current === seq) setDraftStatus(acked ? "saved" : "unconfirmed");
+        })
+        .catch(() => {
+          if (draftSeq.current === seq) setDraftStatus("unconfirmed");
+        });
+    }, 1500);
+    return () => clearTimeout(draftTimer.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incidents, pendingReport, parsedFiles, reportName, weekEnding]);
+
+  async function resumeDraft(meta) {
+    setRestoring(true);
+    try {
+      const loaded = await loadReportDraft(meta.id);
+      if (!loaded) throw new Error("Draft no longer exists.");
+      const st = loaded.state || {};
+      setWeekEnding(st.weekEnding || nextFriday());
+      setReportName(st.reportName || "");
+      setPendingReport(st.pendingReport || null);
+      setParsedFiles(st.parsedFiles || null);
+      setIncidents(st.incidents || []);
+      setEnrichSummary(null);
+      setDraftId(meta.id);
+      setDraftStatus("saved");
+      setResumable([]);
+    } catch (err) {
+      alert(`Could not resume the draft: ${err.message}`);
+    } finally {
+      setRestoring(false);
+    }
+  }
+
+  async function discardDraftDoc(id) {
+    if (!id) return;
+    try {
+      await deleteReportDraft(id);
+    } catch (err) {
+      // The draft would resurface as a "resume?" card — say so rather than hide it.
+      alert(`The cloud copy of this draft could not be removed (${err.message}). It may reappear under "work in progress".`);
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // File drop / input handler
@@ -174,6 +278,11 @@ export default function Ingest({ drivers, onReportCreated, onNavigateToReport })
       alert(`Saved "${report.name}" with ${incidents.length} incidents.` + rollupWarning);
       if (onNavigateToReport) onNavigateToReport(report.id);
 
+      // The report is saved — the draft has served its purpose.
+      discardDraftDoc(draftId);
+      setDraftId(null);
+      setDraftStatus("idle");
+
       // Reset state
       setPendingReport(null);
       setIncidents([]);
@@ -261,6 +370,19 @@ export default function Ingest({ drivers, onReportCreated, onNavigateToReport })
       fetchFailures,
     });
     setIsEnriching(false);
+    // Enrichment is the only moment photos appear — persist them to the draft
+    // NOW (one doc per photo), so ~5 minutes of fetching survives a tab switch.
+    if (draftId && photosFound > 0) {
+      const rows = [];
+      updated.forEach((inc, i) =>
+        (inc.photo_urls || []).forEach((url, j) =>
+          rows.push({ key: `${i}_${j}`, incident_idx: i, idx: j, url }),
+        ),
+      );
+      saveReportDraftPhotos(draftId, rows).catch((err) =>
+        console.warn("draft photo save failed:", err.message),
+      );
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -268,7 +390,10 @@ export default function Ingest({ drivers, onReportCreated, onNavigateToReport })
   // ---------------------------------------------------------------------------
 
   function handleDiscard() {
-    if (confirm("Discard this parsed data? Nothing has been saved yet.")) {
+    if (confirm("Discard this work? This also removes the cloud draft, for everyone.")) {
+      discardDraftDoc(draftId);
+      setDraftId(null);
+      setDraftStatus("idle");
       setPendingReport(null);
       setIncidents([]);
       setParsedFiles(null);
@@ -293,6 +418,26 @@ export default function Ingest({ drivers, onReportCreated, onNavigateToReport })
           {reportName.trim() || pendingReport.name}
           <span className="meta">
             · {pendingReport.range_label} · {incidents.length} incidents parsed
+          </span>
+          {/* The truth about where this work lives. "Saved" means the SERVER
+              confirmed it — switch tabs, close the browser, hand it to a
+              teammate; nothing here is only in this tab. */}
+          <span
+            className="meta"
+            style={{
+              marginLeft: 10,
+              color:
+                draftStatus === "saved"
+                  ? "#15803d"
+                  : draftStatus === "unconfirmed"
+                    ? "#b45309"
+                    : undefined,
+            }}
+          >
+            {draftStatus === "saving" && "· saving to cloud…"}
+            {draftStatus === "saved" && "· ✓ saved to cloud"}
+            {draftStatus === "unconfirmed" &&
+              "· ⚠ not confirmed by the server — keep this tab open"}
           </span>
         </h1>
 
@@ -541,6 +686,49 @@ export default function Ingest({ drivers, onReportCreated, onNavigateToReport })
     <div className="form-constrained">
       <div className="page-title">New Weekly Report</div>
       <h1 className="page-heading">Start a New Report</h1>
+
+      {resumable.length > 0 && (
+        <div className="card" style={{ marginBottom: 16, borderColor: "#f0c36d" }}>
+          <div className="card-header">
+            <div className="card-title">Work in progress</div>
+          </div>
+          <div className="card-body">
+            <div className="meta" style={{ marginBottom: 8 }}>
+              {resumable.length === 1
+                ? "A report draft was saved to the cloud and never finished — by you or a teammate. Resume it from any browser."
+                : `${resumable.length} report drafts were saved to the cloud and never finished.`}
+            </div>
+            {resumable.map((d) => (
+              <div
+                key={d.id}
+                style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", flexWrap: "wrap" }}
+              >
+                <strong>{d.name || "Untitled report"}</strong>
+                <span className="meta">
+                  {d.incident_count || 0} incidents
+                  {d.photo_count ? ` · ${d.photo_count} photos` : ""} · last saved{" "}
+                  {String(d.updated_at || "").replace("T", " ").slice(0, 16)}
+                </span>
+                <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+                  <button className="btn sm" onClick={() => resumeDraft(d)} disabled={restoring}>
+                    {restoring ? "Loading…" : "Resume"}
+                  </button>
+                  <button
+                    className="btn ghost sm"
+                    onClick={async () => {
+                      if (!confirm(`Delete the draft "${d.name || "Untitled report"}"? This removes it for everyone.`)) return;
+                      await discardDraftDoc(d.id);
+                      setResumable((prev) => prev.filter((x) => x.id !== d.id));
+                    }}
+                  >
+                    Delete
+                  </button>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="card-header">
