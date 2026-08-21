@@ -1,6 +1,11 @@
 import { useState, useEffect, useMemo } from "react";
 import { getReviews } from "../data/reviews.js";
-import { getDrivers } from "../data/firebase.js";
+import {
+  getDrivers,
+  getHiddenReviews,
+  hideReview,
+  unhideReview,
+} from "../data/firebase.js";
 import { fetchStopData } from "../parsers/nuvizzClient.js";
 import { matchDriver } from "../data/driverMatch.js";
 import {
@@ -119,6 +124,31 @@ function ratingColor(avg) {
 // a PRO, so the customer is looked up: first from those incidents (free — the PRO is
 // usually one we've already logged), and only otherwise from the per-PRO NuVizz
 // lookup this view was already making to attribute the driver.
+// Star filters. They scope what is LISTED and PRINTED, never the headline stats: a
+// 5-star-only page whose summary also read "5.00 / 5 · 100%" would be a filtered list
+// presented as the period's record.
+const RATING_FILTERS = [
+  ["all", "All stars"],
+  ["high", "4★+"],
+  ["5", "5★"],
+  ["4", "4★"],
+  ["3", "3★"],
+  ["2", "2★"],
+  ["1", "1★"],
+  ["low", "≤3★"],
+];
+
+const matchesRating = (r, f) => {
+  const n = r.rating || 0;
+  if (f === "all") return true;
+  if (f === "high") return n >= 4;
+  if (f === "low") return n <= 3;
+  return n === Number(f);
+};
+
+const ratingFilterLabel = (f) =>
+  (RATING_FILTERS.find(([v]) => v === f) || [])[1] || "All stars";
+
 export default function Reviews({ incidents = [] }) {
   const [allReviews, setAllReviews] = useState([]);
   // Whether the source could read its Google-click store on this load. true / false / null
@@ -136,6 +166,15 @@ export default function Reviews({ incidents = [] }) {
   // How the comment list is ordered, and how many of it are shown.
   const [reviewSort, setReviewSort] = useState("newest");
   const [showAll, setShowAll] = useState(false);
+  // Which star ratings are listed and printed. "all", "high" (4★+), "low" (≤3★) or a
+  // single star as "5".."1". It scopes the comment list and the PDF, never the
+  // headline stats — see RATING_FILTERS.
+  const [ratingFilter, setRatingFilter] = useState("all");
+  // Reviews suppressed as invalid (test rows, wrong carrier, duplicates). Shared via
+  // Firestore, so hiding one hides it for everybody.
+  const [hidden, setHidden] = useState([]);
+  const [showHidden, setShowHidden] = useState(false);
+  const [busyHide, setBusyHide] = useState("");
   const [printScope, setPrintScope] = useState("");   // "" = every driver
   const [printing, setPrinting] = useState(false);
   // The logo the printed report puts in its banner, kept in this browser.
@@ -150,7 +189,12 @@ export default function Reviews({ incidents = [] }) {
   useEffect(() => {
     (async () => {
       try {
-        const [payload, drvs] = await Promise.all([getReviews(), getDrivers()]);
+        const [payload, drvs, hid] = await Promise.all([
+          getReviews(),
+          getDrivers(),
+          getHiddenReviews(),
+        ]);
+        setHidden(hid);
         const revs = payload.reviews || [];
         setAllReviews(revs);
         setClicksReadable(payload.clicksReadable);
@@ -173,16 +217,32 @@ export default function Reviews({ incidents = [] }) {
     () => periodLabel(periodSel, rangeFrom, rangeTo),
     [periodSel, rangeFrom, rangeTo],
   );
+  const hiddenIds = useMemo(() => new Set(hidden.map((h) => String(h.id))), [hidden]);
+
   // Everything below counts THIS window: the KPIs, the distribution, the by-driver
-  // table, the comment list and the report. One control, one answer.
+  // table, the comment list and the report. One control, one answer. Reviews hidden
+  // as invalid are dropped here, so no count anywhere on the page includes them.
   const reviews = useMemo(
     () =>
       allReviews.filter((r) => {
+        if (hiddenIds.has(String(r.id))) return false;
         const d = String(r.submittedAt || "").slice(0, 10);
         return d && d >= win.start && d <= win.end;
       }),
-    [allReviews, win],
+    [allReviews, win, hiddenIds],
   );
+
+  // The hidden rows that fall in the window, so the "Hidden" panel shows what was
+  // taken out of THIS period rather than all of history.
+  const hiddenInWindow = useMemo(() => {
+    const byId = new Map(allReviews.map((r) => [String(r.id), r]));
+    return hidden
+      .map((h) => ({ ...h, review: byId.get(String(h.id)) }))
+      .filter((h) => {
+        const d = String(h.review?.submittedAt || h.submitted_at || "").slice(0, 10);
+        return d && d >= win.start && d <= win.end;
+      });
+  }, [hidden, allReviews, win]);
 
   // PRO -> customer from what's already in Firestore. Costs nothing: these are the
   // incidents the app has loaded anyway, and a reviewed delivery is often one we
@@ -349,13 +409,21 @@ export default function Reviews({ incidents = [] }) {
     ["lowest", "Lowest rated"],
     ["highest", "Highest rated"],
   ];
+
   const PAGE = 50;
 
   // Ordered comment list. Rating sorts break ties by date so an equal-star run still
   // reads chronologically rather than in whatever order the source happened to send.
+  // What the list and the report actually carry: the window, minus hidden, minus
+  // anything the star filter excludes.
+  const filteredReviews = useMemo(
+    () => reviews.filter((r) => matchesRating(r, ratingFilter)),
+    [reviews, ratingFilter],
+  );
+
   const sortedReviews = useMemo(() => {
     const t = (r) => new Date(r.submittedAt || 0).getTime();
-    const arr = [...reviews];
+    const arr = [...filteredReviews];
     arr.sort((a, b) => {
       if (reviewSort === "oldest") return t(a) - t(b);
       if (reviewSort === "lowest")
@@ -365,7 +433,7 @@ export default function Reviews({ incidents = [] }) {
       return t(b) - t(a);
     });
     return arr;
-  }, [reviews, reviewSort]);
+  }, [filteredReviews, reviewSort]);
 
   // The list is capped by default, but the cap is stated and liftable — silently
   // truncating is how you end up trusting a list that isn't the whole list.
@@ -415,18 +483,68 @@ export default function Reviews({ incidents = [] }) {
     setLogo("");
   }
 
+  // Says on the printed page which subset is listed, whenever it isn't all of them.
+  const filterNote = (listed, total) =>
+    ratingFilter === "all"
+      ? ""
+      : `Showing ${ratingFilterLabel(ratingFilter)} reviews only — ${listed} of ${total} in this period.`;
+
+  async function onHideReview(r) {
+    const reason = window.prompt(
+      `Hide this ${r.rating || "?"}★ review from ${driverFor(r) || "Unattributed"}?\n\nIt stops counting everywhere — KPIs, the by-driver table and every printed report — and can be restored from "Hidden" below.\n\nReason (optional):`,
+      "",
+    );
+    if (reason === null) return; // cancelled
+    setBusyHide(r.id);
+    try {
+      await hideReview({ ...r, driverName: driverFor(r), customer: customerFor(r)?.name || "" }, reason);
+      setHidden((prev) => [
+        ...prev.filter((h) => String(h.id) !== String(r.id)),
+        {
+          id: r.id,
+          review_id: r.id,
+          reason,
+          rating: r.rating,
+          driver: driverFor(r) || "",
+          customer: customerFor(r)?.name || "",
+          submitted_at: r.submittedAt,
+        },
+      ]);
+    } catch (e) {
+      alert("Could not hide that review: " + (e?.message || e));
+    } finally {
+      setBusyHide("");
+    }
+  }
+
+  async function onUnhideReview(id) {
+    setBusyHide(id);
+    try {
+      await unhideReview(id);
+      setHidden((prev) => prev.filter((h) => String(h.id) !== String(id)));
+    } catch (e) {
+      alert("Could not restore that review: " + (e?.message || e));
+    } finally {
+      setBusyHide("");
+    }
+  }
+
   async function printReviews() {
     setPrinting(true);
     try {
-      const scoped = printScope
-        ? sortedReviews.filter((r) => (driverFor(r) || "Unattributed") === printScope)
-        : sortedReviews;
+      const inScope = (r) => !printScope || (driverFor(r) || "Unattributed") === printScope;
+      const scoped = sortedReviews.filter(inScope);
+      // The stats describe the whole period for this driver; the list is what the
+      // star filter left.
+      const summary = reviews.filter(inScope);
       const doc = await generateReviewsReport({
         title: printScope || "All Drivers",
         subtitle: `${scoped.length} review${scoped.length === 1 ? "" : "s"}`,
         periodText,
         rangeText,
         reviews: reportRows(scoped),
+        summaryReviews: reportRows(summary),
+        filterNote: filterNote(scoped.length, summary.length),
       });
       doc.save(reviewsReportFilename(printScope || "All Drivers"));
     } catch (e) {
@@ -443,16 +561,18 @@ export default function Reviews({ incidents = [] }) {
       const names = sortedDrivers.map((d) => d.driver);
       let doc = null;
       for (const name of names) {
-        const scoped = sortedReviews.filter(
-          (r) => (driverFor(r) || "Unattributed") === name,
-        );
+        const mine = (r) => (driverFor(r) || "Unattributed") === name;
+        const scoped = sortedReviews.filter(mine);
         if (!scoped.length) continue;
+        const summary = reviews.filter(mine);
         doc = await generateReviewsReport({
           title: name,
           subtitle: `${scoped.length} review${scoped.length === 1 ? "" : "s"}`,
           periodText,
           rangeText,
           reviews: reportRows(scoped),
+          summaryReviews: reportRows(summary),
+          filterNote: filterNote(scoped.length, summary.length),
           doc,
         });
       }
@@ -783,9 +903,25 @@ export default function Reviews({ incidents = [] }) {
             Recent Reviews
             <span style={{ fontWeight: 400, color: "#97a3b3" }}>
               {" "}· showing {recent.length} of {sortedReviews.length}
+              {ratingFilter !== "all"
+                ? ` ${ratingFilterLabel(ratingFilter)} · ${reviews.length} in this period`
+                : ""}
             </span>
           </span>
           <span style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+            {/* Stars filter. It scopes this list AND the printed report — the two
+                always show the same set, so what you see is what you hand over. */}
+            <div className="month-picker" style={{ margin: 0 }} title="Filters this list and the printed report">
+              {RATING_FILTERS.map(([val, label]) => (
+                <button
+                  key={val}
+                  className={`month-btn ${ratingFilter === val ? "active" : ""}`}
+                  onClick={() => setRatingFilter(val)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
             <div className="month-picker" style={{ margin: 0 }}>
               {REVIEW_SORTS.map(([val, label]) => (
                 <button
@@ -843,7 +979,17 @@ export default function Reviews({ incidents = [] }) {
                     </span>
                   )}
                 </div>
-                <span style={{ fontSize: "12px", color: "#97a3b3" }}>{fmtDate(r.submittedAt)}</span>
+                <span style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                  <span style={{ fontSize: "12px", color: "#97a3b3" }}>{fmtDate(r.submittedAt)}</span>
+                  <button
+                    className="btn ghost sm"
+                    onClick={() => onHideReview(r)}
+                    disabled={busyHide === r.id}
+                    title="Not a valid review — stop counting it anywhere, keep it restorable"
+                  >
+                    {busyHide === r.id ? "…" : "Hide"}
+                  </button>
+                </span>
               </div>
               {r.comment && <div style={{ fontSize: "13px", color: "#3c4858", marginTop: "6px" }}>{r.comment}</div>}
               {(r.name || r.contact) && (
@@ -899,10 +1045,85 @@ export default function Reviews({ incidents = [] }) {
             </div>
           ))}
           {!recent.length && (
-            <div style={{ padding: "24px", textAlign: "center", color: "#97a3b3" }}>No reviews yet.</div>
+            <div style={{ padding: "24px", textAlign: "center", color: "#97a3b3" }}>
+              {ratingFilter === "all"
+                ? "No reviews yet."
+                : `No ${ratingFilterLabel(ratingFilter)} reviews in this period.`}
+            </div>
           )}
         </div>
       </div>
+
+      {/* Hidden reviews. Nothing is deleted — a suppressed review keeps its reason and
+          comes back with one click, because "this one doesn't count" is a judgement
+          somebody should be able to check and reverse. */}
+      {hiddenInWindow.length > 0 && (
+        <div style={{ ...card, padding: 0, overflow: "hidden" }}>
+          <div
+            style={{
+              padding: "12px 18px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: "10px",
+              borderBottom: showHidden ? "1px solid #eef1f5" : "none",
+            }}
+          >
+            <span style={{ fontSize: "13px", fontWeight: 700, color: "#0a2744" }}>
+              Hidden
+              <span style={{ fontWeight: 400, color: "#97a3b3" }}>
+                {" "}· {hiddenInWindow.length} review{hiddenInWindow.length === 1 ? "" : "s"} in
+                this period are excluded from every count and report
+              </span>
+            </span>
+            <button className="btn ghost sm" onClick={() => setShowHidden((v) => !v)}>
+              {showHidden ? "Collapse" : "Show"}
+            </button>
+          </div>
+          {showHidden &&
+            hiddenInWindow.map((h) => (
+              <div
+                key={h.id}
+                style={{
+                  padding: "10px 18px",
+                  borderBottom: "1px solid #f1f4f7",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "12px",
+                  flexWrap: "wrap",
+                }}
+              >
+                <span style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                  <Stars n={h.rating || h.review?.rating || 0} />
+                  <span style={{ fontWeight: 600, color: "#5a6779" }}>
+                    {h.driver || h.review?.driver || "Unattributed"}
+                  </span>
+                  {(h.customer || h.review?.customer) && (
+                    <span style={{ fontSize: "12px", color: "#97a3b3" }}>
+                      {h.customer || h.review?.customer}
+                    </span>
+                  )}
+                  <span style={{ fontSize: "12px", color: "#97a3b3" }}>
+                    {fmtDate(h.submitted_at || h.review?.submittedAt)}
+                  </span>
+                  {h.reason && (
+                    <span style={{ fontSize: "12px", color: "#5a6779", fontStyle: "italic" }}>
+                      "{h.reason}"
+                    </span>
+                  )}
+                </span>
+                <button
+                  className="btn ghost sm"
+                  onClick={() => onUnhideReview(h.id)}
+                  disabled={busyHide === h.id}
+                >
+                  {busyHide === h.id ? "…" : "Restore"}
+                </button>
+              </div>
+            ))}
+        </div>
+      )}
     </div>
   );
 }
