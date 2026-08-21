@@ -325,7 +325,10 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       }
       const now = new Date().toISOString();
       const saved = await saveIncident({
-        id: existing?.id || `i_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        // Deterministic id from the natural key: two tabs reassigning the same
+        // stop on the same day converge on ONE document instead of each minting a
+        // random id and double-counting the attempt.
+        id: existing?.id || `att_${feedDate}_${a.stopNbr}`,
         pro_number: a.stopNbr,
         category: config.category,
         fault: "driver",

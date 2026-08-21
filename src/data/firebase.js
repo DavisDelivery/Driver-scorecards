@@ -30,8 +30,10 @@ import {
   where,
   writeBatch,
   waitForPendingWrites,
+  runTransaction,
 } from "firebase/firestore";
 import { db } from "./firebaseApp.js";
+import { reportDateBounds, reportSpanLabel } from "../reports/reportNaming.js";
 
 // All collections are dds_-prefixed: davismarginiq is a shared Davis Firebase
 // project, and the prefix guarantees this app can never collide with another
@@ -365,35 +367,26 @@ export async function getIncidentsForReport(reportId) {
 
 // Delete every incident (and its photo doc) tied to a report.
 export async function deleteIncidentsForReport(reportId) {
-  try {
-    const q = query(
-      collection(db, INCIDENTS),
-      where("report_id", "==", reportId),
-    );
-    const snap = await getDocs(q);
-    await deleteIdsWithPhotos(snap.docs.map((d) => d.id));
-  } catch (err) {
-    console.warn("deleteIncidentsForReport failed:", err.message);
-  }
+  const q = query(
+    collection(db, INCIDENTS),
+    where("report_id", "==", reportId),
+  );
+  const snap = await getDocs(q);
+  await deleteIdsWithPhotos(snap.docs.map((d) => d.id));
 }
 
+// Deletes THROW on failure. They used to console.warn and resolve, which meant a
+// rules denial or transport error looked exactly like success — the row vanished
+// from the screen and reappeared on the next reload. Callers all have catches.
 export async function deleteIncident(id) {
-  try {
-    await deleteDoc(doc(db, INCIDENTS, id));
-    for (const ref of await photoDocRefs(id)) {
-      await deleteDoc(ref).catch(() => {});
-    }
-  } catch (err) {
-    console.warn("deleteIncident failed:", err.message);
+  await trackWrite(deleteDoc(doc(db, INCIDENTS, id)));
+  for (const ref of await photoDocRefs(id)) {
+    await trackWrite(deleteDoc(ref));
   }
 }
 
 export async function deleteIncidentsBatch(ids) {
-  try {
-    await deleteIdsWithPhotos(ids);
-  } catch (err) {
-    console.warn("deleteIncidentsBatch failed:", err.message);
-  }
+  await deleteIdsWithPhotos(ids);
 }
 
 // Batch-delete incident docs plus every photo doc that belongs to them (the
@@ -404,7 +397,7 @@ async function deleteIdsWithPhotos(ids) {
     const slice = ids.slice(i, i + CHUNK);
     const batch = writeBatch(db);
     for (const id of slice) batch.delete(doc(db, INCIDENTS, id));
-    await batch.commit();
+    await trackWrite(batch.commit());
     for (const id of slice) {
       for (const ref of await photoDocRefs(id)) {
         await deleteDoc(ref).catch(() => {});
@@ -418,6 +411,41 @@ async function deleteIdsWithPhotos(ids) {
 // Throws on failure — a swallowed error here meant an add/edit/deactivate looked
 // like it worked while the roster was never written, which is exactly the class
 // of silent data loss this app has been bitten by. Callers must surface it.
+// Read-modify-write the roster ATOMICALLY. The old pattern — every caller building
+// a new array from its own (possibly minutes-stale) copy and overwriting the whole
+// document — meant two people editing the roster at once silently erased each
+// other: A adds a driver, B deactivates someone from a snapshot that predates the
+// add, and A's driver is gone with both screens showing green. The mutator runs
+// against the FRESH roster inside a transaction, so concurrent edits compose
+// instead of clobbering. A mutator may throw (e.g. duplicate name) to abort.
+export async function updateRoster(mutate) {
+  const ref = doc(db, META, "drivers");
+  const txn = runTransaction(db, async (tx) => {
+    const snap = await tx.get(ref);
+    const current = snap.exists() ? snap.data().drivers || [] : [];
+    const next = mutate(current.slice());
+    if (!Array.isArray(next)) throw new Error("roster mutator must return an array");
+    tx.set(ref, { drivers: next });
+    return next;
+  });
+  // Transactions need the server; offline they fail rather than queue. Bound the
+  // wait so a dead connection reports honestly instead of spinning forever.
+  return Promise.race([
+    txn,
+    new Promise((_, rej) =>
+      setTimeout(
+        () =>
+          rej(
+            new Error(
+              "The server could not be reached, so this roster change was NOT saved. Check the connection and try again.",
+            ),
+          ),
+        15_000,
+      ),
+    ),
+  ]);
+}
+
 export async function saveDrivers(drivers) {
   const { acked } = await trackWrite(setDoc(doc(db, META, "drivers"), { drivers }));
   if (!acked) {
@@ -541,13 +569,9 @@ export async function getReportWithPdf(id) {
 }
 
 export async function deleteReport(id) {
-  try {
-    await deleteDoc(doc(db, REPORTS, id));
-    for (const ref of await pdfDocRefs(id)) {
-      await deleteDoc(ref).catch(() => {});
-    }
-  } catch (err) {
-    console.warn("deleteReport failed:", err.message);
+  await trackWrite(deleteDoc(doc(db, REPORTS, id)));
+  for (const ref of await pdfDocRefs(id)) {
+    await trackWrite(deleteDoc(ref));
   }
 }
 
@@ -702,29 +726,6 @@ async function loadMonth(ym) {
   return { records: d.records || {}, source_records: d.source_records || {} };
 }
 
-async function saveMonth(ym, data) {
-  const records = data.records || {};
-  const source_records = data.source_records || {};
-  // A month with nothing left in it is removed rather than left as an empty doc.
-  if (!Object.keys(records).length && !Object.keys(source_records).length) {
-    await deleteDoc(doc(db, HISTORY, ym)).catch(() => {});
-    return;
-  }
-  const payload = { month: ym, records, source_records, updated_at: nowISO() };
-  const size = jsonSize(payload);
-  if (size > DOC_MAX) {
-    // Not reachable with real data (a single month is bounded by drivers ×
-    // categories), but never fail silently if it somehow is.
-    throw new Error(
-      `History for ${ym} is too large to save (${Math.round(size / 1024)} KB, limit ${Math.round(DOC_MAX / 1024)} KB).`,
-    );
-  }
-  if (size > HISTORY_WARN) {
-    console.warn(`History month ${ym} is unusually large: ${Math.round(size / 1024)} KB.`);
-  }
-  await setDoc(doc(db, HISTORY, ym), payload);
-}
-
 async function monthIds() {
   const snap = await getDocs(collection(db, HISTORY));
   return snap.docs.map((d) => d.id);
@@ -756,13 +757,6 @@ function contribByMonth(contrib) {
     (out[ym] ||= { cat: {}, src: {} }).src[k] = n;
   }
   return out;
-}
-
-async function loadReportContrib(reportId) {
-  const s = await getDoc(doc(db, REPORT_CONTRIB, reportId));
-  if (!s.exists()) return null;
-  const d = s.data();
-  return { cat: d.cat || {}, src: d.src || {} };
 }
 
 export async function getHistory({ driverId, year, month } = {}) {
@@ -822,52 +816,177 @@ export async function saveHistoryBatch(records, { replace = false, onProgress } 
     if (done % 150 === 0) onProgress?.({ done, total: records.length });
   }
 
-  for (const [ym, data] of Object.entries(touched)) await saveMonth(ym, data);
+  // Each month lands in its own transaction: records come from this import (a
+  // deliberate wholesale replace), but source_records are re-read FRESH inside
+  // the transaction so a rollup landing mid-import isn't erased by our stale
+  // snapshot of it.
+  for (const [ym, data] of Object.entries(touched)) {
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(doc(db, HISTORY, ym));
+      const fresh = snap.exists() ? snap.data() : {};
+      txSaveMonth(tx, ym, {
+        records: data.records,
+        source_records: replace
+          ? fresh.source_records || {}
+          : data.source_records || fresh.source_records || {},
+      });
+    });
+  }
   onProgress?.({ done: records.length, total: records.length });
   return saved;
 }
 
-export async function rollupReportToHistory(incidents, reportId) {
-  if (!incidents.length) return { updated: 0 };
-  try {
-    const contrib = computeContribution(incidents);
-    const meta = driverMeta(incidents);
-    // Idempotent per report: reverse any prior contribution before re-applying,
-    // so re-dropping a report can never double-count.
-    const prior = reportId ? await loadReportContrib(reportId) : null;
+// Serialize one month's data for a transactional write, honoring the same size
+// guard and delete-when-empty behavior as saveMonth.
+function txSaveMonth(tx, ym, data) {
+  // Reversal leaves rows at count 0 rather than removing them; a zero-count row
+  // adds nothing to any reader and, left in place, keeps a fully-reversed month
+  // document alive forever. Prune them so months can actually empty out.
+  const prune = (m) =>
+    Object.fromEntries(
+      Object.entries(m || {}).filter(([, r]) => Number(r?.count) > 0),
+    );
+  const records = prune(data.records);
+  const source_records = prune(data.source_records);
+  if (!Object.keys(records).length && !Object.keys(source_records).length) {
+    tx.delete(doc(db, HISTORY, ym));
+    return;
+  }
+  const payload = { month: ym, records, source_records, updated_at: nowISO() };
+  const size = jsonSize(payload);
+  if (size > DOC_MAX) {
+    throw new Error(
+      `History for ${ym} is too large to save (${Math.round(size / 1024)} KB, limit ${Math.round(DOC_MAX / 1024)} KB).`,
+    );
+  }
+  if (size > HISTORY_WARN) {
+    console.warn(`History month ${ym} is unusually large: ${Math.round(size / 1024)} KB.`);
+  }
+  tx.set(doc(db, HISTORY, ym), payload);
+}
 
-    // Only the months either contribution touches need to be read and written.
+// The rollup runs as ONE transaction over the contrib snapshot and every month it
+// touches. The old read-apply-write ran on plain gets and full-document sets, so
+// two reports rolled up at once for the same month read the same starting counts
+// and the second write erased the first's — while BOTH contribution snapshots
+// claimed to be included, so the idempotency machinery would then "reverse"
+// counts that were never applied. In a transaction, contention retries with fresh
+// reads and the snapshot can never disagree with the totals it describes.
+//
+// An EMPTY incident list is a real case, not a no-op: it reverses the report's
+// prior contribution and deletes the snapshot. (It used to early-return, which is
+// why deleting a report's last row — or the report itself — left its counts in
+// history forever.)
+//
+// Throws on failure. A silently-skipped rollup is exactly the divergence between
+// live views and Trends/history that this app must never allow — callers that can
+// tolerate deferring it must catch deliberately and SAY so.
+export async function rollupReportToHistory(incidents, reportId) {
+  const contrib = computeContribution(incidents);
+  const meta = driverMeta(incidents);
+  const empty = !Object.keys(contrib.cat).length && !Object.keys(contrib.src).length;
+
+  const result = await runTransaction(db, async (tx) => {
+    // All reads first (Firestore requires reads before writes in a transaction).
+    let prior = null;
+    if (reportId) {
+      const snap = await tx.get(doc(db, REPORT_CONTRIB, reportId));
+      if (snap.exists()) {
+        const d = snap.data();
+        prior = { cat: d.cat || {}, src: d.src || {} };
+      }
+    }
     const priorByMonth = prior ? contribByMonth(prior) : {};
     const nextByMonth = contribByMonth(contrib);
-    const months = new Set([
-      ...Object.keys(priorByMonth),
-      ...Object.keys(nextByMonth),
-    ]);
+    const months = [
+      ...new Set([...Object.keys(priorByMonth), ...Object.keys(nextByMonth)]),
+    ];
+    const snaps = await Promise.all(
+      months.map((ym) => tx.get(doc(db, HISTORY, ym))),
+    );
 
-    for (const ym of months) {
-      const data = await loadMonth(ym);
+    months.forEach((ym, i) => {
+      const d = snaps[i].exists() ? snaps[i].data() : {};
+      const data = { records: d.records || {}, source_records: d.source_records || {} };
       if (priorByMonth[ym]) applyContribution(data, priorByMonth[ym], -1);
       if (nextByMonth[ym]) applyContribution(data, nextByMonth[ym], +1, meta);
-      await saveMonth(ym, data);
-    }
+      txSaveMonth(tx, ym, data);
+    });
 
     if (reportId) {
-      await setDoc(doc(db, REPORT_CONTRIB, reportId), {
-        report_id: reportId,
-        cat: contrib.cat,
-        src: contrib.src,
-        updated_at: nowISO(),
-      });
+      if (empty) {
+        // Nothing contributes any more — the snapshot must go with the counts,
+        // or a later rollup would reverse a contribution that no longer exists.
+        tx.delete(doc(db, REPORT_CONTRIB, reportId));
+      } else {
+        tx.set(doc(db, REPORT_CONTRIB, reportId), {
+          report_id: reportId,
+          cat: contrib.cat,
+          src: contrib.src,
+          updated_at: nowISO(),
+        });
+      }
     }
     return {
       updated: Object.keys(contrib.cat).length,
       source_updated: Object.keys(contrib.src).length,
-      months: months.size,
+      months: months.length,
     };
-  } catch (err) {
-    console.warn("rollupReportToHistory failed:", err.message);
-    return { updated: 0, error: err.message };
+  });
+  return result;
+}
+
+// Re-derive everything a report's edits can invalidate: its history rollup, its
+// incident count and date bounds, and whether the stored PDF still matches. This
+// is what makes a COMPLETED report editable — every add/remove/edit seam calls
+// it (debounced below), so Trends and the Dashboard can never quietly diverge
+// from what the report now contains. Throws on failure.
+export async function resyncReportRollup(reportId) {
+  if (!reportId) return null;
+  const list = await getIncidentsForReport(reportId);
+  const result = await rollupReportToHistory(list, reportId);
+  const metaSnap = await getDoc(doc(db, REPORTS, reportId));
+  if (metaSnap.exists()) {
+    const meta = metaSnap.data();
+    const patch = { incident_count: list.length };
+    if (list.length) {
+      const { starts_at, ends_at } = reportDateBounds(list);
+      patch.starts_at = starts_at;
+      patch.ends_at = ends_at;
+      patch.range_label = reportSpanLabel({
+        starts_at,
+        ends_at,
+        week_ending: meta.week_ending,
+      });
+    }
+    // The stored PDF was rendered from the OLD contents; flag it rather than
+    // silently serving a snapshot that no longer matches the report.
+    if (meta.pdf_chunks || meta.pdf_data !== undefined) patch.pdf_stale = true;
+    await trackWrite(setDoc(doc(db, REPORTS, reportId), patch, { merge: true }));
   }
+  return result;
+}
+
+// Debounced per report, so five quick edits in a row cost one rollup, not five.
+// Background failures are logged AND leave pdf_stale/history stale — the manual
+// "Re-sync totals" button in Report Detail is the recovery path and surfaces
+// errors properly.
+const resyncTimers = new Map();
+export function scheduleReportResync(reportId, delay = 1500) {
+  if (!reportId) return;
+  clearTimeout(resyncTimers.get(reportId));
+  resyncTimers.set(
+    reportId,
+    setTimeout(() => {
+      resyncTimers.delete(reportId);
+      resyncReportRollup(reportId).catch((err) =>
+        console.warn(
+          `report ${reportId} resync failed — history may lag until re-synced from Report Detail:`,
+          err.message,
+        ),
+      );
+    }, delay),
+  );
 }
 
 export async function deleteAllHistory() {

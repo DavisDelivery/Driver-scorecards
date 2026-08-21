@@ -16,6 +16,7 @@ import {
   getHistory,
   deleteIncidentsForReport,
   deleteReport,
+  rollupReportToHistory,
 } from "../data/firebase.js";
 import {
   ANALYTICS_CATEGORIES,
@@ -334,12 +335,18 @@ export default function Reports({
 
   async function handleDelete(e, report) {
     e.stopPropagation();
-    if (confirm(`Delete "${report.name}" and all its incidents?`)) {
+    if (!confirm(`Delete "${report.name}" and all its incidents?`)) return;
+    try {
       await deleteIncidentsForReport(report.id);
+      // Reverse the report's history contribution — deleting used to leave its
+      // counts in Trends forever.
+      await rollupReportToHistory([], report.id);
       await deleteReport(report.id);
-      await refresh();
-      if (selectedId === report.id) setSelectedId(null);
+    } catch (err) {
+      alert(`Delete did not complete: ${err.message}\n\nRe-open the report and try again.`);
     }
+    await refresh();
+    if (selectedId === report.id) setSelectedId(null);
   }
 
   const onSort = (col) => {
