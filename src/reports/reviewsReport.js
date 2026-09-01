@@ -199,19 +199,16 @@ function drawReview(doc, r, x, y, w) {
   doc.line(x, y + reviewHeight(doc, r, w) - 4, x + w, y + reviewHeight(doc, r, w) - 4);
 }
 
-// `reviews` is what gets LISTED; `summaryReviews` is what the headline stats are
-// computed from. They differ when a star filter is on: the customer still sees the
-// average and distribution for the whole period — a 5-star-only page whose summary
-// also said "5.00 / 5, 100%" would be a filtered list dressed up as a record — and
-// `filterNote` says on the page which subset is listed.
+// The report describes exactly what it prints: the summary is computed from the same
+// reviews that are listed, so a run filtered to 4 stars and up reads as a clean
+// document about those reviews rather than one that keeps pointing at what it left
+// out. Pick the set on the Reviews tab; this just renders it.
 export async function generateReviewsReport({
   title,
   subtitle,
   periodText,
   rangeText,
   reviews,
-  summaryReviews,
-  filterNote,
   doc: existingDoc,
 }) {
   const appending = !!existingDoc;
@@ -224,11 +221,9 @@ export async function generateReviewsReport({
   const logo = await resolveReportLogo({ onDark: true });
   const logoLight = await resolveReportLogo({ onDark: false });
   const rows = reviews || [];
-  const summaryRows = summaryReviews || rows;
 
   // Layout pass first, so "Page X of Y" is right before anything is drawn.
-  const noteH = filterNote ? 16 : 0;
-  const summaryH = SUMMARY_H + 18 + noteH;
+  const summaryH = SUMMARY_H + 18;
   const placed = [];
   let page = 0;
   let y = HEADER_H + 20 + summaryH;
@@ -247,22 +242,12 @@ export async function generateReviewsReport({
     if (p > 0 || appending) doc.addPage();
     if (p === 0) {
       drawBanner(doc, { title, subtitle, periodText, rangeText, logo });
-      drawSummary(doc, summaryRows, PAGE_MARGIN, HEADER_H + 20, contentW);
-      if (filterNote) {
-        doc.setFont("helvetica", "italic");
-        doc.setFontSize(8);
-        setColor(doc, TEXT_MUTED, "text");
-        doc.text(filterNote, PAGE_MARGIN, HEADER_H + 20 + SUMMARY_H + 24);
-      }
+      drawSummary(doc, rows, PAGE_MARGIN, HEADER_H + 20, contentW);
       if (!rows.length) {
         doc.setFont("helvetica", "italic");
         doc.setFontSize(10);
         setColor(doc, TEXT_MUTED, "text");
-        doc.text(
-          filterNote ? "No reviews match this filter." : "No reviews in this period.",
-          PAGE_MARGIN,
-          HEADER_H + 20 + summaryH + 16,
-        );
+        doc.text("No reviews in this period.", PAGE_MARGIN, HEADER_H + 20 + summaryH + 16);
       }
     } else {
       drawRunningHeader(doc, { title, logoLight });
