@@ -483,12 +483,6 @@ export default function Reviews({ incidents = [] }) {
     setLogo("");
   }
 
-  // Says on the printed page which subset is listed, whenever it isn't all of them.
-  const filterNote = (listed, total) =>
-    ratingFilter === "all"
-      ? ""
-      : `Showing ${ratingFilterLabel(ratingFilter)} reviews only — ${listed} of ${total} in this period.`;
-
   async function onHideReview(r) {
     const reason = window.prompt(
       `Hide this ${r.rating || "?"}★ review from ${driverFor(r) || "Unattributed"}?\n\nIt stops counting everywhere — KPIs, the by-driver table and every printed report — and can be restored from "Hidden" below.\n\nReason (optional):`,
@@ -534,17 +528,12 @@ export default function Reviews({ incidents = [] }) {
     try {
       const inScope = (r) => !printScope || (driverFor(r) || "Unattributed") === printScope;
       const scoped = sortedReviews.filter(inScope);
-      // The stats describe the whole period for this driver; the list is what the
-      // star filter left.
-      const summary = reviews.filter(inScope);
       const doc = await generateReviewsReport({
         title: printScope || "All Drivers",
         subtitle: `${scoped.length} review${scoped.length === 1 ? "" : "s"}`,
         periodText,
         rangeText,
         reviews: reportRows(scoped),
-        summaryReviews: reportRows(summary),
-        filterNote: filterNote(scoped.length, summary.length),
       });
       doc.save(reviewsReportFilename(printScope || "All Drivers"));
     } catch (e) {
@@ -564,15 +553,12 @@ export default function Reviews({ incidents = [] }) {
         const mine = (r) => (driverFor(r) || "Unattributed") === name;
         const scoped = sortedReviews.filter(mine);
         if (!scoped.length) continue;
-        const summary = reviews.filter(mine);
         doc = await generateReviewsReport({
           title: name,
           subtitle: `${scoped.length} review${scoped.length === 1 ? "" : "s"}`,
           periodText,
           rangeText,
           reviews: reportRows(scoped),
-          summaryReviews: reportRows(summary),
-          filterNote: filterNote(scoped.length, summary.length),
           doc,
         });
       }
