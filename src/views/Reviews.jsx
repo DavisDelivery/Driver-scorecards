@@ -169,7 +169,23 @@ export default function Reviews({ incidents = [] }) {
   // Which star ratings are listed and printed. "all", "high" (4★+), "low" (≤3★) or a
   // single star as "5".."1". It scopes the comment list and the PDF, never the
   // headline stats — see RATING_FILTERS.
-  const [ratingFilter, setRatingFilter] = useState("all");
+  // Persisted (not just in-memory): the filter used to silently reset to "All stars"
+  // on every reload, so a report printed after reopening the tab could carry every
+  // rating without any visual sign the filter had dropped.
+  const [ratingFilter, setRatingFilter] = useState(() => {
+    try {
+      return localStorage.getItem("dds_review_rating_filter") || "all";
+    } catch {
+      return "all";
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("dds_review_rating_filter", ratingFilter);
+    } catch {
+      /* quota / private mode — ignore */
+    }
+  }, [ratingFilter]);
   // Reviews suppressed as invalid (test rows, wrong carrier, duplicates). Shared via
   // Firestore, so hiding one hides it for everybody.
   const [hidden, setHidden] = useState([]);
@@ -676,7 +692,9 @@ export default function Reviews({ incidents = [] }) {
             disabled={printing || loading || !reviews.length}
             title="PDF of these reviews, in the order shown"
           >
-            {printing ? "Building PDF…" : "📄 Print reviews"}
+            {printing
+              ? "Building PDF…"
+              : `📄 Print reviews (${ratingFilterLabel(ratingFilter)})`}
           </button>
           <button
             className="btn ghost sm"
@@ -684,7 +702,7 @@ export default function Reviews({ incidents = [] }) {
             disabled={printing || loading || !reviews.length}
             title="One PDF with every driver's reviews — each driver starts on a new page"
           >
-            📄 Print all by driver
+            📄 Print all by driver ({ratingFilterLabel(ratingFilter)})
           </button>
         </div>
       </div>
