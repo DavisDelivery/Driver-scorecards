@@ -4,7 +4,11 @@
 // ALL incidents up front (same source as the row drawer) before rendering.
 import { jsPDF } from "jspdf";
 import { resolveReportLogo, drawWordmark } from "./brandLogo.js";
-import { photoSourcePlan, isAllWhite } from "./photoEncoding.js";
+import {
+  photoSourcePlan,
+  isAllWhite,
+  fitWithinPrintCap,
+} from "./photoEncoding.js";
 import { getIncidentPhotosBatch } from "../data/firebase.js";
 
 // Palette (RGB triples) matching the app theme.
@@ -176,6 +180,7 @@ async function canvasEncode(img, w, h) {
   const canvas = document.createElement("canvas");
   canvas.width = w;
   canvas.height = h;
+  // Downscaling happens in the same draw, so quality matters here.
   const ctx = canvas.getContext("2d");
   // Flattens transparency, so a PNG with an alpha channel can't come out black.
   ctx.fillStyle = "#ffffff";
@@ -193,6 +198,8 @@ async function canvasEncode(img, w, h) {
       source = img;
     }
   }
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
   ctx.drawImage(source, 0, 0, w, h);
   if (bitmap && typeof bitmap.close === "function") bitmap.close();
 
@@ -201,29 +208,41 @@ async function canvasEncode(img, w, h) {
 }
 
 // Returns { dataUrl, format, width, height } ready for jsPDF's addImage.
-export async function loadImage(src) {
+//
+// `printedAt` is the size in points the image will occupy on the page, when the
+// caller knows it. An image far larger than print can show is downscaled: it is
+// invisible on paper and a badly oversampled image is what makes a PostScript
+// printer abandon the job with "Image in Form ... is too big".
+export async function loadImage(src, printedAt = null) {
   const img = await decodeImage(src);
   const width = img.naturalWidth || 1;
   const height = img.naturalHeight || 1;
 
+  const cap = printedAt
+    ? fitWithinPrintCap(width, height, printedAt.w, printedAt.h)
+    : null;
+
   // A JPEG is already what we would re-encode it to, and jsPDF embeds JPEG bytes
   // directly. Skipping the canvas for the common case removes the blank-photo
-  // failure mode entirely for it — and POD photos are JPEG.
+  // failure mode entirely for it — and POD photos are JPEG. Only an image that is
+  // genuinely too big for the page is worth putting back through a canvas.
   const plan = photoSourcePlan(src);
-  if (plan === "passthrough-jpeg") {
+  if (plan === "passthrough-jpeg" && !cap) {
     return { dataUrl: src, format: "JPEG", width, height };
   }
 
   // Everything else goes through the canvas, because jsPDF's own PNG decoder chokes
   // on some encodings (interlaced / 16-bit / unusual color types) and renders a solid
   // black rectangle.
-  let dataUrl = await canvasEncode(img, width, height);
+  const outW = cap ? cap.w : width;
+  const outH = cap ? cap.h : height;
+  let dataUrl = await canvasEncode(img, outW, outH);
   if (!dataUrl) {
     // One retry on the next frame: the decoder may simply have been behind.
     await new Promise((r) => setTimeout(r, 0));
-    dataUrl = await canvasEncode(img, width, height);
+    dataUrl = await canvasEncode(img, outW, outH);
   }
-  if (dataUrl) return { dataUrl, format: "JPEG", width, height };
+  if (dataUrl) return { dataUrl, format: "JPEG", width: outW, height: outH };
 
   // Canvas still blank. Ship the original bytes: jsPDF may render a PNG imperfectly,
   // but a real photo rendered imperfectly beats a white rectangle that looks like the
@@ -259,7 +278,7 @@ async function drawPhotos(doc, photos, px, py, pw, ph, opts = {}) {
     const slot = opts.align === "right" ? cols - urls.length + i : i;
     const cellX = px + slot * cellW;
     try {
-      const loaded = await loadImage(urls[i]);
+      const loaded = await loadImage(urls[i], { w: cellW, h: ph });
       const { w: iw, h: ih } = fitDims(loaded.width, loaded.height, cellW, ph);
       doc.addImage(
         loaded.dataUrl,

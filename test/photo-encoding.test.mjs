@@ -6,7 +6,12 @@
 // silently-blank canvas is indistinguishable from a successful one unless you look.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { photoSourcePlan, isAllWhite } from "../src/reports/photoEncoding.js";
+import {
+  photoSourcePlan,
+  isAllWhite,
+  printPixelCap,
+  fitWithinPrintCap,
+} from "../src/reports/photoEncoding.js";
 
 test("JPEG photos skip the canvas entirely", () => {
   // POD photos are JPEG. Passing the bytes straight to jsPDF means there is no
@@ -52,4 +57,44 @@ test("empty pixel data is not reported as blank", () => {
   // throw away a good photo in favour of the fallback path.
   assert.equal(isAllWhite(new Uint8ClampedArray(0)), false);
   assert.equal(isAllWhite(null), false);
+});
+
+// ---------------------------------------------------------------------------
+// Print sizing. A printed report came back with a PostScript error across the top
+// of page one — "Image in Form, Type 3 font, or Pattern is too big" — because the
+// uploaded logo was a 1536x1024 image stamped at 25x17pt on every page.
+// ---------------------------------------------------------------------------
+
+test("print cap follows the size the image is actually drawn at", () => {
+  // 25.5pt at 300dpi is ~106px of real detail; the 2x allowance makes it 213.
+  assert.equal(printPixelCap(25.5), 213);
+  assert.equal(printPixelCap(72), 600); // one inch
+  // No size known means no cap — never shrink blind.
+  assert.equal(printPixelCap(0), Infinity);
+  assert.equal(printPixelCap(NaN), Infinity);
+});
+
+test("a wildly oversampled logo is brought down to print size", () => {
+  // The real case: the uploaded logo on a page header.
+  const fit = fitWithinPrintCap(1536, 1024, 25.5, 17);
+  assert.ok(fit);
+  assert.ok(fit.w <= printPixelCap(25.5));
+  assert.ok(fit.h <= printPixelCap(17));
+  // Aspect ratio preserved — 3:2 in, 3:2 out.
+  assert.ok(Math.abs(fit.w / fit.h - 1536 / 1024) < 0.02);
+});
+
+test("an image already within print resolution is left alone", () => {
+  // Re-encoding a photo that is only marginally over costs quality and, on the
+  // JPEG path, gives up the passthrough that keeps photos from coming out blank.
+  assert.equal(fitWithinPrintCap(720, 1280, 97, 173), null);
+  assert.equal(fitWithinPrintCap(100, 100, 200, 200), null);
+  assert.equal(fitWithinPrintCap(0, 0, 50, 50), null);
+});
+
+test("a huge modern phone photo is capped", () => {
+  // 12MP straight off a phone, printed at a quarter of the page.
+  const fit = fitWithinPrintCap(4032, 3024, 97, 173);
+  assert.ok(fit);
+  assert.ok(fit.w <= printPixelCap(97) && fit.h <= printPixelCap(173));
 });

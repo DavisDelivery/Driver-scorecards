@@ -243,7 +243,7 @@ async function drawEntryCard(doc, entry, photos, x, y, w, { itemLabel, color }) 
     return;
   }
   try {
-    const img = await loadImage(url);
+    const img = await loadImage(url, { w: photoW, h: ph });
     const { w: iw, h: ih } = fitDims(img.width, img.height, photoW, ph);
     doc.addImage(
       img.dataUrl,

@@ -151,36 +151,64 @@ async function prepareCustomLogo(src, { onDark }) {
 
   const box = contentBounds(w, h, isContent) || { x: 0, y: 0, width: w, height: h };
   const knockout = onDark && !!bg && isLightBackground(bg);
-  if (!knockout && !worthTrimming(box, w, h)) return null;
+  const oversized = box.width > LOGO_PRINT_CAP_PX || box.height > LOGO_PRINT_CAP_PX;
+  if (!knockout && !oversized && !worthTrimming(box, w, h)) return null;
 
-  const out = document.createElement("canvas");
-  out.width = box.width;
-  out.height = box.height;
-  const octx = out.getContext("2d");
+  const shaped = document.createElement("canvas");
+  shaped.width = box.width;
+  shaped.height = box.height;
+  const sctx = shaped.getContext("2d");
 
   if (knockout) {
-    const shaped = octx.createImageData(box.width, box.height);
+    const px = sctx.createImageData(box.width, box.height);
     for (let y = 0; y < box.height; y++) {
       for (let x = 0; x < box.width; x++) {
         const [r, g, b, a] = at(box.x + x, box.y + y);
         const o = (y * box.width + x) * 4;
         const strength = distanceFromBackground(r, g, b, bg) * (a / 255);
-        shaped.data[o] = 255;
-        shaped.data[o + 1] = 255;
-        shaped.data[o + 2] = 255;
-        shaped.data[o + 3] = Math.round(strength * 255);
+        px.data[o] = 255;
+        px.data[o + 1] = 255;
+        px.data[o + 2] = 255;
+        px.data[o + 3] = Math.round(strength * 255);
       }
     }
-    octx.putImageData(shaped, 0, 0);
+    sctx.putImageData(px, 0, 0);
   } else {
-    octx.drawImage(canvas, box.x, box.y, box.width, box.height, 0, 0, box.width, box.height);
+    sctx.drawImage(canvas, box.x, box.y, box.width, box.height, 0, 0, box.width, box.height);
   }
 
-  // PNG, because the knockout is nothing but alpha.
+  // Scale down to what print can actually show. The banner draws this at 26pt tall
+  // and the running header at 17pt; an uploaded 1536x1024 is ~14x more pixels than
+  // 300dpi can use, and that oversampled image is what made a printer refuse the
+  // whole job with "Image in Form ... is too big" across the top of page one.
+  const out = scaleToCap(shaped, LOGO_PRINT_CAP_PX);
+
+  // PNG only where transparency is actually needed. jsPDF has to split an alpha PNG
+  // into colour + soft-mask and re-embeds it barely compressed, so an opaque logo
+  // kept as PNG would add most of a megabyte to every report for nothing.
+  const needsAlpha = knockout || !bg;
   return {
-    dataUri: out.toDataURL("image/png"),
-    size: { w: box.width, h: box.height },
+    dataUri: needsAlpha ? out.toDataURL("image/png") : out.toDataURL("image/jpeg", 0.92),
+    size: { w: out.width, h: out.height },
   };
+}
+
+// The logo is never drawn larger than ~80pt across, which at 300dpi is ~333px of
+// real detail. 384 leaves headroom without embedding a megapixel to paint a stamp.
+const LOGO_PRINT_CAP_PX = 384;
+
+function scaleToCap(source, cap) {
+  const longest = Math.max(source.width, source.height);
+  if (longest <= cap) return source;
+  const scale = cap / longest;
+  const out = document.createElement("canvas");
+  out.width = Math.max(1, Math.round(source.width * scale));
+  out.height = Math.max(1, Math.round(source.height * scale));
+  const ctx = out.getContext("2d");
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(source, 0, 0, out.width, out.height);
+  return out;
 }
 
 function loadLogoImage(src) {

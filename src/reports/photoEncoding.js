@@ -23,6 +23,40 @@ export function photoSourcePlan(src) {
   return "canvas-other";
 }
 
+// How many pixels a given printed size can actually use.
+//
+// A laser printer rasterises at ~300dpi, so an image placed at 25pt wide can show
+// about 106 pixels of detail no matter what you hand it. Handing it 1536 is invisible
+// on paper and costs real money at print time: a PostScript RIP has to hold the whole
+// thing to paint a postage stamp, and when it can't it gives up with
+// "%%[ DirectPDF print error: Image in Form, Type 3 font, or Pattern is too big. ]%%"
+// across the top of page one — which is exactly what a printed report came back with.
+//
+// The 2x allowance keeps a margin for scaling and for printers that go beyond 300dpi,
+// without re-encoding images that are only marginally over.
+export const PRINT_DPI = 300;
+export const PRINT_OVERSAMPLE = 2;
+
+export function printPixelCap(points, dpi = PRINT_DPI, oversample = PRINT_OVERSAMPLE) {
+  if (!Number.isFinite(points) || points <= 0) return Infinity;
+  return Math.ceil((points / 72) * dpi * oversample);
+}
+
+// Target pixel size for an image of srcW x srcH drawn at ptW x ptH, or null when it
+// is already small enough to leave alone. Aspect ratio is preserved.
+export function fitWithinPrintCap(srcW, srcH, ptW, ptH) {
+  if (!srcW || !srcH) return null;
+  const capW = printPixelCap(ptW);
+  const capH = printPixelCap(ptH);
+  if (srcW <= capW && srcH <= capH) return null;
+  const scale = Math.min(capW / srcW, capH / srcH);
+  if (!Number.isFinite(scale) || scale >= 1) return null;
+  return {
+    w: Math.max(1, Math.round(srcW * scale)),
+    h: Math.max(1, Math.round(srcH * scale)),
+  };
+}
+
 // True when every pixel in the sample is pure white — i.e. the draw silently
 // no-opped and all that is left is the white fill underneath.
 //
