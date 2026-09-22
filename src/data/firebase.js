@@ -34,6 +34,7 @@ import {
 } from "firebase/firestore";
 import { db } from "./firebaseApp.js";
 import { reportDateBounds, reportSpanLabel } from "../reports/reportNaming.js";
+import { slimPhotoMeta, approxDocBytes } from "./photoDocs.js";
 
 // All collections are dds_-prefixed: davismarginiq is a shared Davis Firebase
 // project, and the prefix guarantees this app can never collide with another
@@ -116,18 +117,22 @@ async function savePhotosFor(incidentId, photoUrls, photoMeta) {
   for (let i = 0; i < photoUrls.length; i++) {
     const url = photoUrls[i];
     if (!url) continue;
-    if (url.length > PHOTO_MAX) {
+    // The metadata that arrives from NuVizz repeats the image bytes (it is built as
+    // `{ ...doc, dataUri, url: dataUri }`), so storing it whole put THREE copies of
+    // the same photo in one document and blew the 1 MB cap on anything over ~330 KB.
+    const payload = {
+      incident_id: incidentId,
+      idx: i,
+      url,
+      meta: slimPhotoMeta(photoMeta?.[i]),
+    };
+    // Guard the WHOLE document, not just the url: measuring one copy of three is how
+    // an oversize photo got past this check and failed at the server instead.
+    if (approxDocBytes(payload) > PHOTO_MAX) {
       oversize++;
       continue;
     }
-    await trackWrite(
-      setDoc(doc(db, INCIDENT_PHOTOS, `${incidentId}__${i}`), {
-        incident_id: incidentId,
-        idx: i,
-        url,
-        meta: photoMeta?.[i] ?? null,
-      }),
-    );
+    await trackWrite(setDoc(doc(db, INCIDENT_PHOTOS, `${incidentId}__${i}`), payload));
     stored++;
   }
   return { stored, oversize };
