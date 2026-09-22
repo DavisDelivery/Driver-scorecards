@@ -5,6 +5,7 @@ import {
 import { getHistory } from "../data/firebase.js";
 import DriverModal from "./DriverModal.jsx";
 import { CategoryLeaderboard, LeaderRow } from "./leaderboard.jsx";
+import { countsTowardCharts } from "../data/liveHistoryBlend.js";
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const CATS = [
@@ -52,10 +53,17 @@ export default function Trends({ drivers, incidents = [] }) {
   // Blended cube: ym -> Map("driverId|cat" -> count). Live months win over
   // history; live respects the "Do not fault driver" toggle.
   const cube = React.useMemo(() => {
+    // ONLY incidents that actually count are grouped here, because the presence of a
+    // month in this map is what makes live data supersede the rolled-up history for
+    // it (see "live supersedes" below). Grouping every incident meant a single row
+    // that contributes nothing — a compliment, an unable-to-track entry, a no-fault
+    // row — silently replaced that month's entire history with nothing, and the month
+    // read as zero.
     const liveByYm = {};
     for (const inc of incidents) {
       const ym = incidentYm(inc);
       if (!ym || ym.length !== 7) continue;
+      if (!countsTowardCharts(inc, { categoryIds: CAT_IDS })) continue;
       (liveByYm[ym] = liveByYm[ym] || []).push(inc);
     }
     const cells = {};
@@ -64,7 +72,7 @@ export default function Trends({ drivers, incidents = [] }) {
     for (const [ym, list] of Object.entries(liveByYm)) {
       const cell = ensure(ym);
       for (const inc of list) {
-        if (!inc.driver_id || inc.no_fault || !CAT_IDS.includes(inc.category)) continue;
+        // Already filtered by countsTowardCharts() when liveByYm was built.
         const k = `${inc.driver_id}|${inc.category}`;
         cell.set(k, (cell.get(k) || 0) + 1);
         if (!names.has(inc.driver_id)) names.set(inc.driver_id, inc.driver_name || inc.driver_raw || inc.driver_id);

@@ -4,6 +4,7 @@ import { getHistory } from "../data/firebase.js";
 import DriverModal from "./DriverModal.jsx";
 import { CategoryLeaderboard } from "./leaderboard.jsx";
 import AttemptsScorecardCard from "./AttemptsScorecardCard.jsx";
+import { countsTowardCharts } from "../data/liveHistoryBlend.js";
 
 // Month names used throughout the scorecard.
 const MONTH_NAMES = [
@@ -24,6 +25,8 @@ const CHART_CATEGORIES = [
   { id: "complaint",         title: "Complaints",        color: "#ef4444" },
   { id: "compliment",        title: "Compliments",       color: "#22c55e" },
 ];
+
+const CHART_CAT_IDS = CHART_CATEGORIES.map((c) => c.id);
 
 // Validate ids against INCIDENT_CATEGORIES to stay in sync with the shared vocabulary.
 // (Runtime check only — does not affect bundle output.)
@@ -185,6 +188,13 @@ export default function Dashboard({ incidents, drivers }) {
     for (let m = 1; m <= 12; m++) months.add(`${ytdYear}-${String(m).padStart(2, "0")}`);
 
     // Live incidents grouped by month (all years).
+    //
+    // ONLY incidents that actually count are grouped here, because the presence of a
+    // month in this map is what makes live data supersede the rolled-up history for
+    // it. Grouping every incident meant a single row that contributes nothing — a
+    // compliment, an unable-to-track entry, a no-fault row, or (with the driver-fault
+    // filter on) anyone else's fault — silently replaced that month's entire history
+    // with nothing, and the month read as zero.
     const liveByYm = {};
     for (const inc of incidents) {
       const dateStr =
@@ -192,6 +202,7 @@ export default function Dashboard({ incidents, drivers }) {
         inc.trace_date || inc.ship_date || inc.week_ending || inc.ingested_at || "";
       const ym = dateStr.slice(0, 7);
       if (!months.has(ym)) continue;
+      if (!countsTowardCharts(inc, { categoryIds: CHART_CAT_IDS, faultFilter })) continue;
       if (!liveByYm[ym]) liveByYm[ym] = [];
       liveByYm[ym].push(inc);
     }
@@ -203,11 +214,7 @@ export default function Dashboard({ incidents, drivers }) {
       const live = liveByYm[ym] || [];
       if (live.length > 0) {
         for (const inc of live) {
-          if (
-            (faultFilter === "driver" && inc.fault !== "driver") ||
-            inc.no_fault || !inc.driver_id ||
-            !CHART_CATEGORIES.some((c) => c.id === inc.category)
-          ) continue;
+          // Already filtered by counts() when liveByYm was built.
           const k = `${inc.driver_id}|${inc.category}`;
           cell.set(k, (cell.get(k) || 0) + 1);
           getOrCreate(inc.driver_id, inc.driver_name || inc.driver_raw);
