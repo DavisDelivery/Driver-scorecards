@@ -156,10 +156,28 @@ function drawSummary(doc, revs, x, y, w) {
 
 // One review: stars + driver + date on the head line, then customer/PRO, then the
 // comment wrapped. Height is measured first so pagination can place it whole.
-function reviewHeight(doc, r, w) {
+// The comment is drawn at this size, so it must also be MEASURED at this size.
+const COMMENT_SIZE = 9;
+
+// jsPDF wraps text using the document's current font size, which is document state
+// left behind by whatever was drawn last. Measuring without setting it first meant
+// the layout pass and the draw disagreed:
+//
+//   - a fresh report measured at jsPDF's 16pt default, reserving 4 lines for a
+//     comment that draws as 2, leaving ~22pt of blank space under every long review;
+//   - in the all-drivers pack the previous driver's footer left 8pt behind, so a
+//     23-word comment reserved 1 line and drew 2 — overlapping the next review.
+//
+// One helper does both the measuring and the drawing, so they cannot drift again.
+function commentLines(doc, r, w) {
   const comment = String(r.comment || "").trim();
-  const lines = comment ? doc.splitTextToSize(comment, w - 16) : [];
-  return 30 + lines.length * 11 + (r.customer || r.proNumber ? 12 : 0);
+  if (!comment) return [];
+  doc.setFontSize(COMMENT_SIZE);
+  return doc.splitTextToSize(comment, w - 16);
+}
+
+function reviewHeight(doc, r, w) {
+  return 30 + commentLines(doc, r, w).length * 11 + (r.customer || r.proNumber ? 12 : 0);
 }
 
 function drawReview(doc, r, x, y, w) {
@@ -186,17 +204,18 @@ function drawReview(doc, r, x, y, w) {
     doc.text(meta, x, cy);
     cy += 12;
   }
-  const comment = String(r.comment || "").trim();
-  if (comment) {
-    doc.setFontSize(9);
+  // Same helper the layout pass measured with, so what is drawn is what was reserved.
+  const lines = commentLines(doc, r, w);
+  if (lines.length) {
     setColor(doc, TEXT_DARK, "text");
-    for (const line of doc.splitTextToSize(comment, w - 16)) {
+    for (const line of lines) {
       doc.text(line, x, cy);
       cy += 11;
     }
   }
+  const h = reviewHeight(doc, r, w);
   setColor(doc, LINE, "draw");
-  doc.line(x, y + reviewHeight(doc, r, w) - 4, x + w, y + reviewHeight(doc, r, w) - 4);
+  doc.line(x, y + h - 4, x + w, y + h - 4);
 }
 
 // The report describes exactly what it prints: the summary is computed from the same
