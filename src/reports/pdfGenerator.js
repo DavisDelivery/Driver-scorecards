@@ -4,6 +4,7 @@
 // ALL incidents up front (same source as the row drawer) before rendering.
 import { jsPDF } from "jspdf";
 import { resolveReportLogo, drawWordmark } from "./brandLogo.js";
+import { photoSourcePlan, isAllWhite } from "./photoEncoding.js";
 import { getIncidentPhotosBatch } from "../data/firebase.js";
 
 // Palette (RGB triples) matching the app theme.
@@ -113,38 +114,37 @@ export function drawBadge(doc, text, x, y, color, opts = {}) {
   return w;
 }
 
-// Load an image and ALWAYS re-encode it through a white canvas to a baseline
-// JPEG before handing it to jsPDF. We don't pass the original PNG/JPEG bytes
-// through: jsPDF's built-in PNG decoder chokes on some encodings (interlaced /
-// 16-bit / unusual color types) and renders a solid black rectangle. The browser
-// decodes anything reliably, and the white fill flattens transparency so nothing
-// comes out black. Awaited so the bytes are fully decoded before addImage runs.
-export function loadImage(src) {
+// Photo loading for the PDFs. This path shipped a report where 32 of 38 POD photos
+// were solid white rectangles — right size, right position, no pixels — so the rules
+// below are the ones that were actually violated, not general advice.
+//
+// `img.onload` means THE BYTES ARRIVED. It does not mean the bitmap is decoded, and
+// `ctx.drawImage()` on an undecoded image paints nothing and throws nothing: you get
+// back exactly the white fill underneath it. Safari/iOS decodes lazily, so a loop
+// drawing dozens of photos in a row loses most of them — the later ones survive only
+// because the decoder caught up. Every paint here is therefore gated on `decode()`
+// (or `createImageBitmap`, which cannot hand back an undecoded bitmap at all), and
+// the result is checked for blankness before it is trusted.
+// Load AND decode. Resolving before the decode is what caused the blank photos.
+function decodeImage(src) {
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.crossOrigin = "anonymous";
+    // Only meaningful for remote URLs. On a data: URI it buys nothing and has its
+    // own cross-browser quirks, so don't set it there.
+    if (!/^data:/i.test(src)) img.crossOrigin = "anonymous";
     const timer = setTimeout(() => reject(new Error("image load timeout")), 15000);
-    img.onload = () => {
+    img.onload = async () => {
       clearTimeout(timer);
-      try {
-        const w = img.naturalWidth || 1;
-        const h = img.naturalHeight || 1;
-        const canvas = document.createElement("canvas");
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext("2d");
-        ctx.fillStyle = "#ffffff";
-        ctx.fillRect(0, 0, w, h);
-        ctx.drawImage(img, 0, 0);
-        resolve({
-          dataUrl: canvas.toDataURL("image/jpeg", 0.85),
-          format: "JPEG",
-          width: w,
-          height: h,
-        });
-      } catch (err) {
-        reject(err);
+      if (typeof img.decode === "function") {
+        // A rejected decode() still leaves a usable img in some browsers, and the
+        // blank check downstream is the real backstop, so don't fail the photo here.
+        try {
+          await img.decode();
+        } catch {
+          /* fall through — canvasEncode verifies the pixels anyway */
+        }
       }
+      resolve(img);
     };
     img.onerror = () => {
       clearTimeout(timer);
@@ -152,6 +152,88 @@ export function loadImage(src) {
     };
     img.src = src;
   });
+}
+
+// Sample the painted canvas by downscaling into an 8x8 probe rather than reading
+// 3.7 MB of pixels per photo, which an iPad will not thank you for.
+function looksBlank(canvas) {
+  try {
+    const probe = document.createElement("canvas");
+    probe.width = 8;
+    probe.height = 8;
+    const pctx = probe.getContext("2d", { willReadFrequently: true });
+    pctx.drawImage(canvas, 0, 0, 8, 8);
+    return isAllWhite(pctx.getImageData(0, 0, 8, 8).data);
+  } catch {
+    // Tainted canvas / blocked readback: can't tell, so don't claim it's blank.
+    return false;
+  }
+}
+
+// Paint onto a white background and re-encode as baseline JPEG. Returns null if the
+// paint produced nothing, so the caller can fall back instead of shipping a blank.
+async function canvasEncode(img, w, h) {
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  // Flattens transparency, so a PNG with an alpha channel can't come out black.
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, w, h);
+
+  // createImageBitmap resolves only once the bitmap is fully decoded, which is the
+  // guarantee onload never gave us.
+  let source = img;
+  let bitmap = null;
+  if (typeof createImageBitmap === "function") {
+    try {
+      bitmap = await createImageBitmap(img);
+      source = bitmap;
+    } catch {
+      source = img;
+    }
+  }
+  ctx.drawImage(source, 0, 0, w, h);
+  if (bitmap && typeof bitmap.close === "function") bitmap.close();
+
+  if (looksBlank(canvas)) return null;
+  return canvas.toDataURL("image/jpeg", 0.85);
+}
+
+// Returns { dataUrl, format, width, height } ready for jsPDF's addImage.
+export async function loadImage(src) {
+  const img = await decodeImage(src);
+  const width = img.naturalWidth || 1;
+  const height = img.naturalHeight || 1;
+
+  // A JPEG is already what we would re-encode it to, and jsPDF embeds JPEG bytes
+  // directly. Skipping the canvas for the common case removes the blank-photo
+  // failure mode entirely for it — and POD photos are JPEG.
+  const plan = photoSourcePlan(src);
+  if (plan === "passthrough-jpeg") {
+    return { dataUrl: src, format: "JPEG", width, height };
+  }
+
+  // Everything else goes through the canvas, because jsPDF's own PNG decoder chokes
+  // on some encodings (interlaced / 16-bit / unusual color types) and renders a solid
+  // black rectangle.
+  let dataUrl = await canvasEncode(img, width, height);
+  if (!dataUrl) {
+    // One retry on the next frame: the decoder may simply have been behind.
+    await new Promise((r) => setTimeout(r, 0));
+    dataUrl = await canvasEncode(img, width, height);
+  }
+  if (dataUrl) return { dataUrl, format: "JPEG", width, height };
+
+  // Canvas still blank. Ship the original bytes: jsPDF may render a PNG imperfectly,
+  // but a real photo rendered imperfectly beats a white rectangle that looks like the
+  // photo was never taken.
+  return {
+    dataUrl: src,
+    format: plan === "canvas-png" ? "PNG" : "JPEG",
+    width,
+    height,
+  };
 }
 
 // Render up to 2 photos into a cell, fit-within with aspect ratio preserved and
