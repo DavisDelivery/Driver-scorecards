@@ -181,9 +181,12 @@ export default function Dashboard({ incidents, drivers }) {
     // The window of months we need: the selected year (for YTD) plus enough
     // months before the selected month to cover the trailing period.
     const periodMonths = computePeriodMonths(periodSel, customFrom, customTo);
-    const ytdYear = Number(
-      (periodMonths[periodMonths.length - 1] || new Date().toISOString().slice(0, 7)).slice(0, 4),
-    );
+    // Year to date means the year being looked at — the month picker's year, which is
+    // what selectedYear and yearHistory already use. This used to take the year of the
+    // OLDEST month in the trailing period, so any period reaching back over Jan 1 moved
+    // YTD to the previous year: with 12M selected in September 2026, "Year to Date"
+    // was quietly reporting 2025.
+    const ytdYear = Number(selectedYear);
     const months = new Set(periodMonths);
     for (let m = 1; m <= 12; m++) months.add(`${ytdYear}-${String(m).padStart(2, "0")}`);
 
