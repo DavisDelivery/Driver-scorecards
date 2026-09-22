@@ -708,7 +708,14 @@ export async function generatePhotoReport(incidents, meta = {}) {
   const bottomOffset = 30;
   const perPage = 3;
   const gap = 12;
-  const cardH = (pageH - topOffset - bottomOffset - gap * (perPage - 1)) / perPage;
+  // Size the card so a category header AND a full three cards fit on the same page.
+  // Sizing it as if the header didn't exist meant every page that opened a category
+  // fit only two cards and left a whole empty card slot at the bottom: a 38-card
+  // report came out 15 pages instead of 13, with five pages visibly two-thirds full.
+  const cardH = Math.floor(
+    (pageH - topOffset - bottomOffset - gap * (perPage - 1) - CATEGORY_HEADER_H - gap) /
+      perPage,
+  );
   const cardW = pageW - 2 * margin;
   const usableBottom = pageH - bottomOffset;
 
