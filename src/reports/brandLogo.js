@@ -6,6 +6,13 @@
 // — and it's kept in the browser as a data URI because jsPDF needs the bytes at print
 // time and a blob URL wouldn't survive a reload.
 import {
+  cornerBackground,
+  distanceFromBackground,
+  isLightBackground,
+  contentBounds,
+  worthTrimming,
+} from "./logoKnockout.js";
+import {
   DAVIS_LOGO_BLUE_PNG,
   DAVIS_LOGO_WHITE_PNG,
   LOGO_W,
@@ -59,13 +66,142 @@ export function logoSize(dataUri) {
 
 // What a report should draw: the uploaded logo if there is one, otherwise the shipped
 // lockup in the cut that suits the background. `onDark` picks the white knockout.
+// Prepared custom logos are cached per (source, background) so a 14-page report
+// doesn't re-key the same image once per page header.
+const preparedCache = new Map();
+
 export async function resolveReportLogo({ onDark = false } = {}) {
   const custom = getBrandLogo();
   if (custom) {
-    const size = await logoSize(custom);
-    if (size) return { dataUri: custom, size, custom: true };
+    const key = `${onDark ? "dark" : "light"}:${custom.length}:${custom.slice(-64)}`;
+    if (preparedCache.has(key)) return preparedCache.get(key);
+
+    let resolved = null;
+    try {
+      const prepared = await prepareCustomLogo(custom, { onDark });
+      if (prepared) resolved = { ...prepared, custom: true };
+    } catch {
+      /* fall through to the untouched upload below */
+    }
+    if (!resolved) {
+      const size = await logoSize(custom);
+      if (size) resolved = { dataUri: custom, size, custom: true };
+    }
+    if (resolved) {
+      preparedCache.set(key, resolved);
+      return resolved;
+    }
   }
   return { ...(onDark ? SHIPPED_LOGO.white : SHIPPED_LOGO.blue), custom: false };
+}
+
+// Make an uploaded logo fit its background.
+//
+// What people upload is a JPEG or flattened PNG: opaque white background, wide empty
+// margin. Two things are done to it, both only when the image actually has a flat
+// background to key out (corners that agree). A photo or a full-bleed design is left
+// exactly as it is.
+//
+//   1. TRIM the empty margin, so the mark fills the space the banner gives it instead
+//      of shrinking to fit a mostly-blank canvas.
+//   2. On a dark banner, KNOCK IT OUT to white: background pixels become transparent
+//      and the artwork becomes white, with alpha following how far each pixel sits
+//      from the background so antialiased edges stay smooth. This is what "invert the
+//      logo to white" means in practice — the alternative is a white sticker on a
+//      blue header.
+//
+// Returns { dataUri, size } or null to mean "leave the upload alone".
+async function prepareCustomLogo(src, { onDark }) {
+  if (typeof document === "undefined") return null;
+  const img = await loadLogoImage(src);
+  const w = img.naturalWidth || 0;
+  const h = img.naturalHeight || 0;
+  if (!w || !h) return null;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0, w, h);
+
+  let pixels;
+  try {
+    pixels = ctx.getImageData(0, 0, w, h);
+  } catch {
+    return null; // tainted canvas — can't inspect it, so don't touch it
+  }
+  const { data } = pixels;
+  const at = (x, y) => {
+    const i = (y * w + x) * 4;
+    return [data[i], data[i + 1], data[i + 2], data[i + 3]];
+  };
+
+  // An upload that already has transparency is artwork someone prepared properly.
+  // Trim it, but never re-colour it.
+  const corners = [at(0, 0), at(w - 1, 0), at(0, h - 1), at(w - 1, h - 1)];
+  const transparentCorners = corners.every((c) => c[3] < 16);
+  const bg = transparentCorners ? null : cornerBackground(corners);
+  if (!bg && !transparentCorners) return null; // no flat background — leave it alone
+
+  const isContent = (x, y) => {
+    const [r, g, b, a] = at(x, y);
+    if (a < 16) return false;
+    return bg ? distanceFromBackground(r, g, b, bg) > 0 : true;
+  };
+
+  const box = contentBounds(w, h, isContent) || { x: 0, y: 0, width: w, height: h };
+  const knockout = onDark && !!bg && isLightBackground(bg);
+  if (!knockout && !worthTrimming(box, w, h)) return null;
+
+  const out = document.createElement("canvas");
+  out.width = box.width;
+  out.height = box.height;
+  const octx = out.getContext("2d");
+
+  if (knockout) {
+    const shaped = octx.createImageData(box.width, box.height);
+    for (let y = 0; y < box.height; y++) {
+      for (let x = 0; x < box.width; x++) {
+        const [r, g, b, a] = at(box.x + x, box.y + y);
+        const o = (y * box.width + x) * 4;
+        const strength = distanceFromBackground(r, g, b, bg) * (a / 255);
+        shaped.data[o] = 255;
+        shaped.data[o + 1] = 255;
+        shaped.data[o + 2] = 255;
+        shaped.data[o + 3] = Math.round(strength * 255);
+      }
+    }
+    octx.putImageData(shaped, 0, 0);
+  } else {
+    octx.drawImage(canvas, box.x, box.y, box.width, box.height, 0, 0, box.width, box.height);
+  }
+
+  // PNG, because the knockout is nothing but alpha.
+  return {
+    dataUri: out.toDataURL("image/png"),
+    size: { w: box.width, h: box.height },
+  };
+}
+
+function loadLogoImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    if (!/^data:/i.test(src)) img.crossOrigin = "anonymous";
+    img.onload = async () => {
+      // Same rule as the photo path: onload is not decoded, and reading pixels off an
+      // undecoded image gets you the blank canvas instead of the logo.
+      if (typeof img.decode === "function") {
+        try {
+          await img.decode();
+        } catch {
+          /* best effort */
+        }
+      }
+      resolve(img);
+    };
+    img.onerror = () => reject(new Error("logo load failed"));
+    img.src = src;
+  });
 }
 
 // Draw a resolved logo at a given height, keeping its aspect ratio, and return the
