@@ -374,7 +374,7 @@ export default function Ingest({ drivers, onReportCreated, onNavigateToReport })
     // NOW (one doc per photo), so ~5 minutes of fetching survives a tab switch.
     if (draftId && photosFound > 0) {
       const rows = [];
-      updated.forEach((inc, i) =>
+      enriched.forEach((inc, i) =>
         (inc.photo_urls || []).forEach((url, j) =>
           rows.push({ key: `${i}_${j}`, incident_idx: i, idx: j, url }),
         ),
