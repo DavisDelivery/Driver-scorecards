@@ -180,12 +180,36 @@ function IncidentList({
     }
   }
 
+  // A write that didn't reach the server must never look like it did. CLAUDE.md:
+  // "Never swallow a write failure" — this app's founding bug was a save that
+  // reported success and lost a week of entries. These handlers patch the row
+  // optimistically, so on failure the patch is UNDONE and the user is told.
+  function reportWriteFailure(what, err) {
+    console.error(what, err);
+    alert(
+      `${what} failed — the change was NOT saved and has been undone.\n\n` +
+        `${err?.message || err}\n\nCheck your connection and try again.`,
+    );
+  }
+
+  function warnIfUnsynced(saved, what) {
+    if (!saved?._pendingSync) return;
+    alert(
+      `${what} is saved on THIS DEVICE only — it has not reached the server yet, so ` +
+        `nobody else can see it. It will retry automatically; keep this tab open.`,
+    );
+  }
+
   async function handleInlineFault(inc, fault) {
+    const undo = { fault: inc.fault };
     patchRow(inc.id, { fault }); // optimistic
     try {
-      await saveIncident({ ...inc, fault });
+      const saved = await saveIncident({ ...inc, fault });
+      warnIfUnsynced(saved, `The fault change on ${inc.pro_number || "this incident"}`);
     } catch (err) {
-      console.error("save fault failed", err);
+      patchRow(inc.id, undo);
+      reportWriteFailure(`Changing the fault on ${inc.pro_number || "this incident"}`, err);
+      return;
     }
     onUpdate?.();
   }
@@ -193,11 +217,15 @@ function IncidentList({
   async function handleInlineDriver(inc, driverId) {
     const driver = drivers.find((d) => d.id === driverId);
     const patch = { driver_id: driverId || null, driver_name: driver?.name || "" };
+    const undo = { driver_id: inc.driver_id, driver_name: inc.driver_name };
     patchRow(inc.id, patch); // optimistic
     try {
-      await saveIncident({ ...inc, ...patch });
+      const saved = await saveIncident({ ...inc, ...patch });
+      warnIfUnsynced(saved, `The driver change on ${inc.pro_number || "this incident"}`);
     } catch (err) {
-      console.error("save driver failed", err);
+      patchRow(inc.id, undo);
+      reportWriteFailure(`Reassigning ${inc.pro_number || "this incident"}`, err);
+      return;
     }
     onUpdate?.();
   }
@@ -205,13 +233,18 @@ function IncidentList({
   async function handleDelete(id) {
     if (!confirm("Delete this incident? This cannot be undone.")) return;
     setRows((prev) => prev.filter((x) => x.id !== id)); // optimistic
+    const undoRows = rows;
+    const undoSelected = selected;
     const next = new Set(selected);
     next.delete(id);
     setSelected(next);
     try {
       await deleteIncident(id);
     } catch (err) {
-      console.error("delete failed", err);
+      setRows(undoRows);
+      setSelected(undoSelected);
+      reportWriteFailure("Deleting this incident", err);
+      return;
     }
     onUpdate?.();
   }
@@ -226,12 +259,17 @@ function IncidentList({
     )
       return;
     const set = new Set(ids);
+    const undoRows = rows;
+    const undoSelected = selected;
     setRows((prev) => prev.filter((x) => !set.has(x.id))); // optimistic
     setSelected(new Set());
     try {
       await deleteIncidentsBatch(ids);
     } catch (err) {
-      console.error("bulk delete failed", err);
+      setRows(undoRows);
+      setSelected(undoSelected);
+      reportWriteFailure(`Deleting ${ids.length} incidents`, err);
+      return;
     }
     onUpdate?.();
   }
