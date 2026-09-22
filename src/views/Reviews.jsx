@@ -14,7 +14,7 @@ import {
   fmtReviewDate,
 } from "../reports/reviewsReport.js";
 import { getBrandLogo, setBrandLogo } from "../reports/brandLogo.js";
-import { PERIODS, periodWindow, periodLabel, toYMD } from "../data/period.js";
+import { PERIODS, periodWindow, periodLabel, toYMD, etDay } from "../data/period.js";
 import { clickStatus, clickLabel, rollupClicks, fmtRate } from "../data/reviewClicks.js";
 
 // Per-browser cache of PRO → resolved driver so we don't re-hit NuVizz each load.
@@ -41,17 +41,20 @@ const GREEN = "#15803d";
 const AMBER = "#b45309";
 const RED = "#b91c1c";
 
+const MONTH_ABBR = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+// The business day the review was submitted — the same day the period filter and the
+// printed report use. This used to render in the BROWSER's timezone while the filter
+// bucketed by the UTC day and the click times were pinned to ET: three answers for
+// one review, and an evening review showing a date the filter disagreed with.
 function fmtDate(iso) {
-  if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    });
-  } catch {
-    return iso;
-  }
+  const ymd = etDay(iso);
+  const m = ymd.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return iso ? String(iso) : "—";
+  return `${MONTH_ABBR[Number(m[2]) - 1]} ${Number(m[3])}, ${m[1]}`;
 }
 
 // Click stamps are worth the time of day — "they took the link four minutes after the
@@ -242,7 +245,9 @@ export default function Reviews({ incidents = [] }) {
     () =>
       allReviews.filter((r) => {
         if (hiddenIds.has(String(r.id))) return false;
-        const d = String(r.submittedAt || "").slice(0, 10);
+        // The ET day it was submitted, not the UTC prefix: an evening review is
+        // stored as tomorrow in UTC and would fall outside the window it belongs to.
+        const d = etDay(r.submittedAt);
         return d && d >= win.start && d <= win.end;
       }),
     [allReviews, win, hiddenIds],
@@ -255,7 +260,7 @@ export default function Reviews({ incidents = [] }) {
     return hidden
       .map((h) => ({ ...h, review: byId.get(String(h.id)) }))
       .filter((h) => {
-        const d = String(h.review?.submittedAt || h.submitted_at || "").slice(0, 10);
+        const d = etDay(h.review?.submittedAt || h.submitted_at);
         return d && d >= win.start && d <= win.end;
       });
   }, [hidden, allReviews, win]);

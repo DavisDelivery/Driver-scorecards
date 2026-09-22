@@ -9,6 +9,7 @@
 // a fresh page and keeps its own "Page X of Y", because the pack is printed once and
 // then split up.
 import { jsPDF } from "jspdf";
+import { etDay } from "../data/period.js";
 import {
   DAVIS_BLUE,
   TEXT_DARK,
@@ -30,7 +31,10 @@ const RED = [185, 28, 28];
 // date on the report goes through here, headers included — one format, no
 // exceptions.
 export function fmtReviewDate(iso) {
-  const m = String(iso || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  // The business day, not the UTC prefix: a review submitted at 8pm in Georgia is
+  // stored as the next day in UTC, and printing that date put a review on a customer's
+  // report under a day it did not happen — and one the on-screen list disagreed with.
+  const m = etDay(iso).match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!m) return String(iso || "").slice(0, 10);
   return `${m[2]}/${m[3]}/${m[1]}`;
 }

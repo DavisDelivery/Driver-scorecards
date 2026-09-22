@@ -24,6 +24,37 @@ export const toYMD = (d) =>
   `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 const ymKey = (y, m) => `${y}-${pad2(m)}`;
 
+// The business-timezone (America/New_York) calendar day a timestamp falls on.
+//
+// A review submitted at 8pm in Georgia is stored as the NEXT day in UTC, so reading
+// the first ten characters of the timestamp — which is what the reviews period filter
+// used to do — files that review under tomorrow. It then vanishes from "this week"
+// while still showing yesterday's date on screen, because the screen formatted it in
+// the browser's timezone instead. Screen, filter and print now agree on one answer.
+//
+// A bare YYYY-MM-DD is already a calendar day and comes back untouched: putting it
+// through Date() would read it as UTC midnight and shift it BACK a day in ET, which
+// is exactly the trap CLAUDE.md warns about.
+export function etDay(value) {
+  const s = String(value ?? "").trim();
+  if (!s) return "";
+  const bare = s.match(/^(\d{4}-\d{2}-\d{2})$/);
+  if (bare) return bare[1];
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return s.slice(0, 10);
+  try {
+    // en-CA formats as YYYY-MM-DD, which is what every window compares against.
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/New_York",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(d);
+  } catch {
+    return s.slice(0, 10);
+  }
+}
+
 // "Now" anchored to the business timezone (America/New_York), returned as a
 // local Date whose year/month/day equal the ET calendar day. Entries are dated
 // in ET (todayET), so windows MUST be computed in ET too — otherwise a viewer
