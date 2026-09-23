@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { todayET, fetchAttempts } from "../data/attemptsFeed.js";
+import { groupAttemptLegs, unassignedReason, UNASSIGNED_REASON_SHORT } from "../data/attemptLegs.js";
 
 // Live "Delivery Attempts" card for the driver scorecard. Reads the dispatch
 // app's automated attempts feed (see attemptsFeed.js) and shows who ORIGINALLY
@@ -58,11 +59,28 @@ export default function AttemptsScorecardCard({ driver }) {
     };
   }, [date, driver]);
 
-  const attempts = data?.attempts || [];
-  const count = data?.count ?? attempts.length;
-  const counts = data?.manifest?.counts;
-  const unmatched = counts?.unmatched || 0;
+  // One row per order: dispatch's "-1" copy of a failed stop is the same failure,
+  // and on its own it never matches the morning plan, so it read as a second,
+  // Unknown attempt (see attemptLegs.js). The manifest's own counts are per stop, so
+  // the Unknown count is taken from the grouped rows instead.
   const planMissing = !!data?.manifest?.planMissing;
+  const attempts = React.useMemo(
+    () =>
+      groupAttemptLegs(
+        (data?.attempts || []).map((a) => ({ ...a, date, planMissing })),
+      ),
+    [data, date, planMissing],
+  );
+  const count = attempts.length;
+  const unknown = attempts.filter((a) => !(a.matched && a.originalDriverName));
+  const unmatched = unknown.length;
+  const whyUnknown = Object.entries(
+    unknown.reduce((m, a) => {
+      const why = unassignedReason(a);
+      if (why) m[why] = (m[why] || 0) + 1;
+      return m;
+    }, {}),
+  ).map(([why, n]) => `${n} ${UNASSIGNED_REASON_SHORT[why] || why}`);
 
   return (
     <>
@@ -134,7 +152,7 @@ export default function AttemptsScorecardCard({ driver }) {
                         )}
                       </td>
                       <td className="pro-num">{a.shipmentNbr || "—"}</td>
-                      <td>{a.stopNbr || "—"}</td>
+                      <td>{(a.legRows || [a]).map((l) => l.stopNbr).join(" + ") || "—"}</td>
                       <td>{a.routeName || "—"}</td>
                       <td>
                         <StatusBadge a={a} />
@@ -152,7 +170,7 @@ export default function AttemptsScorecardCard({ driver }) {
               style={{ padding: "8px 14px", color: "var(--text-2)" }}
             >
               {unmatched > 0 &&
-                `${unmatched} attempt${unmatched === 1 ? "" : "s"} without a morning driver (shown as Unknown).`}
+                `${unmatched} attempt${unmatched === 1 ? "" : "s"} without a morning driver (shown as Unknown)${whyUnknown.length ? ` — ${whyUnknown.join(", ")}` : ""}.`}
               {unmatched > 0 && planMissing ? " " : ""}
               {planMissing && "Morning plan snapshot was unavailable for this day."}
             </div>

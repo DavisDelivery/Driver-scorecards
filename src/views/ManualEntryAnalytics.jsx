@@ -134,13 +134,16 @@ export default function ManualEntryAnalytics({ title, color, records, drivers, o
   const activeDays = bucket === "day" ? trend.length : new Set(inPeriod.map((r) => dateOf(r))).size;
   const avg = activeDays ? (total / activeDays).toFixed(1) : "0";
   // Excludes deactivated drivers — a retired driver should not be named as the
-  // current worst offender. `total` above is untouched, so the period count is
-  // still the true number of entries.
+  // current worst offender. Excludes rows with no driver at all for the same reason:
+  // "Unassigned" isn't a person, and it topped this tile on Attempts. `total` above
+  // is untouched, so the period count is still the true number of entries, and
+  // Unassigned keeps its bar on the by-driver chart.
   const topDriver = React.useMemo(() => {
     const hidden = hiddenDriverIds(drivers);
     const m = new Map();
     for (const r of inPeriod) {
       if (r.driver_id && hidden.has(r.driver_id)) continue;
+      if (!r.driver_id && !r.driver_name && !r.driver_raw) continue;
       const n = driverName(r);
       m.set(n, (m.get(n) || 0) + 1);
     }

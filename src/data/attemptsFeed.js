@@ -196,29 +196,6 @@ export async function fetchDerivedAttempts(date, { signal } = {}) {
   return { rows, notes, carriedOver: attStops.length - dueToday.length };
 }
 
-// Flag the rows that are two legs of ONE delivery rather than two failures.
-//
-// When a stop looks wrong, dispatch duplicates it — the copy gets a "-1" stop number
-// but keeps the original's shipment number, so both legs carry the ATT marker and both
-// land in the log looking like separate attempts against the same PRO. (One of them
-// says so in its own note: "DUPPED SINCE ORIGINAL STOP SEEMED BUGGED".) The dispatch
-// app stores attempts keyed by stop number and groups nothing, so its own totals count
-// these twice; rather than quietly diverge from the numbers it reports, the rows are
-// marked so a reader can see WHY the same PRO appears more than once.
-function markSplitLegs(rows) {
-  const byShipment = new Map();
-  for (const r of rows) {
-    const k = String(r.shipmentNbr || "").trim().toUpperCase();
-    if (!k) continue;
-    byShipment.set(k, (byShipment.get(k) || 0) + 1);
-  }
-  return rows.map((r) => {
-    const k = String(r.shipmentNbr || "").trim().toUpperCase();
-    const legs = k ? byShipment.get(k) || 1 : 1;
-    return legs > 1 ? { ...r, legs } : r;
-  });
-}
-
 // The attempts log for one day: the settled list, plus (when asked) anything the
 // live stop index has detected that the settled list doesn't know about yet.
 //
@@ -236,7 +213,11 @@ export async function fetchAttemptsForDay(
   { derive = false, notes = false, signal } = {},
 ) {
   const settled = await fetchAttempts(date, { signal });
-  const rows = Array.isArray(settled.attempts) ? settled.attempts.slice() : [];
+  const planMissing = !!settled.manifest?.planMissing;
+  const rows = (Array.isArray(settled.attempts) ? settled.attempts : []).map((a) => ({
+    ...a,
+    planMissing,
+  }));
   const wantDerive =
     derive === true || (derive === "auto" && rows.length === 0 && isRecentDay(date));
   // The index is one fetch that serves BOTH detection and notes, so asking for notes
@@ -244,7 +225,7 @@ export async function fetchAttemptsForDay(
   if (!wantDerive && !notes) {
     return {
       ...settled,
-      attempts: markSplitLegs(rows),
+      attempts: rows,
       provisionalCount: 0,
       derived: false,
     };
@@ -277,7 +258,7 @@ export async function fetchAttemptsForDay(
   }
   return {
     ...settled,
-    attempts: markSplitLegs(rows),
+    attempts: rows,
     count: rows.length,
     provisionalCount,
     carriedOver,
@@ -322,7 +303,10 @@ export async function fetchAttemptsRange(
         if (hit) return [d, hit];
         try {
           const j = await fetchAttempts(d, { signal });
-          const rows = (j.attempts || []).map((a) => ({ ...a, date: d }));
+          // planMissing rides along on each row: it is the one reason an attempt can
+          // have no driver that the row itself can't show (see attemptLegs.js).
+          const planMissing = !!j.manifest?.planMissing;
+          const rows = (j.attempts || []).map((a) => ({ ...a, date: d, planMissing }));
           cache?.set(d, rows);
           return [d, rows];
         } catch (err) {

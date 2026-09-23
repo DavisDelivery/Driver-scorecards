@@ -19,6 +19,15 @@ import {
   todayET,
   yesterdayET,
 } from "../data/attemptsFeed.js";
+import {
+  groupAttemptLegs,
+  unassignedReason,
+  closedOutBy,
+  isRedeliveryLeg,
+  baseStopNbr,
+  UNASSIGNED_REASON_TEXT,
+  UNASSIGNED_REASON_SHORT,
+} from "../data/attemptLegs.js";
 import { periodWindow } from "../data/period.js";
 import DriverModal from "./DriverModal.jsx";
 import StopDetailModal from "./StopDetailModal.jsx";
@@ -340,40 +349,55 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     };
   }, [feedEnabled, feedDate, feedNonce, feedScan]);
 
-  // A saved driver-reassignment for a feed attempt (an attributed "attempts"
-  // incident keyed to the stop). Its presence overrides the feed's driver and
-  // makes the attempt count toward that driver in the scorecard/analytics.
-  const overrideFor = (stopNbr) =>
-    incidents.find(
-      (i) =>
-        i.category === config.category &&
-        i.attempt_stop_nbr === stopNbr &&
-        // Scope to the day being viewed: NuVizz stop numbers can repeat across
-        // days, so an override saved on one day must not match another day's row.
-        (i.delivered_date || "").slice(0, 10) === feedDate,
-    );
+  // Saved driver-reassignments for a feed attempt (attributed "attempts" incidents
+  // keyed to a stop). Their presence overrides the feed's driver and makes the
+  // attempt count toward that driver in the scorecard/analytics.
+  //
+  // An attempt can span two stops (the original and dispatch's "-1" copy), and a
+  // reassignment saved before they were grouped may sit on either, so every stop on
+  // the order is checked. The primary stop's wins when there's more than one.
+  const overridesFor = (a, date = feedDate) => {
+    const stops = new Set((a?.legRows || [a]).map((l) => String(l?.stopNbr ?? "")));
+    return incidents
+      .filter(
+        (i) =>
+          i.category === config.category &&
+          stops.has(String(i.attempt_stop_nbr ?? "")) &&
+          // Scope to the attempt's day: NuVizz stop numbers can repeat across days,
+          // so an override saved on one day must not match another day's row.
+          (i.delivered_date || "").slice(0, 10) === date,
+      )
+      .sort(
+        (x, y) =>
+          (String(y.attempt_stop_nbr) === String(a.stopNbr)) -
+          (String(x.attempt_stop_nbr) === String(a.stopNbr)),
+      );
+  };
+  const overrideFor = (a, date = feedDate) => overridesFor(a, date)[0];
 
   // Reassign (or clear) the driver an auto attempt is attributed to. Persists as
   // a manual "attempts" incident so the correction sticks and counts; the feed
   // row then shows the chosen driver.
-  async function reassignAuto(a, driverId) {
+  //
+  // `date` is the attempt's own day — the period's Unassigned list reassigns
+  // attempts from days other than the one the log is showing.
+  async function reassignAuto(a, driverId, date = feedDate) {
     const drv = drivers.find((d) => d.id === driverId);
-    const existing = overrideFor(a.stopNbr);
+    const [existing, ...extra] = overridesFor(a, date);
     try {
-      if (!driverId) {
-        // Cleared back to the feed's driver — drop the override if one existed.
-        if (existing) {
-          await deleteIncident(existing.id);
-          onSaved && onSaved({ type: "delete", id: existing.id });
-        }
-        return;
+      // One attempt, one reassignment. A second one left on the order's other stop
+      // would count the attempt twice on the Scorecard.
+      for (const dup of driverId ? extra : [existing, ...extra].filter(Boolean)) {
+        await deleteIncident(dup.id);
+        onSaved && onSaved({ type: "delete", id: dup.id });
       }
+      if (!driverId) return; // cleared back to the feed's driver
       const now = new Date().toISOString();
       const saved = await saveIncident({
         // Deterministic id from the natural key: two tabs reassigning the same
         // stop on the same day converge on ONE document instead of each minting a
         // random id and double-counting the attempt.
-        id: existing?.id || `att_${feedDate}_${a.stopNbr}`,
+        id: existing?.id || `att_${date}_${a.stopNbr}`,
         pro_number: a.stopNbr,
         category: config.category,
         fault: "driver",
@@ -384,10 +408,10 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         customer: a.businessName || "",
         to_city: a.city || "",
         to_state: a.state || "",
-        delivered_date: feedDate,
+        delivered_date: date,
         reason: `Delivery attempt — reassigned from auto feed (was ${a.originalDriverName || "Unknown"})`,
         notes: existing?.notes || "",
-        attempt_stop_nbr: a.stopNbr,
+        attempt_stop_nbr: existing?.attempt_stop_nbr || a.stopNbr,
         shipment_nbr: a.shipmentNbr || "",
         sources: [],
         report_id: null,
@@ -402,19 +426,23 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     }
   }
 
+  // Removes the whole attempt: every stop on the order, so its "-1" copy can't stay
+  // behind and resurface as an Unassigned attempt of its own.
   async function deleteAuto(a) {
+    const legs = (a.legRows || [a]).filter((l) => !l.provisional);
+    const which =
+      legs.length > 1 ? ` — both stops (${legs.map((l) => l.stopNbr).join(", ")})` : "";
     if (
       !window.confirm(
-        `Remove auto-detected attempt ${a.shipmentNbr || a.stopNbr} (${a.originalDriverName || "Unknown"})?\n\nThis deletes it from the dispatch feed for ${fmtMDY(feedDate)}.`,
+        `Remove auto-detected attempt ${a.shipmentNbr || a.stopNbr} (${a.originalDriverName || "Unknown"})?\n\nThis deletes it from the dispatch feed for ${fmtMDY(feedDate)}${which}.`,
       )
     )
       return;
     setFeedDeletingId(a.stopNbr);
     try {
-      await deleteAttempt(feedDate, a.stopNbr);
-      // Drop any reassignment we saved for this stop so it isn't orphaned.
-      const existing = overrideFor(a.stopNbr);
-      if (existing) {
+      for (const l of legs) await deleteAttempt(feedDate, l.stopNbr);
+      // Drop any reassignment we saved for this attempt so it isn't orphaned.
+      for (const existing of overridesFor(a)) {
         await deleteIncident(existing.id);
         onSaved && onSaved({ type: "delete", id: existing.id });
       }
@@ -546,6 +574,10 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   // correcting the feed. Then the feed's own morning-plan driver, matched to the
   // roster so "Ben  Paintsil" and "Ben Paintsil" are one bar rather than two.
   // Anything still nameless stays nameless rather than being guessed onto someone.
+  //
+  // Counted per ORDER, not per stop: dispatch's "-1" copy of a failed stop is the
+  // same failure, and counted on its own it always landed in "Unassigned" — 25 of the
+  // 40 unassigned attempts in one 30-day window. See attemptLegs.js.
   const feedRecords = React.useMemo(() => {
     if (!feedEnabled) return [];
     const overrides = new Map();
@@ -556,8 +588,10 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         i,
       );
     }
-    return periodFeed.rows.map((a) => {
-      const ov = overrides.get(`${a.stopNbr}|${a.date}`);
+    return groupAttemptLegs(periodFeed.rows).map((a) => {
+      const ov = [a, ...a.legRows]
+        .map((l) => overrides.get(`${l.stopNbr}|${a.date}`))
+        .find(Boolean);
       const matched = ov ? null : matchDriver(a.originalDriverName || "", drivers);
       return {
         id: `feed:${a.date}:${a.stopNbr}`,
@@ -573,9 +607,43 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         created_at: a.detectedAt || a.date,
         notes: a.note || "",
         from_feed: true,
+        // The order behind the record, for the Unassigned list's reassign/open.
+        attempt: a,
       };
     });
   }, [feedEnabled, periodFeed.rows, logIncidents, drivers, config.category]);
+
+  // The period's attempts that still have nobody, and why — so "Unassigned" on the
+  // chart is a list someone can work through rather than an unexplained bar.
+  const unassignedFeed = React.useMemo(() => {
+    if (!feedEnabled) return { rows: [], byReason: {}, withLead: 0, copies: 0 };
+    const { start, end } = logPeriod.win;
+    const inWin = (d) => d && d >= start && d <= end;
+    const rows = feedRecords
+      .filter((r) => inWin(r.delivered_date) && !r.driver_name)
+      .map((r) => {
+        const leadName = closedOutBy(r.attempt);
+        return {
+          ...r,
+          why: unassignedReason(r.attempt) || "not_in_plan",
+          leadName,
+          lead: leadName ? matchDriver(leadName, drivers) : null,
+        };
+      })
+      .sort(
+        (a, b) =>
+          b.delivered_date.localeCompare(a.delivered_date) ||
+          String(a.pro_number).localeCompare(String(b.pro_number)),
+      );
+    const byReason = {};
+    for (const r of rows) byReason[r.why] = (byReason[r.why] || 0) + 1;
+    // Stops folded into another stop's attempt — what dispatch's own total counts
+    // on top of ours.
+    const copies =
+      periodFeed.rows.filter((a) => inWin(a.date)).length -
+      feedRecords.filter((r) => inWin(r.delivered_date)).length;
+    return { rows, byReason, withLead: rows.filter((r) => r.lead).length, copies };
+  }, [feedEnabled, feedRecords, periodFeed.rows, logPeriod.win, drivers]);
 
   // What the analytics panel counts. On the feed tab that's the auto attempts plus
   // any hand-entered ones — but NOT the reassignment rows, which are the attribution
@@ -735,15 +803,26 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       .sort((a, b) => b.rows.length - a.rows.length || a.name.localeCompare(b.name));
   }, [filteredLog, driverNameOf]);
 
+  // The day's auto attempts, one per order — the original stop and dispatch's "-1"
+  // copy are one failure (see attemptLegs.js). Stamped with the day so a provisional
+  // leg groups with its settled sibling.
+  const feedOrders = React.useMemo(
+    () =>
+      feedEnabled
+        ? groupAttemptLegs(feed.attempts.map((a) => ({ ...a, date: feedDate })))
+        : [],
+    [feedEnabled, feed.attempts, feedDate],
+  );
+
   // Same search applied to the auto (feed) rows — by PRO/driver/customer/route/stop.
   const filteredFeed = React.useMemo(() => {
     if (!feedEnabled) return [];
     const q = logSearch.trim().toLowerCase();
-    if (!q) return feed.attempts;
-    return feed.attempts.filter((a) =>
+    if (!q) return feedOrders;
+    return feedOrders.filter((a) =>
       [
         a.shipmentNbr,
-        a.stopNbr,
+        ...a.legRows.map((l) => l.stopNbr),
         a.originalDriverName,
         a.originalDriverUserName,
         a.businessName,
@@ -752,7 +831,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         a.routeName,
       ].some((f) => String(f || "").toLowerCase().includes(q)),
     );
-  }, [feedEnabled, feed.attempts, logSearch]);
+  }, [feedEnabled, feedOrders, logSearch]);
 
   async function doPull() {
     const p = normalizeOrderId(pro);
@@ -891,7 +970,28 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       )
     : [];
 
-  const feedRows = feedEnabled ? feed.attempts : [];
+  const feedRows = feedOrders;
+
+  // Open an attempt in the detail modal with every stop on its order. When only the
+  // "-1" copy made the list, the original stop is added too and opened first: the
+  // driver events live on the original, so its activity history is what answers
+  // "who had it".
+  const openAttempt = (a) => {
+    const legs = a.legRows || [a];
+    if (legs.some((l) => !isRedeliveryLeg(l.stopNbr))) {
+      setStopDetail({ row: a, legs });
+      return;
+    }
+    const original = {
+      stopNbr: baseStopNbr(a.stopNbr),
+      shipmentNbr: a.shipmentNbr,
+      businessName: a.businessName,
+      city: a.city,
+      state: a.state,
+      notOnList: true,
+    };
+    setStopDetail({ row: original, legs: [original, ...legs] });
+  };
   // Counts for the current view. On the feed-backed tab everything is scoped to
   // the selected day (manualForView is already date-filtered); elsewhere it's the
   // all-time manual total.
@@ -1387,6 +1487,24 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                 "Click a bar to filter the log to that driver, or pick one above to print their report."
               )}
             </div>
+            {feedEnabled && periodFeed.status === "ready" && unassignedFeed.copies > 0 && (
+              <div className="ff-bydriver-hint">
+                {unassignedFeed.copies} redelivery cop
+                {unassignedFeed.copies === 1 ? "y" : "ies"} (dispatch's "-1" stops) counted
+                once with the original stop — the same failed delivery, not another one.
+                Dispatch's own total counts {unassignedFeed.copies === 1 ? "it" : "them"}{" "}
+                separately.
+              </div>
+            )}
+            {feedEnabled && unassignedFeed.rows.length > 0 && (
+              <UnassignedAttempts
+                data={unassignedFeed}
+                periodLabel={logPeriod.label}
+                driverOptions={driverOptions}
+                onOpen={openAttempt}
+                onAssign={(r, driverId) => reassignAuto(r.attempt, driverId, r.delivered_date)}
+              />
+            )}
           </div>
         </div>
       )}
@@ -1529,8 +1647,13 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
             )}
 
           {/* Auto-detected attempts from the dispatch feed (selected date). */}
-          {filteredFeed.map((a) => (
-            <div key={`auto-${a.stopNbr || a.shipmentNbr}`} className="ff-log-entry">
+          {filteredFeed.map((a) => {
+            const ov = overrideFor(a);
+            const why = ov ? null : unassignedReason(a);
+            const leadName = why ? closedOutBy(a) : null;
+            const lead = leadName ? matchDriver(leadName, drivers) : null;
+            return (
+            <div key={`auto-${a.shipmentNbr || a.stopNbr}`} className="ff-log-entry">
               <div className="dd-incident-head" style={{ cursor: "default" }}>
                 <span
                   className="ff-src-chip auto"
@@ -1542,23 +1665,13 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                 >
                   {a.provisional ? "LIVE" : "AUTO"}
                 </span>
+                {/* Every stop on this order goes with it, so a split can be inspected
+                    leg by leg — the driver events usually sit on the ORIGINAL stop
+                    while the "-1" copy has none. */}
                 <button
                   type="button"
                   className="pro-num pro-num-link"
-                  onClick={() =>
-                    setStopDetail({
-                      row: a,
-                      // Every stop on this order, so a split can be inspected leg by
-                      // leg — the driver events usually sit on the ORIGINAL stop while
-                      // the "-1" duplicate has none, so opening one without the other
-                      // answers "who had it" with a blank.
-                      legs: feedRows.filter(
-                        (x) =>
-                          String(x.shipmentNbr || "").trim().toUpperCase() ===
-                          String(a.shipmentNbr || "").trim().toUpperCase(),
-                      ),
-                    })
-                  }
+                  onClick={() => openAttempt(a)}
                   title="Open this order — details and, if you want it, the activity history showing who had it"
                 >
                   {a.shipmentNbr || "—"}
@@ -1566,9 +1679,9 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                 {a.legs > 1 && (
                   <span
                     className="ff-item-chip"
-                    title={`This PRO is on the log ${a.legs} times because dispatch split or duplicated the stop — same order, ${a.legs} stop numbers, all carrying the ATT marker. Dispatch counts each leg separately.`}
+                    title={`Dispatch gave this order ${a.legs} stop numbers (${a.legRows.map((l) => l.stopNbr).join(", ")}) — the "-1" copy carries the redelivery. It's one failed delivery, so it's counted once here; dispatch's own totals count each stop.`}
                   >
-                    {a.legs} legs · 1 order
+                    {a.legs} stops · 1 attempt
                   </span>
                 )}
                 <span
@@ -1576,7 +1689,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                   onClick={(e) => e.stopPropagation()}
                 >
                   <select
-                    value={overrideFor(a.stopNbr)?.driver_id || ""}
+                    value={ov?.driver_id || ""}
                     onChange={(e) => reassignAuto(a, e.target.value)}
                     title={
                       a.provisional
@@ -1589,11 +1702,21 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                         ? `${a.originalDriverName} · from feed`
                         : a.provisional
                           ? `Not yet attributed${a.currentDriverName ? ` · now on ${a.currentDriverName}` : ""}`
-                          : "Unknown · from feed"}
+                          : "Unassigned — pick a driver"}
                     </option>
                     {driverOptions}
                   </select>
-                  {overrideFor(a.stopNbr) && (
+                  {lead && (
+                    <button
+                      type="button"
+                      className="btn ghost sm ff-lead-btn"
+                      onClick={() => reassignAuto(a, lead.id)}
+                      title={`${leadName} closed this stop out. On attempts that did have a morning driver, the driver who closed the stop was that driver 24 times in 26 — a strong lead, but check it.`}
+                    >
+                      → {lead.name}
+                    </button>
+                  )}
+                  {ov && (
                     <span className="ff-reassigned" title={`Feed said ${a.originalDriverName || "Unknown"}`}>
                       reassigned
                     </span>
@@ -1606,7 +1729,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                     : ""}
                 </span>
                 <span className="meta">
-                  Stop {a.stopNbr || "—"}
+                  Stop {(a.legRows || [a]).map((l) => l.stopNbr).join(" + ") || "—"}
                   {a.routeName ? ` · ${a.routeName}` : ""}
                 </span>
                 <span style={{ marginLeft: "auto" }}>
@@ -1630,9 +1753,16 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                   </span>
                 )}
               </div>
+              {why && why !== "provisional" && (
+                <div className="ff-att-why">
+                  No driver: {UNASSIGNED_REASON_TEXT[why]}.
+                  {leadName ? ` Closed out by ${leadName}.` : ""}
+                </div>
+              )}
               {a.note && <div className="ff-att-note">{a.note}</div>}
             </div>
-          ))}
+            );
+          })}
 
           {/* Manually-logged entries. Feed tab keeps the compact flat rows;
               elsewhere they render as a column-headed, optionally grouped table. */}
@@ -1697,6 +1827,86 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
           legs={stopDetail.legs}
           onClose={() => setStopDetail(null)}
         />
+      )}
+    </div>
+  );
+}
+
+// The period's attempts with no driver, each with the reason and, when the feed has
+// one, a lead — so the "Unassigned" bar is a list to work through, not a mystery.
+// Assigning here saves the same reassignment the log's dropdown does, on the
+// attempt's own day.
+function UnassignedAttempts({ data, periodLabel, driverOptions, onOpen, onAssign }) {
+  const [open, setOpen] = React.useState(false);
+  const { rows, byReason, withLead } = data;
+  const parts = Object.entries(byReason)
+    .sort((a, b) => b[1] - a[1])
+    .map(([why, n]) => `${n} ${UNASSIGNED_REASON_SHORT[why] || why}`);
+  return (
+    <div className="ff-unassigned">
+      <button
+        type="button"
+        className="ff-unassigned-head"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+      >
+        <span>
+          <strong>Unassigned · {rows.length}</strong>
+          <span className="meta">
+            {" "}· {periodLabel} · {parts.join(" · ")}
+            {withLead ? ` · ${withLead} with a lead` : ""}
+          </span>
+        </span>
+        <span className="meta">{open ? "Hide ▴" : "Why? ▾"}</span>
+      </button>
+      {open && (
+        <>
+          <div className="ff-unassigned-explain">
+            The evening scan names a driver by matching each attempt to the 8:30 AM route
+            plan. These couldn't be matched: the stop wasn't on anyone's route that
+            morning, or only dispatch's "-1" copy of it is on the list. Open a PRO and load
+            its activity history to see who had it, or take the lead where the feed has
+            one — the driver who closed the stop out.
+          </div>
+          {rows.map((r) => (
+            <div key={r.id} className="ff-unassigned-row">
+              <span className="dd-date">{fmtMDY(r.delivered_date)}</span>
+              <button
+                type="button"
+                className="pro-num pro-num-link"
+                onClick={() => onOpen(r.attempt)}
+                title="Open this order — details and its activity history"
+              >
+                {r.pro_number}
+              </button>
+              <span className="meta ff-unassigned-cust">{r.customer || "—"}</span>
+              <span className="ff-unassigned-why" title={UNASSIGNED_REASON_TEXT[r.why]}>
+                {UNASSIGNED_REASON_SHORT[r.why]}
+                {r.leadName ? ` · closed out by ${r.leadName}` : ""}
+              </span>
+              <span className="ff-unassigned-act">
+                {r.lead && (
+                  <button
+                    type="button"
+                    className="btn ghost sm ff-lead-btn"
+                    onClick={() => onAssign(r, r.lead.id)}
+                    title={`${r.leadName} closed this stop out — a strong lead, but check it`}
+                  >
+                    → {r.lead.name}
+                  </button>
+                )}
+                <select
+                  value=""
+                  onChange={(e) => e.target.value && onAssign(r, e.target.value)}
+                  aria-label={`Assign ${r.pro_number} to a driver`}
+                >
+                  <option value="">Assign…</option>
+                  {driverOptions}
+                </select>
+              </span>
+            </div>
+          ))}
+        </>
       )}
     </div>
   );

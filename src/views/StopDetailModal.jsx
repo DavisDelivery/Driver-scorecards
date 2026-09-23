@@ -97,7 +97,8 @@ export default function StopDetailModal({ row, legs, onClose }) {
           {allLegs.length > 1 && (
             <div className="sd-legs">
               <span className="dd-k">
-                {allLegs.length} stops on this order — dispatch counts each separately
+                {allLegs.length} stops on this order — one failed delivery, counted once
+                here (dispatch counts each stop)
               </span>
               <div className="month-picker" style={{ margin: 0 }}>
                 {allLegs.map((l) => (
@@ -122,6 +123,12 @@ export default function StopDetailModal({ row, legs, onClose }) {
 
           <div className="dd-notes">
             <Field k="Stop number" v={active.stopNbr} />
+            {active.notOnList && (
+              <Field
+                k="On the attempts list"
+                v="No — only its -1 copy is. The copy was made after the 8:30 AM plan, so the scan couldn't name a driver; this stop's history can."
+              />
+            )}
             <Field k="Shipment" v={active.shipmentNbr} />
             <Field k="Address" v={active.addr1} />
             <Field k="Zip" v={active.zip} />
@@ -151,7 +158,9 @@ export default function StopDetailModal({ row, legs, onClose }) {
             <div className="empty-state">
               {active.originalDriverName
                 ? "The timeline shows every planned, dispatched and unplanned action on this stop, with who did it."
-                : isDup
+                : active.notOnList
+                  ? "Only this stop's -1 copy made the attempts list, and the copy carries no driver events. This original stop is where they are — the timeline names who had it."
+                  : isDup
                   ? "This is the duplicate leg, created after the order was already attempted — it usually carries no driver events at all. Check the original stop above for who had it."
                   : "This attempt has no driver attributed — the stop wasn't in the morning routed plan. The timeline names who actually had it."}
               <div style={{ marginTop: 10 }}>
