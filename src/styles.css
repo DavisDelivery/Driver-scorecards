@@ -2286,3 +2286,235 @@ table.data.analytics-subtable th {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+
+/* --- Scorecard drill-downs (v0.17.0) ---------------------------------------
+   Click a chart for every incident behind it; click a name for that driver,
+   scoped to the chart it was clicked from. */
+.section-hint {
+  margin-left: 12px;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: #94a3b8;
+}
+
+/* Chart header: the title and "Details →" both open the chart. */
+.cc-open {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+}
+.cc-open:hover { text-decoration: underline; text-underline-offset: 3px; }
+.cc-count b { font-weight: 700; color: #334155; margin-left: 2px; }
+.cc-details {
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+  color: #234294;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  padding: 3px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.cc-details:hover { background: #eef3fb; border-color: #c7d4ea; }
+.cc-open:focus-visible,
+.cc-details:focus-visible,
+.lb-row-btn:focus-visible,
+.cd-driver:focus-visible,
+.cd-month:focus-visible,
+.dm-chip:focus-visible,
+.dd-driver-link:focus-visible,
+.dd-incident-head:focus-visible {
+  outline: 2px solid #234294;
+  outline-offset: 2px;
+}
+
+/* Leaderboard rows are buttons now: reset the button look, keep the row look. */
+.lb-row-btn {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+}
+.lb-row-btn:hover .lb-name { color: #234294; text-decoration: underline; text-underline-offset: 2px; }
+.lb-chev { width: 8px; color: #cbd5e1; font-size: 14px; line-height: 1; opacity: 0; transition: opacity 0.12s; }
+.lb-row-btn:hover .lb-chev { opacity: 1; color: #234294; }
+.lb-nums { width: 62px; font-size: 12px; }
+.lb-nums .lb-zero { color: #cbd5e1; font-weight: 600; }
+.lb-total { color: #334155; font-weight: 600; }
+
+/* Wide modal for the drill-downs. */
+.modal.modal-wide { max-width: 1120px; }
+.modal-wide .modal-body { max-height: 78vh; }
+.dm-sub {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-2);
+  margin-top: 3px;
+  letter-spacing: 0.06em;
+}
+.cd-title { display: flex; align-items: center; gap: 8px; }
+
+.dm-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.dm-stat {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--bg-1);
+  text-align: left;
+}
+.dm-stat-btn { cursor: pointer; font: inherit; color: inherit; }
+.dm-stat-btn:hover { border-color: #c7d4ea; background: #f7f9fc; }
+.dm-stat-btn.active { border-color: #234294; box-shadow: inset 0 0 0 1px #234294; }
+.dm-stat-num { font-family: var(--mono); font-size: 22px; font-weight: 700; color: #0f172a; line-height: 1.1; }
+.dm-stat-lbl {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #64748b;
+  margin-top: 3px;
+}
+
+.dm-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.dm-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: #334155;
+  cursor: pointer;
+}
+.dm-chip i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+.dm-chip b { font-family: var(--mono); font-size: 11px; color: #64748b; }
+.dm-chip:hover { background: #f7f9fc; }
+.dm-chip.active { border-color: #234294; color: #234294; font-weight: 600; }
+.dm-scope { margin: 0 0 12px; }
+
+/* Month strip: the year at a glance; click a month to see just that month. */
+.cd-strip {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 4px;
+  margin: 2px 0 16px;
+  padding: 10px 10px 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-2);
+}
+.cd-month {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 6px;
+  padding: 2px 0 3px;
+  cursor: pointer;
+  font: inherit;
+}
+.cd-month:disabled { cursor: default; }
+.cd-month:not(:disabled):hover { background: var(--bg-1); border-color: var(--border); }
+.cd-month.active { background: var(--bg-1); border-color: #234294; }
+.cd-month-n { font-family: var(--mono); font-size: 10px; color: #334155; min-height: 12px; }
+.cd-month-bar {
+  width: 60%;
+  height: 46px;
+  display: flex;
+  align-items: flex-end;
+  background: #e8edf4;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.cd-month-bar span { width: 100%; border-radius: 3px 3px 0 0; min-height: 0; }
+.cd-month-lbl { font-family: var(--mono); font-size: 9px; color: #64748b; text-transform: uppercase; }
+.cd-month.in-period .cd-month-lbl { color: #0f172a; font-weight: 700; }
+
+.cd-grid {
+  display: grid;
+  grid-template-columns: minmax(230px, 300px) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+.cd-h {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #64748b;
+  margin-bottom: 8px;
+}
+.cd-h-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.cd-search { max-width: 260px; font-size: 12px; padding: 5px 8px; text-transform: none; letter-spacing: 0; font-weight: 400; }
+.cd-driver {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid #eef2f6;
+  background: transparent;
+  padding: 6px 4px;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+}
+.cd-driver:hover { background: #f4f7fb; }
+.cd-driver:hover .cd-driver-name { color: #234294; text-decoration: underline; text-underline-offset: 2px; }
+.cd-driver-name { flex: 1; font-size: 13px; color: #1f2937; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cd-driver-n { font-family: var(--mono); font-size: 13px; font-weight: 700; min-width: 22px; text-align: right; }
+.cd-driver-ytd { font-family: var(--mono); font-size: 10px; color: #94a3b8; min-width: 48px; text-align: right; }
+.cd-note { font-size: 11px; color: #94a3b8; margin-top: 8px; }
+.cd-toggle { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: #64748b; margin: 0 0 8px; }
+
+/* Incident rows inside the drill-downs. */
+.dd-date { font-family: var(--mono); font-size: 11px; color: #64748b; min-width: 74px; }
+.dd-driver-link {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #234294;
+  cursor: pointer;
+}
+.dd-driver-link:hover { text-decoration: underline; text-underline-offset: 2px; }
+.dd-cust {
+  font-size: 11.5px;
+  color: #64748b;
+  min-width: 0;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .cd-grid { grid-template-columns: 1fr; }
+  .section-hint { display: block; margin: 4px 0 0; }
+  .cd-strip { gap: 2px; padding: 8px 4px 4px; }
+  .cd-month-bar { width: 80%; height: 36px; }
+  .dd-cust { display: none; }
+  .cc-details { display: none; } /* the title still opens the chart */
+}
+.month-picker.dm-scope { display: inline-flex; width: auto; }

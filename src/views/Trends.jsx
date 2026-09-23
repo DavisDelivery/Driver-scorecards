@@ -6,6 +6,7 @@ import { getHistory } from "../data/firebase.js";
 import DriverModal from "./DriverModal.jsx";
 import { CategoryLeaderboard, LeaderRow } from "./leaderboard.jsx";
 import { countsTowardCharts } from "../data/liveHistoryBlend.js";
+import { incidentDateStr } from "../data/incidentDate.js";
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const CATS = [
@@ -18,10 +19,9 @@ const CATS = [
 ];
 const CAT_IDS = CATS.map((c) => c.id);
 
-const incidentYm = (inc) =>
-  (inc.delivered_date || inc.actual_delivery || inc.return_date ||
-   inc.trace_date || inc.ship_date || inc.week_ending || inc.ingested_at || ""
-  ).slice(0, 7);
+// The shared month rule, so Trends files every incident under the same month as the
+// Scorecard and the driver detail.
+const incidentYm = (inc) => incidentDateStr(inc).slice(0, 7);
 
 const tooltipStyle = {
   contentStyle: {
@@ -352,6 +352,9 @@ export default function Trends({ drivers, incidents = [] }) {
         <DriverModal
           driver={drivers.find((d) => d.id === focusId) || { id: focusId, name: cube.names.get(focusId) || focusId, role: "driver" }}
           incidents={incidents.filter((i) => i.driver_id === focusId)}
+          // Without the history, anyone whose numbers here come from rolled-up
+          // months opened to "No detailed incidents on file".
+          history={history.filter((r) => r.driver_id === focusId)}
           onClose={() => setFocusId(null)}
         />
       )}
