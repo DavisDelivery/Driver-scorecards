@@ -2518,3 +2518,81 @@ table.data.analytics-subtable th {
   .cc-details { display: none; } /* the title still opens the chart */
 }
 .month-picker.dm-scope { display: inline-flex; width: auto; }
+
+/* --- Unassigned attempts (v0.18.0) ------------------------------------------
+   Why an attempt has no driver, on its log row and as a period list under the
+   by-driver chart, with the closed-out-by lead where the feed has one. */
+.ff-att-why {
+  margin: -2px 0 6px 52px;
+  font-size: 12px;
+  color: #b45309;
+  line-height: 1.4;
+}
+.ff-lead-btn {
+  white-space: nowrap;
+  font-size: 11px;
+  padding: 2px 8px;
+}
+.ff-unassigned {
+  margin-top: 12px;
+  border-top: 1px solid var(--border, #e2e8f0);
+  padding-top: 8px;
+}
+.ff-unassigned-head {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: none;
+  border: 0;
+  padding: 4px 0;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+.ff-unassigned-explain {
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.45;
+  margin: 4px 0 8px;
+}
+.ff-unassigned-row {
+  display: grid;
+  grid-template-columns: 88px 120px minmax(0, 1fr) minmax(0, 1.2fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  border-top: 1px solid #f1f5f9;
+  font-size: 12px;
+}
+.ff-unassigned-cust,
+.ff-unassigned-why {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ff-unassigned-why { color: #b45309; }
+.ff-unassigned-act {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ff-unassigned-act select {
+  font-size: 12px;
+  padding: 3px 6px;
+  max-width: 150px;
+}
+@media (max-width: 760px) {
+  .ff-unassigned-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .ff-unassigned-cust,
+  .ff-unassigned-why,
+  .ff-unassigned-act {
+    grid-column: 1 / -1;
+    white-space: normal;
+  }
+  .ff-att-why { margin-left: 0; }
+}
