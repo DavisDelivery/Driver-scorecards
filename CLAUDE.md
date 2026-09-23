@@ -44,6 +44,13 @@ seeding), catch it there deliberately and say why in a comment.
   scorecards, pickers) but **must not change any total**. Filter at the display layer, not
   in the aggregation that totals are derived from.
 - A `driver_id` with no roster row is never hidden — unknown must not mean invisible.
+- **A drill-down shows the same number as the thing you clicked.** Scorecard charts and
+  the driver popup are built from one month-by-month blend (live months from incidents,
+  every other month from `dds_history`). Anything that opens from a chart must reuse
+  that blend via `src/data/scorecardDetail.js` rather than recount — the driver popup
+  once disagreed with its own row because it was never given the history.
+- File an incident under a month with `incidentYm()` / `incidentDateStr()` from
+  `src/data/incidentDate.js`. Hand-copied date precedences drifted apart before.
 
 ## Reports
 
