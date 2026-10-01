@@ -97,8 +97,8 @@ export default function StopDetailModal({ row, legs, onClose }) {
           {allLegs.length > 1 && (
             <div className="sd-legs">
               <span className="dd-k">
-                {allLegs.length} stops on this order — one failed delivery, counted once
-                here (dispatch counts each stop)
+                The order and its duplicate{allLegs.length === 2 ? "" : "s"} (-1/-2) — counted
+                once here; a duplicate is never charged to the original&apos;s driver
               </span>
               <div className="month-picker" style={{ margin: 0 }}>
                 {allLegs.map((l) => (
@@ -109,7 +109,7 @@ export default function StopDetailModal({ row, legs, onClose }) {
                     onClick={() => setActiveStop(String(l.stopNbr))}
                     title={
                       /-\d+$/.test(String(l.stopNbr))
-                        ? "The duplicate leg dispatch created later"
+                        ? "A duplicate order (-1/-2)"
                         : "The original stop"
                     }
                   >
@@ -161,7 +161,7 @@ export default function StopDetailModal({ row, legs, onClose }) {
                 : active.notOnList
                   ? "Only this stop's -1 copy made the attempts list, and the copy carries no driver events. This original stop is where they are — the timeline names who had it."
                   : isDup
-                  ? "This is the duplicate leg, created after the order was already attempted — it usually carries no driver events at all. Check the original stop above for who had it."
+                  ? "This is a duplicate order (-1/-2). It has nothing to do with the original stop's driver; its own timeline shows only what happened to the duplicate."
                   : "This attempt has no driver attributed — the stop wasn't in the morning routed plan. The timeline names who actually had it."}
               <div style={{ marginTop: 10 }}>
                 <button className="btn" onClick={loadHistory}>

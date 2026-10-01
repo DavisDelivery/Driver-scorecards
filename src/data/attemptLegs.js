@@ -1,12 +1,14 @@
 // One failed delivery, however many stop numbers dispatch gave it.
 //
-// When a stop fails, dispatch closes it out and creates a copy with a "-1" stop
-// number to carry the redelivery (and sometimes a copy of a stop that looked bugged —
-// one says so in its own note: "DUPPED SINCE ORIGINAL STOP SEEMED BUGGED"). The copy
-// keeps the shipment number, so it carries the ATT marker too and the evening scan
-// lists both. The copy did not exist yet when the 8:30 AM route plan was captured,
-// so the scan can never match it to a morning driver: every copy lands in
-// "Unassigned".
+// A "-1" / "-2" stop is a DUPLICATE ORDER. Chad, 2026-10-01: "-1 and -2 are duplicate
+// orders and have nothing to do with the original driver." It keeps the original's
+// shipment number, so it carries the ATT marker too and the evening scan lists both.
+// Two rules follow, and both are enforced here:
+//   1. It is not a second attempt. The original and its duplicates are ONE row.
+//   2. It never decides who is charged. The order's driver is the ORIGINAL stop's,
+//      named or not — a duplicate's driver never stands in for it (v0.19.0; before,
+//      a named duplicate could speak for an unnamed original). A duplicate listed
+//      without its original stands alone, with only a driver of its own.
 //
 // Checked against the settled feed for 08/25–09/23: 99 rows, 40 unassigned, and 25
 // of those 40 were the "-1" copy of an attempt already on the list — 21 of them
@@ -26,13 +28,11 @@ export const baseStopNbr = (stopNbr) => String(stopNbr ?? "").trim().replace(LEG
 const clean = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
 const hasDriver = (r) => !!clean(r?.originalDriverName);
 
-// Which leg speaks for the order: one the morning plan named, else the original
-// (un-suffixed) stop, else whichever came first. Among several named legs the
-// original stop wins, so the row shows the stop the driver actually had.
+// Which leg speaks for the order: the ORIGINAL stop, whether or not it has a
+// driver (rule 2 above). Only when the original isn't on the list does a duplicate
+// speak — and then only for itself.
 function pickPrimary(legs) {
-  const named = legs.filter(hasDriver);
-  const pool = named.length ? named : legs;
-  return pool.find((l) => !isRedeliveryLeg(l.stopNbr)) || pool[0];
+  return legs.find((l) => !isRedeliveryLeg(l.stopNbr)) || legs[0];
 }
 
 // Collapse attempt rows into one entry per order per day. Each entry is the primary
@@ -84,14 +84,14 @@ export const UNASSIGNED_REASON_TEXT = {
   no_plan: "No 8:30 AM route plan was captured that day",
   not_in_plan: "Not on any route in the 8:30 AM plan — routed later in the day",
   copy_only:
-    "Only dispatch's redelivery copy (-1) is on the list — the original stop isn't, so there's no morning route to match",
+    "Only a duplicate order (-1/-2) is on the list, not the original stop — and a duplicate has nothing to do with the original's driver",
 };
 
 export const UNASSIGNED_REASON_SHORT = {
   provisional: "awaiting the 8 PM scan",
   no_plan: "no morning plan that day",
   not_in_plan: "not in the 8:30 AM plan",
-  copy_only: "only the -1 copy on the list",
+  copy_only: "duplicate order (-1/-2) only",
 };
 
 // Who closed the original stop out, when the feed can say — the best lead there is
@@ -110,4 +110,36 @@ export function closedOutBy(order) {
     if (who && (status === "DELIVERED" || status === "EXCEPTION")) return who;
   }
   return null;
+}
+
+// The dispatch app's nightly driver lookup (v1.102.5) reads at most 10 NuVizz
+// timelines a night. When it could not read every attempt still without a driver —
+// over the limit, no NuVizz id on file, a request that failed — the day's manifest
+// says so (fill.needsAttention). Chad: "if it needs more it should throw a flag in
+// the ui on the scorecard."
+export const FILL_LEFT_REASON = {
+  "over-cap": "over the nightly 10-call limit",
+  "no-stopId": "no NuVizz id on file",
+  "not-read": "the lookup failed",
+};
+
+// The days that need attention, newest first, and which stops each one left.
+export function fillFlags(fills) {
+  return (fills || [])
+    .filter((f) => f && f.needsAttention && Number(f.left) > 0)
+    .map((f) => ({
+      date: f.date,
+      left: Number(f.left),
+      maxCalls: f.maxCalls ?? 10,
+      requests: f.requests ?? null,
+      stops: (f.leftStops || []).map((x) => ({ stopNbr: String(x.stopNbr), reason: x.reason })),
+    }))
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+}
+
+// "date|stopNbr" → why the nightly lookup left it, for tagging rows.
+export function fillLeftIndex(fills) {
+  const m = new Map();
+  for (const f of fillFlags(fills)) for (const s of f.stops) m.set(`${f.date}|${s.stopNbr}`, s.reason);
+  return m;
 }
