@@ -112,7 +112,7 @@ export function closedOutBy(order) {
   return null;
 }
 
-// The dispatch app's nightly driver lookup (v1.102.5) reads at most 10 NuVizz
+// The dispatch app's nightly driver lookup (v1.104.0) reads at most 10 NuVizz
 // timelines a night. When it could not read every attempt still without a driver —
 // over the limit, no NuVizz id on file, a request that failed — the day's manifest
 // says so (fill.needsAttention). Chad: "if it needs more it should throw a flag in
