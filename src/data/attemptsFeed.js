@@ -294,32 +294,41 @@ export async function fetchAttemptsRange(
   const capped = all.length > maxDays;
   const days = capped ? [] : all;
   const byDay = new Map();
+  const fills = [];
   let failed = 0;
   for (let i = 0; i < days.length; i += concurrency) {
     const slice = days.slice(i, i + concurrency);
     const got = await Promise.all(
       slice.map(async (d) => {
         const hit = cache?.get(d);
-        if (hit) return [d, hit];
+        // Cached as { rows, fill }; a bare array is the pre-0.19 shape (rows only).
+        if (hit) return [d, Array.isArray(hit) ? { rows: hit, fill: null } : hit];
         try {
           const j = await fetchAttempts(d, { signal });
           // planMissing rides along on each row: it is the one reason an attempt can
           // have no driver that the row itself can't show (see attemptLegs.js).
           const planMissing = !!j.manifest?.planMissing;
           const rows = (j.attempts || []).map((a) => ({ ...a, date: d, planMissing }));
-          cache?.set(d, rows);
-          return [d, rows];
+          // The dispatch app's nightly driver lookup reports here what it could not
+          // read (over its 10-call limit, no NuVizz id on file, a request that failed).
+          const entry = { rows, fill: j.manifest?.fill || null };
+          cache?.set(d, entry);
+          return [d, entry];
         } catch (err) {
           if (err?.name === "AbortError") throw err;
           failed++;
-          return [d, []];
+          return [d, { rows: [], fill: null }];
         }
       }),
     );
-    for (const [d, rows] of got) byDay.set(d, rows);
+    for (const [d, entry] of got) {
+      byDay.set(d, entry.rows);
+      if (entry.fill) fills.push({ ...entry.fill, date: entry.fill.date || d });
+    }
   }
   return {
     rows: [...byDay.values()].flat(),
+    fills,
     days: days.length,
     totalDays: all.length,
     capped,

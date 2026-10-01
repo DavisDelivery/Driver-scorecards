@@ -23,10 +23,11 @@ import {
   groupAttemptLegs,
   unassignedReason,
   closedOutBy,
-  isRedeliveryLeg,
-  baseStopNbr,
   UNASSIGNED_REASON_TEXT,
   UNASSIGNED_REASON_SHORT,
+  fillFlags,
+  fillLeftIndex,
+  FILL_LEFT_REASON,
 } from "../data/attemptLegs.js";
 import { periodWindow } from "../data/period.js";
 import DriverModal from "./DriverModal.jsx";
@@ -97,6 +98,13 @@ function AttemptStatusBadge({ a }) {
 // Its own category, so every existing chart, rollup and leaderboard ignores it by
 // construction: they all enumerate the categories they count, and this isn't one.
 export const UNABLE_TO_TRACK = "unable_to_track";
+
+// Where the dispatch app got an attempt's driver (its `attributedFrom`, v1.99.0+).
+const ATTRIBUTION_SOURCE = {
+  plan: "8:30 plan",
+  holder: "all-day record",
+  timeline: "NuVizz history",
+};
 
 export const UNABLE_TO_TRACK_CONFIG = {
   category: UNABLE_TO_TRACK,
@@ -295,6 +303,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         setPeriodFeed({
           status: "ready",
           rows: r.rows,
+          fills: r.fills || [],
           capped: r.capped,
           totalDays: r.totalDays,
         });
@@ -613,6 +622,14 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     });
   }, [feedEnabled, periodFeed.rows, logIncidents, drivers, config.category]);
 
+  // Nights the dispatch app's driver lookup could not finish (its 10-call limit, a
+  // stop with no NuVizz id, a failed request), inside the period on screen.
+  const fillFlagsInPeriod = React.useMemo(() => {
+    const { start, end } = logPeriod.win;
+    return fillFlags(periodFeed.fills).filter((f) => f.date >= start && f.date <= end);
+  }, [periodFeed.fills, logPeriod.win]);
+  const fillLeft = React.useMemo(() => fillLeftIndex(periodFeed.fills), [periodFeed.fills]);
+
   // The period's attempts that still have nobody, and why — so "Unassigned" on the
   // chart is a list someone can work through rather than an unexplained bar.
   const unassignedFeed = React.useMemo(() => {
@@ -628,6 +645,8 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
           why: unassignedReason(r.attempt) || "not_in_plan",
           leadName,
           lead: leadName ? matchDriver(leadName, drivers) : null,
+          // The nightly lookup's own report, when it could not read this one.
+          fillLeft: fillLeft.get(`${r.delivered_date}|${r.attempt?.stopNbr}`) || null,
         };
       })
       .sort(
@@ -643,7 +662,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       periodFeed.rows.filter((a) => inWin(a.date)).length -
       feedRecords.filter((r) => inWin(r.delivered_date)).length;
     return { rows, byReason, withLead: rows.filter((r) => r.lead).length, copies };
-  }, [feedEnabled, feedRecords, periodFeed.rows, logPeriod.win, drivers]);
+  }, [feedEnabled, feedRecords, periodFeed.rows, logPeriod.win, drivers, fillLeft]);
 
   // What the analytics panel counts. On the feed tab that's the auto attempts plus
   // any hand-entered ones — but NOT the reassignment rows, which are the attribution
@@ -972,26 +991,10 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
 
   const feedRows = feedOrders;
 
-  // Open an attempt in the detail modal with every stop on its order. When only the
-  // "-1" copy made the list, the original stop is added too and opened first: the
-  // driver events live on the original, so its activity history is what answers
-  // "who had it".
-  const openAttempt = (a) => {
-    const legs = a.legRows || [a];
-    if (legs.some((l) => !isRedeliveryLeg(l.stopNbr))) {
-      setStopDetail({ row: a, legs });
-      return;
-    }
-    const original = {
-      stopNbr: baseStopNbr(a.stopNbr),
-      shipmentNbr: a.shipmentNbr,
-      businessName: a.businessName,
-      city: a.city,
-      state: a.state,
-      notOnList: true,
-    };
-    setStopDetail({ row: original, legs: [original, ...legs] });
-  };
+  // Open an attempt in the detail modal with every stop on its order. A duplicate
+  // order (-1/-2) listed without its original opens as itself: its original has
+  // nothing to do with it (Chad, 2026-10-01), so its history is not pulled in.
+  const openAttempt = (a) => setStopDetail({ row: a, legs: a.legRows || [a] });
   // Counts for the current view. On the feed-backed tab everything is scoped to
   // the selected day (manualForView is already date-filtered); elsewhere it's the
   // all-time manual total.
@@ -1489,11 +1492,29 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
             </div>
             {feedEnabled && periodFeed.status === "ready" && unassignedFeed.copies > 0 && (
               <div className="ff-bydriver-hint">
-                {unassignedFeed.copies} redelivery cop
-                {unassignedFeed.copies === 1 ? "y" : "ies"} (dispatch's "-1" stops) counted
-                once with the original stop — the same failed delivery, not another one.
-                Dispatch's own total counts {unassignedFeed.copies === 1 ? "it" : "them"}{" "}
+                {unassignedFeed.copies} duplicate order
+                {unassignedFeed.copies === 1 ? "" : "s"} (-1/-2) counted once with the original
+                stop — not another attempt, and never charged to the original&apos;s driver.
+                Dispatch&apos;s own total counts {unassignedFeed.copies === 1 ? "it" : "them"}{" "}
                 separately.
+              </div>
+            )}
+            {feedEnabled && fillFlagsInPeriod.length > 0 && (
+              <div className="ff-fill-flag" role="alert">
+                <strong>⚠ The nightly driver lookup couldn&apos;t finish</strong>
+                {fillFlagsInPeriod.map((f) => (
+                  <div key={f.date} className="ff-fill-flag-day">
+                    {fmtMDY(f.date)} — {f.left} attempt{f.left === 1 ? "" : "s"} still need a
+                    driver:{" "}
+                    {Object.entries(
+                      f.stops.reduce((m, x) => ((m[x.reason] = (m[x.reason] || 0) + 1), m), {}),
+                    )
+                      .map(([why, n]) => `${n} ${FILL_LEFT_REASON[why] || why}`)
+                      .join(", ")}
+                    . It reads at most {f.maxCalls} a night by design; assign these below, or ask
+                    for them to be looked up.
+                  </div>
+                ))}
               </div>
             )}
             {feedEnabled && unassignedFeed.rows.length > 0 && (
@@ -1679,7 +1700,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                 {a.legs > 1 && (
                   <span
                     className="ff-item-chip"
-                    title={`Dispatch gave this order ${a.legs} stop numbers (${a.legRows.map((l) => l.stopNbr).join(", ")}) — the "-1" copy carries the redelivery. It's one failed delivery, so it's counted once here; dispatch's own totals count each stop.`}
+                    title={`This order has ${a.legs - 1} duplicate order${a.legs === 2 ? "" : "s"} on the list (${a.legRows.map((l) => l.stopNbr).join(", ")}). A -1/-2 is a duplicate: it's counted once with the original here and never charged to the original's driver. Dispatch's own totals count each stop.`}
                   >
                     {a.legs} stops · 1 attempt
                   </span>
@@ -1699,7 +1720,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                   >
                     <option value="">
                       {a.originalDriverName
-                        ? `${a.originalDriverName} · from feed`
+                        ? `${a.originalDriverName} · ${ATTRIBUTION_SOURCE[a.attributedFrom] || "from feed"}`
                         : a.provisional
                           ? `Not yet attributed${a.currentDriverName ? ` · now on ${a.currentDriverName}` : ""}`
                           : "Unassigned — pick a driver"}
@@ -1864,7 +1885,7 @@ function UnassignedAttempts({ data, periodLabel, driverOptions, onOpen, onAssign
           <div className="ff-unassigned-explain">
             The evening scan names a driver by matching each attempt to the 8:30 AM route
             plan. These couldn't be matched: the stop wasn't on anyone's route that
-            morning, or only dispatch's "-1" copy of it is on the list. Open a PRO and load
+            morning, or only a duplicate order (-1/-2) is on the list. Open a PRO and load
             its activity history to see who had it, or take the lead where the feed has
             one — the driver who closed the stop out.
           </div>
@@ -1883,6 +1904,7 @@ function UnassignedAttempts({ data, periodLabel, driverOptions, onOpen, onAssign
               <span className="ff-unassigned-why" title={UNASSIGNED_REASON_TEXT[r.why]}>
                 {UNASSIGNED_REASON_SHORT[r.why]}
                 {r.leadName ? ` · closed out by ${r.leadName}` : ""}
+                {r.fillLeft ? ` · nightly lookup skipped (${FILL_LEFT_REASON[r.fillLeft] || r.fillLeft})` : ""}
               </span>
               <span className="ff-unassigned-act">
                 {r.lead && (

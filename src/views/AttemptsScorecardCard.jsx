@@ -1,6 +1,12 @@
 import React, { useState, useEffect } from "react";
 import { todayET, fetchAttempts } from "../data/attemptsFeed.js";
-import { groupAttemptLegs, unassignedReason, UNASSIGNED_REASON_SHORT } from "../data/attemptLegs.js";
+import {
+  groupAttemptLegs,
+  unassignedReason,
+  UNASSIGNED_REASON_SHORT,
+  fillFlags,
+  FILL_LEFT_REASON,
+} from "../data/attemptLegs.js";
 
 // Live "Delivery Attempts" card for the driver scorecard. Reads the dispatch
 // app's automated attempts feed (see attemptsFeed.js) and shows who ORIGINALLY
@@ -59,10 +65,9 @@ export default function AttemptsScorecardCard({ driver }) {
     };
   }, [date, driver]);
 
-  // One row per order: dispatch's "-1" copy of a failed stop is the same failure,
-  // and on its own it never matches the morning plan, so it read as a second,
-  // Unknown attempt (see attemptLegs.js). The manifest's own counts are per stop, so
-  // the Unknown count is taken from the grouped rows instead.
+  // One row per order: a -1/-2 is a duplicate order, not a second attempt, and is
+  // never charged to the original's driver (see attemptLegs.js). The manifest's own
+  // counts are per stop, so the Unknown count is taken from the grouped rows instead.
   const planMissing = !!data?.manifest?.planMissing;
   const attempts = React.useMemo(
     () =>
@@ -72,6 +77,8 @@ export default function AttemptsScorecardCard({ driver }) {
     [data, date, planMissing],
   );
   const count = attempts.length;
+  // The dispatch app's nightly driver lookup, when it could not read them all.
+  const [fillFlag] = fillFlags(data?.manifest?.fill ? [{ ...data.manifest.fill, date }] : []);
   const unknown = attempts.filter((a) => !(a.matched && a.originalDriverName));
   const unmatched = unknown.length;
   const whyUnknown = Object.entries(
@@ -164,6 +171,13 @@ export default function AttemptsScorecardCard({ driver }) {
             </div>
           )}
 
+          {status === "ready" && fillFlag && (
+            <div className="ff-fill-flag" role="alert" style={{ margin: "8px 14px" }}>
+              <strong>⚠ The nightly driver lookup couldn&apos;t finish:</strong> {fillFlag.left}{" "}
+              attempt{fillFlag.left === 1 ? "" : "s"} still need a driver (
+              {fillFlag.stops.map((x) => `${x.stopNbr} — ${FILL_LEFT_REASON[x.reason] || x.reason}`).join("; ")}).
+            </div>
+          )}
           {status === "ready" && (unmatched > 0 || planMissing) && (
             <div
               className="meta"
