@@ -70,16 +70,17 @@ export function readHash() {
 }
 
 // Merge `patch` into the hash. `push` adds a history entry (navigation); the default
-// replaces the current one (a filter). pushState/replaceState don't fire hashchange,
-// so subscribers are told directly.
-export function writeHash(patch, { push = false } = {}) {
+// replaces the current one (a filter), keeping that entry's history state. `state` is
+// the new entry's history state (the drill drawer counts its depth there).
+// pushState/replaceState don't fire hashchange, so subscribers are told directly.
+export function writeHash(patch, { push = false, state = null } = {}) {
   if (!hasWindow()) return;
   const next = buildHash(patchHash(readHash(), patch));
   const { pathname, search } = window.location;
   const url = `${pathname}${search}${next ? `#${next}` : ""}`;
   if (`#${next}` === window.location.hash || (!next && !window.location.hash)) return;
-  if (push) window.history.pushState(null, "", url);
-  else window.history.replaceState(null, "", url);
+  if (push) window.history.pushState(state, "", url);
+  else window.history.replaceState(window.history.state, "", url);
   for (const fn of listeners) fn();
 }
 

@@ -17,6 +17,7 @@ import {
   REPORT_OTHER,
   ANALYTICS_CATEGORY_IDS,
 } from "../src/data/analytics.js";
+import { buildBlend } from "../src/data/blend.js";
 import { rowTotal, chartTable } from "../src/views/kit/shape.js";
 import { categoriesFor, CHARTED6 } from "../src/data/categories.js";
 
@@ -56,7 +57,12 @@ const SNAPSHOT = {
   2026: [
     { month: 1, source: "live", total: 1, byCat: { forgotten_freight: 1 } },
     { month: 4, source: "live", total: 5, byCat: { damage: 1, missing: 1, forgotten_freight: 1, late: 1, attempts: 1 } },
-    { month: 5, source: "history", total: 3, byCat: { damage: 2, missing: 1 } },
+    // v0.20.1: months qualify on the Scorecard's eight categories everywhere (blend.js).
+    // May 2026 holds only a live compliment and complaint, so it is live now — reading 0
+    // of the six, as the Scorecard always read it — where v0.19.2 fell back to history
+    // (damage 2, missing 1). The one deliberate change; no production month has this
+    // shape (2026-10-07 pull: the six- and eight-category rules pick the same months).
+    { month: 5, source: "live", total: 0, byCat: {} },
   ],
 };
 
@@ -65,7 +71,7 @@ const nonZero = (byCat) => Object.fromEntries(Object.entries(byCat).filter(([, n
 test("monthly totals are v0.19.2's, month by month and category by category", () => {
   assert.deepEqual(availableYears(incidents, history), [2024, 2025, 2026]);
   for (const [year, months] of Object.entries(SNAPSHOT)) {
-    const got = buildMonthlyTotals(Number(year), incidents, history)
+    const got = buildMonthlyTotals(Number(year), buildBlend({ incidents, history }))
       .filter((m) => m.source !== "none")
       .map((m) => ({ month: m.month, source: m.source, total: m.total, byCat: nonZero(m.byCat) }));
     assert.deepEqual(got, months, year);
@@ -74,11 +80,11 @@ test("monthly totals are v0.19.2's, month by month and category by category", ()
 
 test("yearly totals are v0.19.2's", () => {
   assert.deepEqual(
-    buildYearlyTotals(incidents, history).map((y) => ({ year: y.year, total: y.total, source: y.source })),
+    buildYearlyTotals(availableYears(incidents, history), buildBlend({ incidents, history })).map((y) => ({ year: y.year, total: y.total, source: y.source })),
     [
       { year: 2024, total: 7, source: "history" },
       { year: 2025, total: 4, source: "blended" },
-      { year: 2026, total: 9, source: "blended" },
+      { year: 2026, total: 6, source: "blended" }, // 9 in v0.19.2: see May 2026 above
     ],
   );
 });
@@ -101,7 +107,7 @@ test("the restacked charts draw the same column totals", () => {
   const series = categoriesFor(CHARTED6).map((c) => ({ id: c.id, label: c.label }));
   assert.deepEqual([...ANALYTICS_CATEGORY_IDS].sort(), [...CHARTED6].sort());
   for (const year of [2024, 2025, 2026]) {
-    const months = buildMonthlyTotals(year, incidents, history);
+    const months = buildMonthlyTotals(year, buildBlend({ incidents, history }));
     const rows = months.map((m) => ({ name: m.monthName, ...m.byCat, source: m.source }));
     const table = chartTable({ rows, x: { key: "name", label: "Month" }, series, total: true, source: (r) => r.source });
     months.forEach((m, i) => {

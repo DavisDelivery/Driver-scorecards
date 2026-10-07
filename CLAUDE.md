@@ -44,11 +44,31 @@ seeding), catch it there deliberately and say why in a comment.
   scorecards, pickers) but **must not change any total**. Filter at the display layer, not
   in the aggregation that totals are derived from.
 - A `driver_id` with no roster row is never hidden — unknown must not mean invisible.
-- **A drill-down shows the same number as the thing you clicked.** Scorecard charts and
-  the driver popup are built from one month-by-month blend (live months from incidents,
-  every other month from `dds_history`). Anything that opens from a chart must reuse
-  that blend via `src/data/scorecardDetail.js` rather than recount — the driver popup
-  once disagreed with its own row because it was never given the history.
+- **Count by month through `src/data/blend.js`.** It is the one live/history blend: a
+  month with a live incident that counts (`countsTowardCharts`, COUNTED8) is served from
+  live incidents, every other month from `dds_history`, never both. The Scorecard, Trends,
+  Reports and the roster cards all count from it; don't write another copy. History is
+  read once, in `src/data/AnalyticsProvider.jsx` — screens get it, the blend and the
+  people index from `useAnalytics()`, and anything that writes history from this browser
+  must leave it re-read (`refreshHistory`; firebase.js also announces every history write).
+- **A drill-down shows the same number as the thing you clicked.** Every clickable number
+  opens the one drawer (`src/views/kit/DrillDrawer.jsx`) with the spec of what it counted
+  and the number it showed; `src/data/drill.js` resolves the spec from the same blend
+  (via `scorecardDetail.js`) and the drawer flags any difference. Never recount for a
+  drill-down — the driver popup once disagreed with its own row because it was never
+  given the history. `test/drill-reconcile.test.mjs` checks each screen's marks, and the
+  drivers opened from inside a drawer (`driverFromDrawer` carries only the count on the
+  row clicked, never the chart's totals). The clicked number is only checked against the
+  data it was counted from (`drillStamp`); a link opened after the data moved says so
+  plainly instead of raising the alarm.
+- **A failed read is never zero.** Incidents, the roster, reports and history are read with
+  the checked loaders in firebase.js (`{ data, error }`); a screen whose numbers depend on
+  a failed read shows the failure (`kit/LoadState.jsx`), not an empty chart. With the
+  offline cache on, Firestore answers an unreachable server from this browser's cache
+  instead of throwing — the loaders treat that as a failure too (`readResult` in
+  `loadState.js`), showing a cached copy only as an old one. Anything that splits by role
+  or hides inactive drivers waits for the roster (`RosterGate`). Startup only seeds the
+  roster when the roster read succeeded and came back empty.
 - File an incident under a month with `incidentYm()` / `incidentDateStr()` from
   `src/data/incidentDate.js`. Hand-copied date precedences drifted apart before.
 

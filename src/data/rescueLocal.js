@@ -21,7 +21,7 @@
 //   Pass { all: true } to consider every missing row (review carefully).
 // - Photo bytes were never kept in the local cache, so rescued entries come
 //   back without their photos (the entry itself, driver, dates, notes survive).
-import { getIncidents, saveIncident } from "./firebase.js";
+import { loadIncidentsChecked, saveIncident } from "./firebase.js";
 
 const CACHE_KEY = "dds_incidents";
 
@@ -40,8 +40,14 @@ export async function rescueLocalEntries(log = () => {}, opts = {}) {
   }
   log(`Old local cache found: ${local.length} rows. Checking against Firestore…`);
 
-  const cloud = await getIncidents();
-  const cloudIds = new Set(cloud.map((x) => x.id));
+  // A checked read: if the server didn't answer, every cached row would look missing,
+  // and a commit would write stale copies over the real entries. Stop instead.
+  const cloud = await loadIncidentsChecked();
+  if (cloud.error) {
+    log(`Couldn't read the incidents from Firestore (${cloud.error}) — nothing checked or imported. Try again once online.`);
+    return { localRows: local.length, candidates: 0, imported: 0, error: cloud.error };
+  }
+  const cloudIds = new Set(cloud.data.map((x) => x.id));
 
   const missing = local.filter((r) => r && r.id && !cloudIds.has(r.id));
   const candidates = all

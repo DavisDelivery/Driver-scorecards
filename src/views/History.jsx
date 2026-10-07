@@ -1,12 +1,15 @@
 import React, { useState, useRef } from "react";
 import { catColor, catLabel } from "../data/categories.js";
 import { saveHistoryBatch, deleteAllHistory } from "../data/firebase.js";
+import { useAnalytics } from "../data/AnalyticsProvider.jsx";
 import {
   parseHistoryFiles,
   matchHistoricalDriver,
 } from "../parsers/historyParser.js";
 
 export default function History({ drivers, onReportCreated }) {
+  // An import or a delete rewrites history, which the analytics read once per session.
+  const { refreshHistory } = useAnalytics();
   const [parsing, setParsing] = useState(false);
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef(null);
@@ -138,6 +141,8 @@ This OVERWRITES any existing rollup record for the same (driver × year × month
     } catch (err) {
       alert("Save failed: " + err.message);
     }
+    // Even a failed import may have written some months before it stopped.
+    await refreshHistory();
     setSaving(false);
   }
 
@@ -154,7 +159,12 @@ This OVERWRITES any existing rollup record for the same (driver × year × month
     )
       return;
     const result = await deleteAllHistory();
-    alert(`Deleted ${result.deleted} records.`);
+    await refreshHistory();
+    alert(
+      result.error
+        ? `Delete did not complete (${result.error}).${result.deleted ? ` ${result.deleted} records were deleted.` : ""}\n\nSome history remains — try again.`
+        : `Deleted ${result.deleted} records.`,
+    );
   }
 
   // ---- render: preview state -----------------------------------------------

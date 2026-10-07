@@ -3,16 +3,19 @@
 // A report's display `name` is editable, but starts_at / ends_at always hold the
 // true MIN / MAX incident date so analytics group by real dates, not the label.
 
-import { incidentDate, MONTH_NAMES } from "../data/analytics.js";
+import { MONTH_NAMES } from "../data/analytics.js";
+import { incidentDateStr } from "../data/incidentDate.js";
 
 // True min/max incident date across a report's incidents → { starts_at, ends_at }
-// (YYYY-MM-DD strings, or null when no dated incidents exist).
+// (YYYY-MM-DD strings, or null when no dated incidents exist). Each incident's date is
+// the one it is filed under everywhere else (incidentDateStr) — this used to read a
+// private copy of that precedence in analytics.js.
 export function reportDateBounds(incidents) {
   let min = null;
   let max = null;
   for (const inc of incidents) {
-    const d = incidentDate(inc);
-    if (!d || d.length < 10) continue;
+    const d = incidentDateStr(inc).slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) continue;
     if (!min || d < min) min = d;
     if (!max || d > max) max = d;
   }

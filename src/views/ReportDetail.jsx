@@ -12,6 +12,7 @@ import {
 import { fetchPhotosForProsBatch } from "../parsers/nuvizzClient.js";
 import { generatePhotoReport, downloadPdf } from "../reports/pdfGenerator.js";
 import { reportSpanLabel } from "../reports/reportNaming.js";
+import { useAnalytics } from "../data/AnalyticsProvider.jsx";
 import IncidentTable from "./IncidentTable.jsx";
 import IncidentEditor from "./IncidentEditor.jsx";
 
@@ -35,6 +36,9 @@ export default function ReportDetail({
   const [generating, setGenerating] = useState(false);
   const [pulling, setPulling] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0, pro: "" });
+  // Every rollup here rewrites history; the analytics read it once per session, so they
+  // are told to read it again (the Scorecard and Trends would otherwise lag).
+  const { refreshHistory } = useAnalytics();
 
   useEffect(() => {
     setName(report?.name || "");
@@ -76,6 +80,7 @@ export default function ReportDetail({
       // failure here still leaves the Re-sync button available.
       await rollupReportToHistory([], report.id);
       await deleteReport(report.id);
+      await refreshHistory();
       onDeleted?.();
     } catch (err) {
       alert(
@@ -94,6 +99,7 @@ export default function ReportDetail({
     setResyncing(true);
     try {
       await resyncReportRollup(report.id);
+      await refreshHistory();
       onReportUpdated?.();
       await load(true);
       alert("History totals re-synced from this report's current incidents.");
@@ -438,6 +444,7 @@ export default function ReportDetail({
             // A new row changes the report's totals and possibly its date range.
             try {
               await resyncReportRollup(report.id);
+              await refreshHistory();
             } catch (err) {
               alert(`The incident saved, but totals could not be re-synced: ${err.message}`);
             }

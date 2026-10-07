@@ -1,17 +1,19 @@
-import React, { useState, useEffect, useMemo } from "react";
-import { hiddenDriverIds } from "../data/drivers.js";
-import { getHistory } from "../data/firebase.js";
-import DriverModal from "./DriverModal.jsx";
-import CategoryDetail from "./CategoryDetail.jsx";
+import React, { useMemo } from "react";
 import { CategoryLeaderboard } from "./leaderboard.jsx";
 import AttemptsScorecardCard from "./AttemptsScorecardCard.jsx";
-import { countsTowardCharts } from "../data/liveHistoryBlend.js";
+import { useAnalytics } from "../data/AnalyticsProvider.jsx";
+import { driverBuckets } from "../data/blend.js";
+import { monthsOfYear } from "../data/scorecardDetail.js";
+import { driverDrill } from "../data/drill.js";
+import { nameOf } from "../data/people.js";
 import { incidentDateStr } from "../data/incidentDate.js";
 import { COUNTED8, categoriesFor } from "../data/categories.js";
 import { MONTH_PRESETS, monthWindow, currentYmET } from "../data/period.js";
 import { useHashState } from "../data/hashState.js";
 import PeriodBar, { usePeriodState } from "./kit/PeriodBar.jsx";
 import StatTile from "./kit/StatTile.jsx";
+import { AnalyticsGate, RosterGate, HistoryRefresh } from "./kit/LoadState.jsx";
+import { openDrill } from "./kit/drillNav.js";
 
 // Month names used throughout the scorecard.
 const MONTH_NAMES = [
@@ -28,7 +30,11 @@ const CHART_CAT_IDS = CHART_CATEGORIES.map((c) => c.id);
 const PERIOD_LABELS = { this: "MO", last: "LMO", 3: "3M", 6: "6M", 12: "12M", custom: "SEL" };
 
 // ─── Dashboard (default export) ──────────────────────────────────────────────
-export default function Dashboard({ incidents, drivers }) {
+export default function Dashboard() {
+  // Incidents, the roster and history come from the shared analytics state, and every
+  // count below from its blend — the same one each drill-down resolves against.
+  const data = useAnalytics();
+  const { incidents, drivers, history } = data;
   // The month picker, the period and the fault scope live in the URL hash under sc.*,
   // so they survive a tab switch and a link opens the same view. The default month is
   // the current month in Eastern time, so it doesn't jump ahead on the last evening of
@@ -37,37 +43,8 @@ export default function Dashboard({ incidents, drivers }) {
   const selectedMonth = /^\d{4}-\d{2}$/.test(monthParam) ? monthParam : currentYmET();
   const [faultParam, setFaultFilter] = useHashState("sc.fault", "all");
   const faultFilter = faultParam === "driver" ? "driver" : "all";
-  const [history, setHistory] = useState([]);
-  const [loading, setLoading] = useState(true);
-  // Drill-downs. `focus` is a driver opened from a chart (scoped to that chart's
-  // category); `openCat` is a whole chart opened for its full detail.
-  const [focus, setFocus] = useState(null); // { id, category }
-  const [openCat, setOpenCat] = useState(null); // { category, roleGroup }
   const [period, setPeriod] = usePeriodState("sc", MONTH_PRESETS, "this");
   const { p: periodSel, from: customFrom, to: customTo } = period;
-
-  // Load all history records on mount.
-  useEffect(() => {
-    (async () => {
-      setLoading(true);
-      const records = await getHistory();
-      setHistory(records || []);
-      setLoading(false);
-    })();
-  }, []);
-
-  // Escape closes the top-most drill-down: the driver popup if one is open on top of
-  // a chart's detail, otherwise the chart's detail.
-  useEffect(() => {
-    if (!focus && !openCat) return undefined;
-    const onKey = (e) => {
-      if (e.key !== "Escape") return;
-      if (focus) setFocus(null);
-      else setOpenCat(null);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [focus, openCat]);
 
   const selectedYear = selectedMonth.slice(0, 4);
 
@@ -103,115 +80,39 @@ export default function Dashboard({ incidents, drivers }) {
     return history.filter((r) => r.year === yr && r.month === mo);
   }, [history, selectedMonth]);
 
-  // All historical rollup records for the selected year (for YTD blending).
-  const yearHistory = useMemo(() => {
-    const yr = Number(selectedYear);
-    return history.filter((r) => r.year === yr);
-  }, [history, selectedYear]);
-
-  // Per-driver tallies from a blended monthly map: for every (year-month),
-  // live incidents win when any exist for that month; otherwise the historical
-  // rollup fills in. "period" = trailing N months ending at the selected month.
+  // Per-driver tallies from the blend (blend.js): for every month, live incidents win
+  // when any that count exist; otherwise the historical rollup fills in. Under
+  // Driver-fault scope the blend applies today's rule — a month qualifies on driver-fault
+  // rows — and the leaderboards and every drill-down get it from the same blend.
+  const blend = data.blend(faultFilter === "driver" ? "driver" : null);
   const scorecardData = useMemo(() => {
-    const map = new Map();
-    const blankCounts = () =>
-      Object.fromEntries(CHART_CATEGORIES.map((c) => [c.id, 0]));
-
-    for (const drv of drivers) {
-      map.set(drv.id, { driver: drv, month: blankCounts(), period: blankCounts(), ytd: blankCounts() });
-    }
-    const getOrCreate = (driverId, driverName) => {
-      let entry = map.get(driverId);
-      if (!entry) {
-        entry = {
-          driver: { id: driverId, name: driverName || "(unknown)", role: "driver" },
-          month: blankCounts(), period: blankCounts(), ytd: blankCounts(),
-        };
-        map.set(driverId, entry);
-      }
-      return entry;
-    };
-
-    // The window of months we need: the selected year (for YTD) plus the period. The
-    // period still counts back from THIS month, not the picked one, exactly as before;
-    // anchoring it to the month picker is a number change and ships on its own.
+    // The period still counts back from THIS month, not the picked one, exactly as
+    // before; anchoring it to the month picker is a number change and ships on its own.
     const periodMonths = monthWindow(periodSel, {
       anchor: currentYmET(),
       from: customFrom,
       to: customTo,
     }).months;
-    // Year to date means the year being looked at — the month picker's year, which is
-    // what selectedYear and yearHistory already use. This used to take the year of the
-    // OLDEST month in the trailing period, so any period reaching back over Jan 1 moved
-    // YTD to the previous year: with 12M selected in September 2026, "Year to Date"
-    // was quietly reporting 2025.
+    // Year to date means the year being looked at — the month picker's year. This used
+    // to take the year of the OLDEST month in the trailing period, so any period reaching
+    // back over Jan 1 moved YTD to the previous year: with 12M selected in September
+    // 2026, "Year to Date" was quietly reporting 2025.
     const ytdYear = Number(selectedYear);
-    const months = new Set(periodMonths);
-    for (let m = 1; m <= 12; m++) months.add(`${ytdYear}-${String(m).padStart(2, "0")}`);
-
-    // Live incidents grouped by month (all years).
-    //
-    // ONLY incidents that actually count are grouped here, because the presence of a
-    // month in this map is what makes live data supersede the rolled-up history for
-    // it. Grouping every incident meant a single row that contributes nothing — a
-    // compliment, an unable-to-track entry, a no-fault row, or (with the driver-fault
-    // filter on) anyone else's fault — silently replaced that month's entire history
-    // with nothing, and the month read as zero.
-    const liveByYm = {};
-    for (const inc of incidents) {
-      const ym = incidentDateStr(inc).slice(0, 7);
-      if (!months.has(ym)) continue;
-      if (!countsTowardCharts(inc, { categoryIds: CHART_CAT_IDS, faultFilter })) continue;
-      if (!liveByYm[ym]) liveByYm[ym] = [];
-      liveByYm[ym].push(inc);
-    }
-
-    // blend[ym] = Map("driverId|cat" -> count)
-    const blend = {};
-    for (const ym of months) {
-      const cell = new Map();
-      const live = liveByYm[ym] || [];
-      if (live.length > 0) {
-        for (const inc of live) {
-          // Already filtered by counts() when liveByYm was built.
-          const k = `${inc.driver_id}|${inc.category}`;
-          cell.set(k, (cell.get(k) || 0) + 1);
-          getOrCreate(inc.driver_id, inc.driver_name || inc.driver_raw);
-        }
-      } else {
-        const [y, m] = ym.split("-").map(Number);
-        for (const rec of history) {
-          if (rec.year !== y || rec.month !== m || !rec.driver_id) continue;
-          if (!CHART_CATEGORIES.some((c) => c.id === rec.category)) continue;
-          const k = `${rec.driver_id}|${rec.category}`;
-          cell.set(k, (cell.get(k) || 0) + (rec.count || 0));
-          getOrCreate(rec.driver_id, rec.driver_name);
-        }
-      }
-      blend[ym] = cell;
-    }
-
-    const addInto = (bucketName, ym) => {
-      for (const [k, n] of blend[ym] || []) {
-        const [did, cat] = k.split("|");
-        const entry = map.get(did);
-        if (entry) entry[bucketName][cat] = (entry[bucketName][cat] || 0) + n;
-      }
-    };
-
+    const ytdMonths = monthsOfYear(ytdYear);
     // month = the selected month; ytd = whole selected year; period = trailing N.
-    addInto("month", selectedMonth);
-    for (let m = 1; m <= 12; m++) addInto("ytd", `${ytdYear}-${String(m).padStart(2, "0")}`);
-    for (const ym of periodMonths) addInto("period", ym);
-
-    // The drill-downs read liveByYm/periodMonths/ytdYear straight from here, so the
-    // detail behind a chart is built from the very months that produced its numbers.
-    return { rows: Array.from(map.values()), liveByYm, periodMonths, ytdYear };
-  }, [drivers, incidents, history, selectedMonth, periodSel, customFrom, customTo, faultFilter]);
+    const rows = driverBuckets({
+      blend,
+      drivers,
+      buckets: { month: [selectedMonth], period: periodMonths, ytd: ytdMonths },
+      categoryIds: CHART_CAT_IDS,
+      nameOf: (id) => nameOf(data.people, id),
+    });
+    return { rows, periodMonths, ytdYear, ytdMonths };
+  }, [blend, drivers, data.people, selectedMonth, selectedYear, periodSel, customFrom, customTo]);
 
   const driverTotals = scorecardData.rows;
 
-  const hiddenDrivers = useMemo(() => hiddenDriverIds(drivers), [drivers]);
+  const hiddenDrivers = data.hidden;
 
   // Build sorted chart data for a single category. Deactivated drivers are
   // filtered out HERE, at the display layer, rather than out of driverTotals —
@@ -258,7 +159,8 @@ export default function Dashboard({ incidents, drivers }) {
     return { period, ytd };
   };
 
-  // What the drill-downs need to rebuild a chart's numbers exactly.
+  // What the drill-downs need to rebuild a chart's numbers exactly: the period and the
+  // year, each with the number the card showed for it.
   const periodLabelText =
     {
       this: "This Mo",
@@ -268,14 +170,32 @@ export default function Dashboard({ incidents, drivers }) {
       12: "Last 12 Mo",
       custom: "Custom range",
     }[periodSel] || "Period";
-  const scorecardCtx = {
-    liveByYm: scorecardData.liveByYm,
-    history,
-    periodMonths: scorecardData.periodMonths,
-    ytdYear: scorecardData.ytdYear,
-    periodLabel: periodLabelText,
-    categories: CHART_CATEGORIES,
-    categoryIds: CHART_CAT_IDS,
+  const fault = faultFilter === "driver" ? "driver" : null;
+  const scopesFor = (period, ytd) => [
+    { label: periodLabelText, months: scorecardData.periodMonths, expected: period },
+    { label: `YTD ${scorecardData.ytdYear}`, months: scorecardData.ytdMonths, expected: ytd },
+  ];
+  // A chart's title: every incident behind it, in its role group.
+  const openChart = (cat, roleGroup) => {
+    const t = chartTotalsFor(cat.id, roleGroup);
+    openDrill({
+      spec: { kind: "blend", categoryIds: [cat.id], roleGroup, fault },
+      scopes: scopesFor(t.period, t.ytd),
+      vocab: CHART_CAT_IDS,
+    });
+  };
+  // A row: the driver's record over the same period and year, opened on the chart's
+  // category with the row's two numbers, so the breadcrumb can step out to all of them.
+  const openRow = (id, cat) => {
+    const e = driverTotals.find((t) => t.driver.id === id);
+    const sum = (b) => CHART_CAT_IDS.reduce((n, c) => n + (e?.[b][c] || 0), 0);
+    openDrill(
+      driverDrill(
+        id,
+        { categoryIds: CHART_CAT_IDS, fault, scopes: scopesFor(sum("period"), sum("ytd")) },
+        { category: cat, x: [e?.period[cat] || 0, e?.ytd[cat] || 0] },
+      ),
+    );
   };
 
   // KPI: total incidents this month.
@@ -328,11 +248,8 @@ export default function Dashboard({ incidents, drivers }) {
     " " +
     selectedMonth.slice(0, 4);
 
-  if (loading && incidents.length === 0) {
-    return <div className="empty-state">Loading...</div>;
-  }
-
-  const dataBadge = isHistorical ? (
+  // Nothing to badge while the numbers can't be shown (AnalyticsGate says why).
+  const dataBadge = data.blocking ? null : isHistorical ? (
     <span
       style={{
         fontSize: 10,
@@ -389,110 +306,89 @@ export default function Dashboard({ incidents, drivers }) {
             title: isHistorical ? "Fault filter unavailable for historical rollup data" : "",
           }}
         />
+        <div className="toolbar-spacer" />
+        <HistoryRefresh />
       </div>
 
-      {/* Plain tiles: none of these numbers is a status, so none wears a status
-          colour — the old amber and red rules sat beside Late's and Damage's hues. */}
-      <div className="kpi-grid">
-        <StatTile label="This Month" value={totalThisMonth} sub="Total incidents" />
-        <StatTile label="Year to Date" value={totalYtd} sub={`${selectedYear} cumulative`} />
-        <StatTile
-          label="Driver Fault (Month)"
-          value={driverFaultCount === null ? "—" : driverFaultCount}
-          sub={driverFaultCount === null ? "Not tracked in history" : "Attributed to drivers"}
-        />
-        <StatTile
-          label="Exonerated (Month)"
-          value={exoneratedCount === null ? "—" : exoneratedCount}
-          sub={exoneratedCount === null ? "Not tracked in history" : "Preload / warehouse / vendor"}
-        />
-      </div>
-
-      <div className="section-head">
-        Drivers
-        <span className="section-hint">Click a chart for every incident behind it · click a name for that driver</span>
-      </div>
-      <div className="chart-grid">
-        {CHART_CATEGORIES.map((cat) => (
-          <CategoryLeaderboard
-            key={cat.id}
-            title={cat.title}
-            color={cat.color}
-            data={chartDataFor(cat.id, "driver")}
-            totals={chartTotalsFor(cat.id, "driver")}
-            onSelect={(id) => setFocus({ id, category: cat.id })}
-            onOpen={() => setOpenCat({ category: cat, roleGroup: "driver" })}
-            periodLabel={PERIOD_LABELS[periodSel] || "SEL"}
+      <AnalyticsGate>
+        {/* Plain tiles: none of these numbers is a status, so none wears a status
+            colour — the old amber and red rules sat beside Late's and Damage's hues. */}
+        <div className="kpi-grid">
+          <StatTile label="This Month" value={totalThisMonth} sub="Total incidents" />
+          <StatTile label="Year to Date" value={totalYtd} sub={`${selectedYear} cumulative`} />
+          <StatTile
+            label="Driver Fault (Month)"
+            value={driverFaultCount === null ? "—" : driverFaultCount}
+            sub={driverFaultCount === null ? "Not tracked in history" : "Attributed to drivers"}
           />
-        ))}
-      </div>
-
-      <AttemptsScorecardCard />
-
-      <div className="section-head" style={{ marginTop: 26 }}>Loaders</div>
-      <div className="chart-grid">
-        {CHART_CATEGORIES.filter(
-          (cat) => chartDataFor(cat.id, "loader").length > 0,
-        ).map((cat) => (
-          <CategoryLeaderboard
-            key={cat.id}
-            title={cat.title}
-            color={cat.color}
-            data={chartDataFor(cat.id, "loader")}
-            totals={chartTotalsFor(cat.id, "loader")}
-            onSelect={(id) => setFocus({ id, category: cat.id })}
-            onOpen={() => setOpenCat({ category: cat, roleGroup: "loader" })}
-            periodLabel={PERIOD_LABELS[periodSel] || "SEL"}
+          <StatTile
+            label="Exonerated (Month)"
+            value={exoneratedCount === null ? "—" : exoneratedCount}
+            sub={exoneratedCount === null ? "Not tracked in history" : "Preload / warehouse / vendor"}
           />
-        ))}
-        {CHART_CATEGORIES.every(
-          (cat) => chartDataFor(cat.id, "loader").length === 0,
-        ) && <div className="empty-state">No loader incidents on record.</div>}
-      </div>
+        </div>
 
-      {openCat && (
-        <CategoryDetail
-          category={openCat.category}
-          roleGroup={openCat.roleGroup}
-          scorecard={scorecardCtx}
-          drivers={drivers}
-          hiddenDrivers={hiddenDrivers}
-          onSelectDriver={(id, category) => setFocus({ id, category })}
-          onClose={() => setOpenCat(null)}
-        />
-      )}
+        <div className="section-head">
+          Drivers
+          <span className="section-hint">Click a chart for every incident behind it · click a name for that driver</span>
+        </div>
+        {/* The Drivers / Loaders split and the hidden inactive rows need the roster. */}
+        <RosterGate>
+          <div className="chart-grid">
+            {CHART_CATEGORIES.map((cat) => (
+              <CategoryLeaderboard
+                key={cat.id}
+                title={cat.title}
+                color={cat.color}
+                data={chartDataFor(cat.id, "driver")}
+                totals={chartTotalsFor(cat.id, "driver")}
+                onSelect={(id) => openRow(id, cat.id)}
+                onOpen={() => openChart(cat, "driver")}
+                periodLabel={PERIOD_LABELS[periodSel] || "SEL"}
+              />
+            ))}
+          </div>
+        </RosterGate>
 
-      {/* Rendered after the chart detail so a driver opened from inside it sits on top. */}
-      {focus && (
-        <DriverModal
-          driver={
-            drivers.find((d) => d.id === focus.id) ||
-            (() => {
-              // A driver_id with no roster row is still shown — CLAUDE.md: unknown
-              // must never mean invisible. Use the name the data carries for it.
-              const e = driverTotals.find((t) => t.driver.id === focus.id);
-              return { id: focus.id, name: e?.driver.name || focus.id, role: "driver" };
-            })()
-          }
-          incidents={incidents.filter((inc) => inc.driver_id === focus.id)}
-          history={history.filter((r) => r.driver_id === focus.id)}
-          scorecard={scorecardCtx}
-          initialCategory={focus.category}
-          onClose={() => setFocus(null)}
-        />
-      )}
+        <AttemptsScorecardCard />
 
-      {incidents.length === 0 && history.length === 0 && (
-        <div style={{ marginTop: 30 }} className="card">
-          <div className="card-body">
-            <div className="empty-state">
-              No data yet. Upload historical spreadsheets on the{" "}
-              <strong>History Import</strong> tab, or create your first weekly
-              report on <strong>New Report</strong>.
+        {!data.rosterBlocking && (
+          <>
+            <div className="section-head" style={{ marginTop: 26 }}>Loaders</div>
+            <div className="chart-grid">
+              {CHART_CATEGORIES.filter(
+                (cat) => chartDataFor(cat.id, "loader").length > 0,
+              ).map((cat) => (
+                <CategoryLeaderboard
+                  key={cat.id}
+                  title={cat.title}
+                  color={cat.color}
+                  data={chartDataFor(cat.id, "loader")}
+                  totals={chartTotalsFor(cat.id, "loader")}
+                  onSelect={(id) => openRow(id, cat.id)}
+                  onOpen={() => openChart(cat, "loader")}
+                  periodLabel={PERIOD_LABELS[periodSel] || "SEL"}
+                />
+              ))}
+              {CHART_CATEGORIES.every(
+                (cat) => chartDataFor(cat.id, "loader").length === 0,
+              ) && <div className="empty-state">No loader incidents on record.</div>}
+            </div>
+          </>
+        )}
+
+        {incidents.length === 0 && history.length === 0 && (
+          <div style={{ marginTop: 30 }} className="card">
+            <div className="card-body">
+              <div className="empty-state">
+                No data yet. Upload historical spreadsheets on the{" "}
+                <strong>History Import</strong> tab, or create your first weekly
+                report on <strong>New Report</strong>.
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </AnalyticsGate>
     </div>
   );
 }

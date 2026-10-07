@@ -1,21 +1,16 @@
-// Shared analytics helpers for the Reports redesign (Phase 6).
+// Shared analytics helpers for the Reports tab.
 //
 // RECONCILIATION CONTRACT (do not drift):
-//   Monthly/Yearly rollups here MUST match the Trends tab and the Dashboard.
-//   - Trends reads the data-history rollup directly (history-only).
-//   - Dashboard blends live incidents with the history rollup: for each month it
-//     uses LIVE incidents where any exist, otherwise the history rollup. The live
-//     count is taken over incidents that have a driver_id AND a tracked category —
-//     exactly the filter the server-side /rollup-report uses to populate history.
-//   We replicate that same blend + filter here so Reports' monthly/yearly numbers
-//     reconcile with both views. (For a month that has live incidents, history was
-//     already populated by the save-time rollup with the same count, so the
-//     history-only Trends view agrees too.)
+//   Monthly and yearly totals here come from the one live/history blend (blend.js), the
+//   same blend the Scorecard and Trends count from, so the three can't disagree about a
+//   month. A month is live when it holds a live incident that counts; otherwise it is
+//   served from the history rollup. They used to carry three inline copies of that rule.
 //
 //   The category set is the registry's CHARTED6 — the same six Trends charts.
 //   Returns/Traces/Complaints/Compliments are intentionally excluded from these
-//   rollups, matching Trends.
+//   totals, matching Trends.
 import { CHARTED6, categoriesFor } from "./categories.js";
+import { incidentYm } from "./incidentDate.js";
 
 // The six, in the registry's validated stack order (categories.js owns the colours).
 export const ANALYTICS_CATEGORIES = categoriesFor(CHARTED6).map(({ id, label, color }) => ({
@@ -33,33 +28,6 @@ export const MONTH_NAMES = [
 
 const TRACKED = new Set(ANALYTICS_CATEGORY_IDS);
 
-// Representative date for an incident, using the same precedence as the views
-// and the server rollup (delivered → actual → return → trace → ship → week → ingested).
-export function incidentDate(inc) {
-  const d =
-    inc.delivered_date ||
-    inc.actual_delivery ||
-    inc.return_date ||
-    inc.trace_date ||
-    inc.ship_date ||
-    inc.week_ending ||
-    inc.ingested_at ||
-    "";
-  return d && d.length >= 10 ? d.slice(0, 10) : d || "";
-}
-
-export function incidentYearMonth(inc) {
-  const d = incidentDate(inc);
-  if (!d || d.length < 7) return null;
-  return { year: Number(d.slice(0, 4)), month: Number(d.slice(5, 7)) };
-}
-
-// Does a live incident count toward the tracked rollup? (matches /rollup-report:
-// has a driver, a tracked category, and is NOT flagged "do not fault driver")
-function counts(inc) {
-  return !!inc.driver_id && !inc.no_fault && TRACKED.has(inc.category);
-}
-
 const blankByCat = () => Object.fromEntries(ANALYTICS_CATEGORY_IDS.map((id) => [id, 0]));
 
 // All years present across live incidents + history rollup, ascending.
@@ -67,50 +35,28 @@ export function availableYears(incidents, history) {
   const set = new Set();
   for (const r of history) if (r.year) set.add(Number(r.year));
   for (const inc of incidents) {
-    const ym = incidentYearMonth(inc);
-    if (ym) set.add(ym.year);
+    const ym = incidentYm(inc);
+    if (ym) set.add(Number(ym.slice(0, 4)));
   }
   return Array.from(set).sort((a, b) => a - b);
 }
 
-// Group the tracked live incidents of a given year by month (1..12).
-function liveByMonthForYear(year, incidents) {
-  const byMonth = {};
-  for (const inc of incidents) {
-    if (!counts(inc)) continue;
-    const ym = incidentYearMonth(inc);
-    if (!ym || ym.year !== year) continue;
-    (byMonth[ym.month] = byMonth[ym.month] || []).push(inc);
-  }
-  return byMonth;
-}
-
-// Per-month category totals for a year, blending live + history exactly as Dashboard.
+// Per-month category totals for a year, from the blend.
 // Returns [{ month, monthName, byCat, total, source }] for months 1..12.
-export function buildMonthlyTotals(year, incidents, history) {
-  const live = liveByMonthForYear(year, incidents);
-
-  // Pre-index history rollup for the year by month.
-  const histByMonth = {};
-  for (const rec of history) {
-    if (Number(rec.year) !== year || !TRACKED.has(rec.category)) continue;
-    const m = Number(rec.month);
-    (histByMonth[m] = histByMonth[m] || []).push(rec);
-  }
-
+//   source  "live" | "history" | "none" — a month with history for none of the six is
+//           "none", so a chart draws it as a gap
+export function buildMonthlyTotals(year, blend) {
   const rows = [];
   for (let m = 1; m <= 12; m++) {
+    const ym = `${year}-${String(m).padStart(2, "0")}`;
     const byCat = blankByCat();
     let source = "none";
-    if (live[m] && live[m].length > 0) {
+    if (blend.isLive(ym)) {
       source = "live";
-      for (const inc of live[m]) byCat[inc.category] += 1;
-    } else if (histByMonth[m]) {
+    } else if ([...blend.historyCategories(ym, { attributedOnly: false })].some((c) => TRACKED.has(c))) {
       source = "history";
-      for (const rec of histByMonth[m]) {
-        byCat[rec.category] = (byCat[rec.category] || 0) + (Number(rec.count) || 0);
-      }
     }
+    if (source !== "none") for (const id of ANALYTICS_CATEGORY_IDS) byCat[id] = blend.companyCell(ym, id);
     const total = ANALYTICS_CATEGORY_IDS.reduce((s, id) => s + byCat[id], 0);
     rows.push({ month: m, monthName: MONTH_NAMES[m - 1], byCat, total, source });
   }
@@ -118,10 +64,9 @@ export function buildMonthlyTotals(year, incidents, history) {
 }
 
 // Per-year category totals (sum of the blended monthly totals), ascending by year.
-export function buildYearlyTotals(incidents, history) {
-  const years = availableYears(incidents, history);
+export function buildYearlyTotals(years, blend) {
   return years.map((year) => {
-    const months = buildMonthlyTotals(year, incidents, history);
+    const months = buildMonthlyTotals(year, blend);
     const byCat = blankByCat();
     let total = 0;
     let anyLive = false;

@@ -1,11 +1,10 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import {
-  getReports,
-  getHistory,
   deleteIncidentsForReport,
   deleteReport,
   rollupReportToHistory,
 } from "../data/firebase.js";
+import { useAnalytics } from "../data/AnalyticsProvider.jsx";
 import {
   ANALYTICS_CATEGORIES,
   ANALYTICS_CATEGORY_IDS,
@@ -23,6 +22,7 @@ import { reportSpanLabel, reportStartLabel } from "../reports/reportNaming.js";
 import { useHashState } from "../data/hashState.js";
 import { csvName } from "../data/csv.js";
 import ReportDetail from "./ReportDetail.jsx";
+import { AnalyticsGate, LoadError } from "./kit/LoadState.jsx";
 import ChartCard from "./kit/ChartCard.jsx";
 import StackedColumns from "./kit/charts/StackedColumns.jsx";
 import { chartTable } from "./kit/shape.js";
@@ -117,14 +117,15 @@ function CatTh({ c }) {
 
 export default function Reports({
   drivers,
-  incidents = [],
   onNewReport,
   initialReportId,
   onCleared,
 }) {
-  const [reports, setReports] = useState([]);
-  const [history, setHistory] = useState([]);
-  const [loading, setLoading] = useState(true);
+  // Reports, incidents and history come from the shared analytics state: one read each,
+  // a failed read shown as a failure, and the monthly/yearly totals from the same blend
+  // the Scorecard and Trends count from.
+  const data = useAnalytics();
+  const { reports, incidents, history } = data;
   const [selectedId, setSelectedId] = useState(initialReportId || null);
 
   // Granularity, year and month live in the hash (rp.*), so they survive a tab switch
@@ -141,17 +142,11 @@ export default function Reports({
 
   const searchRef = useRef(null);
 
+  // After a delete or a re-sync: the report list, the incidents it took with it, and the
+  // history its rollup changed.
   const refresh = async () => {
-    setLoading(true);
-    const [reps, hist] = await Promise.all([getReports(), getHistory()]);
-    setReports(reps);
-    setHistory(hist || []);
-    setLoading(false);
+    await Promise.all([data.reload.reports?.(), data.reload.incidents?.(), data.refreshHistory()]);
   };
-
-  useEffect(() => {
-    refresh();
-  }, []);
 
   useEffect(() => {
     if (initialReportId) {
@@ -248,14 +243,15 @@ export default function Reports({
     }));
   }, [weeklyAll, selectedYear]);
 
-  // ── Monthly / Yearly models (reconcile with Trends + Dashboard) ─────────────
+  // ── Monthly / Yearly models (the shared blend: reconcile with Trends + Dashboard) ──
+  const blend = data.blend(null);
   const monthly = useMemo(
-    () => (selectedYear ? buildMonthlyTotals(selectedYear, incidents, history) : []),
-    [selectedYear, incidents, history],
+    () => (selectedYear ? buildMonthlyTotals(selectedYear, blend) : []),
+    [selectedYear, blend],
   );
   const prevMonthly = useMemo(
-    () => (selectedYear ? buildMonthlyTotals(selectedYear - 1, incidents, history) : []),
-    [selectedYear, incidents, history],
+    () => (selectedYear ? buildMonthlyTotals(selectedYear - 1, blend) : []),
+    [selectedYear, blend],
   );
   const monthlyRows = useMemo(() => {
     const rows = monthly.filter((m) => m.total > 0 || m.source !== "none");
@@ -284,10 +280,7 @@ export default function Reports({
     });
   }, [monthly, prevMonthly, tracked, selectedYear]);
 
-  const yearly = useMemo(
-    () => buildYearlyTotals(incidents, history),
-    [incidents, history],
-  );
+  const yearly = useMemo(() => buildYearlyTotals(years, blend), [years, blend]);
   const yearlyRows = useMemo(() => {
     return yearly.map((y, i) => ({
       ...y,
@@ -401,7 +394,12 @@ export default function Reports({
   }
 
   const noData =
-    !loading && reports.length === 0 && history.length === 0 && incidents.length === 0;
+    !data.historyLoading &&
+    !data.blocking &&
+    !(data.readErrors.reports && !data.readErrors.reports.stale) &&
+    reports.length === 0 &&
+    history.length === 0 &&
+    incidents.length === 0;
 
   return (
     <div>
@@ -476,41 +474,51 @@ export default function Reports({
             </div>
           </div>
         </div>
-      ) : loading ? (
+      ) : gran === "weekly" ? (
+        // The weekly list reads reports and live incidents only, so it still shows if
+        // history failed; it doesn't without the reports themselves.
+        <AnalyticsGate history={false}>
+          {data.readErrors.reports && !data.readErrors.reports.stale ? (
+            <LoadError what="reports" message={data.readErrors.reports.message} retry={data.reload.reports} />
+          ) : (
+            <WeeklyView
+              rows={weeklyRows}
+              chart={weeklyChart}
+              kbIndex={kbIndex}
+              onOpen={(id) => setSelectedId(id)}
+              onDelete={handleDelete}
+              onSort={onSort}
+              sortArrow={sortArrow}
+            />
+          )}
+        </AnalyticsGate>
+      ) : data.historyLoading ? (
         <>
           <ChartSkeleton />
-          <TableSkeleton rows={7} cols={gran === "weekly" ? 9 : 4} />
+          <TableSkeleton rows={7} cols={4} />
         </>
-      ) : gran === "weekly" ? (
-        <WeeklyView
-          rows={weeklyRows}
-          chart={weeklyChart}
-          kbIndex={kbIndex}
-          onOpen={(id) => setSelectedId(id)}
-          onDelete={handleDelete}
-          onSort={onSort}
-          sortArrow={sortArrow}
-        />
-      ) : gran === "monthly" ? (
-        <MonthlyView
-          year={selectedYear}
-          rows={monthlyRows}
-          chart={monthlyChart}
-          expandedKey={expandedKey}
-          setExpandedKey={setExpandedKey}
-          reportsInMonth={reportsInMonth}
-          onOpen={(id) => setSelectedId(id)}
-        />
       ) : (
-        <YearlyView
-          rows={yearlyRows}
-          chart={yearlyChart}
-          expandedKey={expandedKey}
-          setExpandedKey={setExpandedKey}
-          monthlyForYear={(y) =>
-            buildMonthlyTotals(y, incidents, history).filter((m) => m.total > 0)
-          }
-        />
+        <AnalyticsGate>
+          {gran === "monthly" ? (
+            <MonthlyView
+              year={selectedYear}
+              rows={monthlyRows}
+              chart={monthlyChart}
+              expandedKey={expandedKey}
+              setExpandedKey={setExpandedKey}
+              reportsInMonth={reportsInMonth}
+              onOpen={(id) => setSelectedId(id)}
+            />
+          ) : (
+            <YearlyView
+              rows={yearlyRows}
+              chart={yearlyChart}
+              expandedKey={expandedKey}
+              setExpandedKey={setExpandedKey}
+              monthlyForYear={(y) => buildMonthlyTotals(y, blend).filter((m) => m.total > 0)}
+            />
+          )}
+        </AnalyticsGate>
       )}
     </div>
   );
