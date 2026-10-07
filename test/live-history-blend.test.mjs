@@ -8,7 +8,7 @@
 // then rendered as zero on both Trends and the Scorecard.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { countsTowardCharts } from "../src/data/liveHistoryBlend.js";
+import { countsTowardCharts, historyCoverage } from "../src/data/liveHistoryBlend.js";
 
 const CHARTED = ["damage", "late", "missing", "misdelivery", "attempts", "forgotten_freight"];
 const inc = (over = {}) => ({ driver_id: "d1", category: "damage", fault: "driver", ...over });
@@ -55,4 +55,29 @@ test("junk is rejected rather than counted", () => {
   assert.equal(countsTowardCharts(undefined, { categoryIds: CHARTED }), false);
   assert.equal(countsTowardCharts(inc(), {}), false);
   assert.equal(countsTowardCharts(inc()), false);
+});
+
+test("a history month tracks only what its source carried that year", () => {
+  // The production shape: 2023 backfill is lost/missing only; 2026 has a backfill
+  // (Jan–Mar) without late, and report rollups (Apr on) without FF.
+  const h = [
+    { year: 2023, month: 1, category: "missing", source: "backfill", count: 2 },
+    { year: 2023, month: 5, category: "missing", source: "backfill", count: 1 },
+    { year: 2026, month: 1, category: "damage", source: "backfill", count: 3 },
+    { year: 2026, month: 2, category: "forgotten_freight", source: "backfill", count: 4 },
+    { year: 2026, month: 4, category: "late", source: "report", count: 9 },
+    { year: 2026, month: 4, category: "damage", source: "report", count: 1 },
+    { year: 2026, month: 4, category: "return", source: "report", count: 1 },
+  ];
+  const tracked = historyCoverage(h, CHARTED);
+  // A month inherits its source's whole year: May 2023 tracks missing even if a month
+  // happened to have none of it, and nothing else.
+  assert.deepEqual([...tracked("2023-01")], ["missing"]);
+  assert.deepEqual([...tracked("2023-05")], ["missing"]);
+  // Jan 2026 is backfill: damage and FF yes, late no (only reports carry it).
+  assert.deepEqual([...tracked("2026-01")].sort(), ["damage", "forgotten_freight"]);
+  // Apr 2026 is a report rollup: late and damage; never return (not charted).
+  assert.deepEqual([...tracked("2026-04")].sort(), ["damage", "late"]);
+  // A month with no history at all tracks nothing.
+  assert.equal(tracked("2025-06").size, 0);
 });

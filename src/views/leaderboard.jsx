@@ -6,6 +6,9 @@ import React from "react";
 //
 // Rows are real buttons: they were clickable divs with nothing but a hover tint to
 // say so, which is why clicking a name read as a feature that didn't exist.
+//
+// The bars and swatches carry the category colour; every number stays in ink. A
+// figure in Late's or Attempts' colour was barely readable on white.
 
 export function LeaderRow({ rank, row, color, max, onSelect, periodLabel, totalLabel }) {
   const total = row.ytd || 0;
@@ -32,7 +35,7 @@ export function LeaderRow({ rank, row, color, max, onSelect, periodLabel, totalL
         <span className="lb-seg lb-seg-ytd" style={{ width: `${pct(rest)}%`, background: color }} />
       </span>
       <span className="lb-nums">
-        <b style={{ color: row.month ? color : undefined }} className={row.month ? "" : "lb-zero"}>
+        <b className={row.month ? "" : "lb-zero"}>
           {row.month || 0}
         </b>
         <i>/</i>
@@ -83,7 +86,7 @@ export function CategoryLeaderboard({
         )}
         <div className="cc-count">
           <span className="cc-key">
-            <i style={{ background: color }} /> {periodLabel} <b style={{ color }}>{periodTotal}</b>
+            <i style={{ background: color }} /> {periodLabel} <b>{periodTotal}</b>
           </span>
           <span className="cc-key">
             <i className="cc-key-ytd" style={{ background: color }} /> {totalLabel} <b>{ytdTotal}</b>

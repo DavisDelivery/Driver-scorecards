@@ -35,6 +35,7 @@ import {
 import { db } from "./firebaseApp.js";
 import { reportDateBounds, reportSpanLabel } from "../reports/reportNaming.js";
 import { slimPhotoMeta, approxDocBytes } from "./photoDocs.js";
+import { COUNTED8 } from "./categories.js";
 
 // All collections are dds_-prefixed: davismarginiq is a shared Davis Firebase
 // project, and the prefix guarantees this app can never collide with another
@@ -235,10 +236,16 @@ export function countPendingIncidents() {
 // when the queue is empty, so a timeout means the queue is stuck.
 export async function hasStuckWrites(timeoutMs = 4_000) {
   try {
-    return await Promise.race([
-      waitForPendingWrites(db).then(() => false),
-      new Promise((res) => setTimeout(() => res(true), timeoutMs)),
-    ]);
+    const drained = waitForPendingWrites(db).then(() => false);
+    const within = (ms) =>
+      Promise.race([drained, new Promise((res) => setTimeout(() => res(true), ms))]);
+    if (!(await within(timeoutMs))) return false;
+    // The window can lapse with nothing queued at all when the page is busy: a link
+    // straight into All Incidents renders 1,000+ rows at startup and holds the main
+    // thread past it, which read as "1 entry saved on this device only". A second
+    // window, started once the page is free again, tells a busy page from a stuck
+    // queue — and a queue that really is stuck still reports, just 4s later.
+    return await within(timeoutMs);
   } catch {
     return false;
   }
@@ -729,16 +736,9 @@ export async function deleteReport(id) {
 // (per driver/month/category counts, per-source counts, and idempotent per-report
 // contribution snapshots) behaves identically. Stored as ONE doc, app_meta/history.
 
-const TRACKED = new Set([
-  "forgotten_freight",
-  "damage",
-  "missing",
-  "misdelivery",
-  "attempts",
-  "late",
-  "complaint",
-  "compliment",
-]);
+// The eight categories the rollup tracks — the registry's COUNTED8, so the screens that
+// decide which months are live can never disagree with what the rollup wrote.
+const TRACKED = new Set(COUNTED8);
 
 const compositeKey = (year, month, driverId, category) =>
   `${year}:${String(month).padStart(2, "0")}:${driverId}:${category}`;

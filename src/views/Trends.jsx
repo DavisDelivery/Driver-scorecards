@@ -1,46 +1,41 @@
 import React from "react";
-import {
-  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend,
-} from "recharts";
 import { getHistory } from "../data/firebase.js";
 import DriverModal from "./DriverModal.jsx";
 import { CategoryLeaderboard, LeaderRow } from "./leaderboard.jsx";
-import { countsTowardCharts } from "../data/liveHistoryBlend.js";
+import { countsTowardCharts, historyCoverage } from "../data/liveHistoryBlend.js";
 import { incidentDateStr } from "../data/incidentDate.js";
+import { CHARTED6, categoriesFor } from "../data/categories.js";
+import { nowET } from "../data/period.js";
+import { useHashState } from "../data/hashState.js";
+import { csvName } from "../data/csv.js";
+import ChartCard from "./kit/ChartCard.jsx";
+import StackedColumns from "./kit/charts/StackedColumns.jsx";
+import EmphasisBars from "./kit/charts/EmphasisBars.jsx";
+import { chartTable } from "./kit/shape.js";
+import { BRAND } from "./kit/chartTheme.js";
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const CATS = [
-  { id: "forgotten_freight", title: "Forgotten Freight", color: "#fb923c" },
-  { id: "damage",            title: "Damages",           color: "#dc3545" },
-  { id: "missing",           title: "Lost / Missing",    color: "#a855f7" },
-  { id: "misdelivery",       title: "Misdeliveries",     color: "#f472b6" },
-  { id: "attempts",          title: "Attempts",          color: "#14b8a6" },
-  { id: "late",              title: "Lates",             color: "#facc15" },
-];
+// The six charted categories, in the registry's validated stack order and colours.
+const CATS = categoriesFor(CHARTED6).map(({ id, title, color }) => ({ id, title, color }));
 const CAT_IDS = CATS.map((c) => c.id);
+const SERIES = CATS.map((c) => ({ id: c.id, label: c.title, color: c.color }));
 
 // The shared month rule, so Trends files every incident under the same month as the
 // Scorecard and the driver detail.
 const incidentYm = (inc) => incidentDateStr(inc).slice(0, 7);
 
-const tooltipStyle = {
-  contentStyle: {
-    background: "#fff", border: "1px solid #dde3ec", borderRadius: 6,
-    fontFamily: "JetBrains Mono", fontSize: 11,
-    boxShadow: "0 2px 8px rgba(17,24,39,.1)",
-  },
-  cursor: { fill: "rgba(30,91,146,.06)" },
-};
-const axisTick = { fill: "#94a3b8", fontSize: 10, fontFamily: "JetBrains Mono" };
-const legendStyle = {
-  fontFamily: "JetBrains Mono", fontSize: 10,
-  textTransform: "uppercase", letterSpacing: ".08em",
-};
+const VIEWS = ["overview", "yoy", "leaders", "driver"];
 
 export default function Trends({ drivers, incidents = [] }) {
   const [history, setHistory] = React.useState([]);
-  const [tab, setTab] = React.useState("overview");
-  const [year, setYear] = React.useState(new Date().getFullYear());
+  // Sub-tab, year and the Per Driver pick live in the hash (tr.*), so they survive a
+  // tab switch and travel with a link.
+  const thisYear = nowET().getFullYear();
+  const [viewParam, setTab] = useHashState("tr.view", "overview");
+  const tab = VIEWS.includes(viewParam) ? viewParam : "overview";
+  const [yearParam, setYearParam] = useHashState("tr.y", String(thisYear));
+  const year = Number(yearParam) || thisYear;
+  const setYear = (y) => setYearParam(String(y));
   const [focusId, setFocusId] = React.useState(null);
   const [driverQuery, setDriverQuery] = React.useState("");
 
@@ -68,9 +63,12 @@ export default function Trends({ drivers, incidents = [] }) {
     }
     const cells = {};
     const names = new Map();
+    // Which source served each month — shown in the table views, never used to count.
+    const sourceByYm = {};
     const ensure = (ym) => (cells[ym] = cells[ym] || new Map());
     for (const [ym, list] of Object.entries(liveByYm)) {
       const cell = ensure(ym);
+      sourceByYm[ym] = "live";
       for (const inc of list) {
         // Already filtered by countsTowardCharts() when liveByYm was built.
         const k = `${inc.driver_id}|${inc.category}`;
@@ -83,25 +81,26 @@ export default function Trends({ drivers, incidents = [] }) {
       const ym = `${rec.year}-${String(rec.month).padStart(2, "0")}`;
       if (liveByYm[ym]) continue; // live supersedes
       const cell = ensure(ym);
+      sourceByYm[ym] = "history";
       const k = `${rec.driver_id}|${rec.category}`;
       cell.set(k, (cell.get(k) || 0) + (rec.count || 0));
       if (!names.has(rec.driver_id)) names.set(rec.driver_id, rec.driver_name || rec.driver_id);
     }
     for (const d of drivers) names.set(d.id, d.name);
-    return { cells, names };
+    return { cells, names, sourceByYm, tracked: historyCoverage(history, CAT_IDS) };
   }, [incidents, history, drivers]);
 
   const years = React.useMemo(() => {
     const ys = new Set(Object.keys(cube.cells).map((ym) => Number(ym.slice(0, 4))));
-    ys.add(new Date().getFullYear());
+    ys.add(thisYear);
     return [...ys].sort();
-  }, [cube]);
+  }, [cube, thisYear]);
 
   // ---- Overview: monthly stacked totals for the selected year ----
   const monthly = React.useMemo(() => {
     return MONTHS.map((label, i) => {
       const ym = `${year}-${String(i + 1).padStart(2, "0")}`;
-      const row = { month: label };
+      const row = { month: label, source: cube.sourceByYm[ym] || "none" };
       let total = 0;
       for (const c of CATS) row[c.id] = 0;
       for (const [k, n] of cube.cells[ym] || []) {
@@ -110,6 +109,14 @@ export default function Trends({ drivers, incidents = [] }) {
         total += n;
       }
       row.total = total;
+      // A month neither live nor in history is a gap in the chart and "—" in its table.
+      if (row.source === "none") for (const c of CATS) row[c.id] = null;
+      // So is a category a history month never tracked (2023 holds lost/missing only):
+      // its 0 would read as "none happened".
+      if (row.source === "history") {
+        const tracked = cube.tracked(ym);
+        for (const c of CATS) if (!tracked.has(c.id)) row[c.id] = null;
+      }
       return row;
     });
   }, [cube, year]);
@@ -117,9 +124,14 @@ export default function Trends({ drivers, incidents = [] }) {
   // ---- YoY: per-year stacked totals ----
   const yoy = React.useMemo(() => {
     const byYear = {};
+    const srcByYear = {};
+    const trackedByYear = {};
     for (const [ym, cell] of Object.entries(cube.cells)) {
       const y = ym.slice(0, 4);
       byYear[y] = byYear[y] || Object.fromEntries(CATS.map((c) => [c.id, 0]));
+      (srcByYear[y] = srcByYear[y] || new Set()).add(cube.sourceByYm[ym]);
+      const tracked = (trackedByYear[y] = trackedByYear[y] || new Set());
+      for (const c of cube.tracked(ym)) tracked.add(c);
       for (const [k, n] of cell) {
         const cat = k.split("|")[1];
         byYear[y][cat] += n;
@@ -127,7 +139,15 @@ export default function Trends({ drivers, incidents = [] }) {
     }
     return Object.entries(byYear)
       .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([y, cats]) => ({ year: y, ...cats }));
+      .map(([y, cats]) => {
+        const sources = [...srcByYear[y]].sort().reverse();
+        const row = { year: y, ...cats, source: sources.join(" + ") };
+        // A history-only year shows "—" for what none of its months tracked.
+        if (sources.length === 1 && sources[0] === "history") {
+          for (const c of CATS) if (!trackedByYear[y].has(c.id)) row[c.id] = null;
+        }
+        return row;
+      });
   }, [cube]);
 
   // ---- Leaderboards: per-category, selected year vs all-time ----
@@ -163,7 +183,11 @@ export default function Trends({ drivers, incidents = [] }) {
       .slice(0, 30);
   }, [drivers, driverQuery]);
 
-  const [perDriverId, setPerDriverId] = React.useState("");
+  // The pick comes from the hash, so a link can name anyone. A deactivated driver is
+  // treated as no pick, like the picker; an id with no roster row still shows.
+  const [driverParam, setPerDriverId] = useHashState("tr.driver", "");
+  const perDriverId = drivers.some((d) => d.id === driverParam && d.active === false) ? "" : driverParam;
+  const perDriverName = cube.names.get(perDriverId) || perDriverId;
   const perDriver = React.useMemo(() => {
     if (!perDriverId) return null;
     const byMonth = MONTHS.map((label, i) => {
@@ -172,7 +196,8 @@ export default function Trends({ drivers, incidents = [] }) {
       for (const [k, v] of cube.cells[ym] || []) {
         if (k.startsWith(`${perDriverId}|`)) n += v;
       }
-      return { month: label, count: n };
+      const source = cube.sourceByYm[ym] || "none";
+      return { month: label, count: source === "none" ? null : n, source };
     });
     const cats = CATS.map((c) => {
       let yr = 0, all = 0;
@@ -218,47 +243,41 @@ export default function Trends({ drivers, incidents = [] }) {
       </div>
 
       {tab === "overview" && (
-        <div className="chart-card">
-          <div className="chart-card-header">
-            <div className="chart-card-title">Monthly Incidents · {year}</div>
-            <div className="cc-count">{monthly.reduce((a, r) => a + r.total, 0)} total</div>
-          </div>
-          <div style={{ height: 300, padding: "10px 14px" }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={monthly} margin={{ top: 8, right: 8, left: -18, bottom: 0 }} barCategoryGap={5}>
-                <XAxis dataKey="month" tick={axisTick} axisLine={false} tickLine={false} />
-                <YAxis tick={axisTick} axisLine={false} tickLine={false} allowDecimals={false} />
-                <Tooltip {...tooltipStyle} />
-                <Legend wrapperStyle={legendStyle} />
-                {CATS.map((c) => (
-                  <Bar key={c.id} dataKey={c.id} name={c.title} stackId="m" fill={c.color} radius={[2, 2, 0, 0]} />
-                ))}
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
+        <ChartCard
+          title={`Monthly Incidents · ${year}`}
+          count={`${monthly.reduce((a, r) => a + r.total, 0)} total`}
+          legend={SERIES}
+          table={chartTable({
+            rows: monthly,
+            x: { key: "month", label: "Month" },
+            series: SERIES,
+            total: true,
+            source: (r) => r.source,
+          })}
+          csv={csvName("Trends monthly", year)}
+          height={300}
+        >
+          <StackedColumns data={monthly} xKey="month" series={SERIES} />
+        </ChartCard>
       )}
 
       {tab === "yoy" && (
-        <div className="chart-card">
-          <div className="chart-card-header">
-            <div className="chart-card-title">Year over Year</div>
-            <div className="cc-count">{yoy.length} years</div>
-          </div>
-          <div style={{ height: 300, padding: "10px 14px" }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={yoy} margin={{ top: 8, right: 8, left: -18, bottom: 0 }} barCategoryGap={18}>
-                <XAxis dataKey="year" tick={axisTick} axisLine={false} tickLine={false} />
-                <YAxis tick={axisTick} axisLine={false} tickLine={false} allowDecimals={false} />
-                <Tooltip {...tooltipStyle} />
-                <Legend wrapperStyle={legendStyle} />
-                {CATS.map((c) => (
-                  <Bar key={c.id} dataKey={c.id} name={c.title} stackId="y" fill={c.color} radius={[2, 2, 0, 0]} />
-                ))}
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
+        <ChartCard
+          title="Year over Year"
+          count={`${yoy.length} years`}
+          legend={SERIES}
+          table={chartTable({
+            rows: yoy,
+            x: { key: "year", label: "Year" },
+            series: SERIES,
+            total: true,
+            source: (r) => r.source,
+          })}
+          csv={csvName("Trends year over year")}
+          height={300}
+        >
+          <StackedColumns data={yoy} xKey="year" series={SERIES} />
+        </ChartCard>
       )}
 
       {tab === "leaders" && (
@@ -289,6 +308,10 @@ export default function Trends({ drivers, incidents = [] }) {
             />
             <select value={perDriverId} onChange={(e) => setPerDriverId(e.target.value)}>
               <option value="">— Select driver —</option>
+              {/* A linked pick the search doesn't list (history only, or filtered out) */}
+              {perDriverId && !filteredDrivers.some((d) => d.id === perDriverId) && (
+                <option value={perDriverId}>{perDriverName}</option>
+              )}
               {filteredDrivers.map((d) => (
                 <option key={d.id} value={d.id}>{d.name}</option>
               ))}
@@ -301,26 +324,21 @@ export default function Trends({ drivers, incidents = [] }) {
           </div>
           {perDriver && (
             <>
-              <div className="chart-card" style={{ marginBottom: 16 }}>
-                <div className="chart-card-header">
-                  <div className="chart-card-title">
-                    {cube.names.get(perDriverId)} · Monthly · {year}
-                  </div>
-                  <div className="cc-count">
-                    {perDriver.byMonth.reduce((a, r) => a + r.count, 0)} in {year}
-                  </div>
-                </div>
-                <div style={{ height: 220, padding: "10px 14px" }}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={perDriver.byMonth} margin={{ top: 8, right: 8, left: -22, bottom: 0 }}>
-                      <XAxis dataKey="month" tick={axisTick} axisLine={false} tickLine={false} />
-                      <YAxis tick={axisTick} axisLine={false} tickLine={false} allowDecimals={false} />
-                      <Tooltip {...tooltipStyle} />
-                      <Bar dataKey="count" name="Incidents" fill="#234294" radius={[3, 3, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
+              <ChartCard
+                className="chart-band"
+                title={`${perDriverName} · Monthly · ${year}`}
+                count={`${perDriver.byMonth.reduce((a, r) => a + r.count, 0)} in ${year}`}
+                table={chartTable({
+                  rows: perDriver.byMonth,
+                  x: { key: "month", label: "Month" },
+                  series: [{ id: "count", label: "Incidents" }],
+                  source: (r) => r.source,
+                })}
+                csv={csvName(perDriverName, "monthly", year)}
+                height={220}
+              >
+                <EmphasisBars data={perDriver.byMonth} xKey="month" valueName="Incidents" color={BRAND} />
+              </ChartCard>
               <div className="chart-card">
                 <div className="chart-card-header">
                   <div className="chart-card-title">Category Breakdown</div>

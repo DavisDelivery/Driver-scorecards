@@ -1,41 +1,45 @@
 import React from "react";
 import {
-  ResponsiveContainer,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  CartesianGrid,
-} from "recharts";
-import { PERIODS, periodWindow, periodLabel, toYMD, mondayOf } from "../data/period.js";
+  PERIODS,
+  periodWindow,
+  periodLabel,
+  toYMD,
+  mondayOf,
+  nowET,
+  weekdayOfYmd,
+} from "../data/period.js";
 import { hiddenDriverIds } from "../data/drivers.js";
+import { csvName } from "../data/csv.js";
+import PeriodBar, { usePeriodState } from "./kit/PeriodBar.jsx";
+import StatTile from "./kit/StatTile.jsx";
+import ChartCard from "./kit/ChartCard.jsx";
+import EmphasisBars from "./kit/charts/EmphasisBars.jsx";
+import { chartTable } from "./kit/shape.js";
 
 // Analytics panel for a manual-entry category (Forgotten Freight / Mis-Deliveries
 // / Attempts). Tracks the work week (Mon–Fri) plus a trend, over a period that
 // defaults to the current month and can go back further. Built for an operator
 // who wants more than a flat list — counts by weekday, a trend, and quick KPIs.
-// The period selector lives here but its resolved window is reported up via
-// onPeriodChange so the parent's detail log can follow the same period.
+// The period lives in the URL hash under the tab's own namespace (useTabPeriod), so
+// the parent's detail log reads the very same period, it survives a tab switch, and a
+// link carries it.
 const WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-// Weekday (0=Sun..6=Sat) from a YYYY-MM-DD string, parsed as UTC (no tz shift).
-function weekdayOf(ymd) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(ymd);
-  if (!m) return null;
-  return new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])).getUTCDay();
+// One tab's period — its pill, custom range, resolved window and label — read from the
+// hash (`${ns}.p`, `${ns}.from`, `${ns}.to`). The analytics panel and the parent's log
+// both call this, so they cannot disagree about the window.
+export function useTabPeriod(ns) {
+  const [period, setPeriod] = usePeriodState(ns, PERIODS, "30d");
+  const { p, from, to } = period;
+  const win = React.useMemo(() => periodWindow(p, from, to), [p, from, to]);
+  const label = periodLabel(p, from, to);
+  return { period, setPeriod, win, label };
 }
 
-function Stat({ label, value, color }) {
-  return (
-    <div className="me-stat">
-      <div className="me-stat-num" style={color ? { color } : undefined}>{value}</div>
-      <div className="me-stat-lbl">{label}</div>
-    </div>
-  );
-}
-
+// `ns` is the tab's hash namespace (ff, utt, mis, att, cmp) and `sourceLabel` names
+// where the records come from, for the table views.
+//
 // Two optional props for a tab whose records come partly from a feed (Attempts):
 //   statusLine  rendered directly under the period row, above the numbers it qualifies
 //   feedGap     set when the period has no feed data to count at all (not loaded,
@@ -47,18 +51,14 @@ export default function ManualEntryAnalytics({
   color,
   records,
   drivers,
-  onPeriodChange,
+  ns,
+  sourceLabel = "logged entries",
   leaderLabel = "Top driver",
   statusLine = null,
   feedGap = null,
 }) {
-  const [periodSel, setPeriodSel] = React.useState("30d");
-  // Day-precision (YYYY-MM-DD) custom range, distinct from Dashboard.jsx's
-  // month-precision customFrom/customTo — different formats, deliberately
-  // different names. Persist across pill switches (not reset), matching
-  // Dashboard's own custom-range fields.
-  const [rangeFrom, setRangeFrom] = React.useState("");
-  const [rangeTo, setRangeTo] = React.useState("");
+  // The custom range is day-precision (YYYY-MM-DD) and persists across pill switches.
+  const { period, setPeriod, win } = useTabPeriod(ns);
 
   const dateOf = (r) => (r.delivered_date || r.created_at || "").slice(0, 10);
   const driverName = (r) =>
@@ -66,17 +66,6 @@ export default function ManualEntryAnalytics({
     drivers.find((d) => d.id === r.driver_id)?.name ||
     r.driver_raw ||
     "Unassigned";
-
-  const win = React.useMemo(
-    () => periodWindow(periodSel, rangeFrom, rangeTo),
-    [periodSel, rangeFrom, rangeTo],
-  );
-
-  // Report the resolved window + label up so the parent's detail log can scope
-  // itself to the same period the charts are showing.
-  React.useEffect(() => {
-    onPeriodChange?.({ win, label: periodLabel(periodSel, rangeFrom, rangeTo) });
-  }, [win, periodSel, rangeFrom, rangeTo, onPeriodChange]);
 
   const inPeriod = React.useMemo(
     () =>
@@ -133,7 +122,7 @@ export default function ManualEntryAnalytics({
   const weekday = React.useMemo(() => {
     const counts = [0, 0, 0, 0, 0, 0, 0];
     for (const r of inPeriod) {
-      const w = weekdayOf(dateOf(r));
+      const w = weekdayOfYmd(dateOf(r));
       if (w != null) counts[w] += 1;
     }
     const order = [1, 2, 3, 4, 5];
@@ -168,7 +157,15 @@ export default function ManualEntryAnalytics({
     return bestN ? `${best} (${bestN})` : "—";
   }, [inPeriod, drivers]);
 
-  const todayYMD = toYMD(new Date());
+  const todayYMD = toYMD(nowET());
+  const tableOf = (rows, xLabel) =>
+    chartTable({
+      rows,
+      x: { key: "label", label: xLabel },
+      series: [{ id: "count", label: title }],
+      source: sourceLabel,
+    });
+  const trendTitle = bucket === "day" ? "By day" : bucket === "week" ? "By week" : "By month";
 
   return (
     <>
@@ -188,36 +185,7 @@ export default function ManualEntryAnalytics({
             minWidth: 0,
           }}
         >
-          <div className="month-picker" style={{ margin: 0 }}>
-            {PERIODS.map(([val, label]) => (
-              <button
-                key={val}
-                className={`month-btn ${periodSel === val ? "active" : ""}`}
-                onClick={() => setPeriodSel(val)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          {periodSel === "range" && (
-            <div className="custom-range">
-              <input
-                type="date"
-                value={rangeFrom}
-                max={todayYMD}
-                onChange={(e) => setRangeFrom(e.target.value)}
-              />
-              <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-2)" }}>
-                to
-              </span>
-              <input
-                type="date"
-                value={rangeTo}
-                max={todayYMD}
-                onChange={(e) => setRangeTo(e.target.value)}
-              />
-            </div>
-          )}
+          <PeriodBar className="end" grain="day" presets={PERIODS} value={period} onChange={setPeriod} max={todayYMD} />
         </div>
       </div>
 
@@ -226,46 +194,43 @@ export default function ManualEntryAnalytics({
       <div className="card" style={{ marginBottom: 18 }}>
         <div className="card-body">
           <div className="me-stat-row">
-            <Stat
+            <StatTile
+              compact
               label={feedGap ? "Hand-logged only" : "Total this period"}
               value={feedGap && !total ? "—" : total}
-              color={color}
             />
-            <Stat label="Busiest workday" value={topWeekday.count > 0 ? topWeekday.label : "—"} />
-            <Stat label="Avg / active day" value={feedGap && !total ? "—" : avg} />
-            <Stat label={leaderLabel} value={topDriver} />
+            <StatTile compact label="Busiest workday" value={topWeekday.count > 0 ? topWeekday.label : "—"} />
+            <StatTile compact label="Avg / active day" value={feedGap && !total ? "—" : avg} />
+            <StatTile compact label={leaderLabel} value={topDriver} />
           </div>
 
           {total === 0 ? (
             <div className="empty-state">{feedGap || "No records in this period."}</div>
           ) : (
             <div className="me-chart-grid">
-              <div>
-                <div className="me-chart-title">By workday</div>
-                <ResponsiveContainer width="100%" height={200}>
-                  <BarChart data={weekday} margin={{ top: 6, right: 8, left: -20, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#eef1f5" vertical={false} />
-                    <XAxis dataKey="label" tick={{ fontSize: 11 }} />
-                    <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
-                    <Tooltip cursor={{ fill: "rgba(0,0,0,0.04)" }} />
-                    <Bar dataKey="count" fill={color} radius={[3, 3, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-              <div>
-                <div className="me-chart-title">
-                  {bucket === "day" ? "By day" : bucket === "week" ? "By week" : "By month"}
-                </div>
-                <ResponsiveContainer width="100%" height={200}>
-                  <BarChart data={trend} margin={{ top: 6, right: 8, left: -20, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#eef1f5" vertical={false} />
-                    <XAxis dataKey="label" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
-                    <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
-                    <Tooltip cursor={{ fill: "rgba(0,0,0,0.04)" }} />
-                    <Bar dataKey="count" fill={color} radius={[3, 3, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
+              <ChartCard
+                inset
+                title="By workday"
+                table={tableOf(weekday, "Weekday")}
+                csv={csvName(title, "by workday")}
+                height={200}
+              >
+                <EmphasisBars data={weekday} valueName={title} color={color} />
+              </ChartCard>
+              <ChartCard
+                inset
+                title={trendTitle}
+                table={tableOf(trend, bucket === "month" ? "Month" : bucket === "week" ? "Week of" : "Day")}
+                csv={csvName(title, trendTitle)}
+                height={200}
+              >
+                <EmphasisBars
+                  data={trend}
+                  valueName={title}
+                  color={color}
+                  xAxis={{ interval: "preserveStartEnd" }}
+                />
+              </ChartCard>
             </div>
           )}
         </div>

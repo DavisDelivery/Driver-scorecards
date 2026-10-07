@@ -8,9 +8,11 @@
 // kind of thing you hand to the driver in a coaching conversation.
 //
 // Style primitives are imported from pdfGenerator.js so both reports stay
-// visually identical rather than drifting apart.
+// visually identical rather than drifting apart; the category colour comes from
+// categories.js, the same one the screen uses.
 import { jsPDF } from "jspdf";
 import { getIncidentPhotosBatch } from "../data/firebase.js";
+import { catRgb } from "../data/categories.js";
 import { resolveReportLogo, drawWordmark } from "./brandLogo.js";
 import {
   DAVIS_BLUE,
@@ -121,7 +123,7 @@ function drawSummary(doc, { rows, itemLabel, breakdown, color }, x, y, w) {
 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(26);
-  setColor(doc, color, "text");
+  setColor(doc, TEXT_DARK, "text"); // a number in ink, as on screen
   doc.text(String(rows.length), x + 16, y + 34);
 
   doc.setFont("helvetica", "normal");
@@ -192,7 +194,7 @@ async function drawEntryCard(doc, entry, photos, x, y, w, { itemLabel, color }) 
   const itemValue = entry.__itemValue;
   if (itemValue) {
     doc.setFont("helvetica", "bold");
-    drawBadge(doc, String(itemValue), padX + 96, y + 22, color, { fontSize: 7.5 });
+    drawBadge(doc, String(itemValue), padX + 96, y + 22, color, { fontSize: 7.5, tinted: true });
   }
 
   // Customer.
@@ -277,7 +279,7 @@ async function drawEntryCard(doc, entry, photos, x, y, w, { itemLabel, color }) 
  * Build a one-driver report for the currently selected period.
  *   driverName  – who the report is for
  *   entries     – that driver's incidents, already scoped to the period
- *   config      – the ManualEntry tab config (heading, color, classify)
+ *   config      – the ManualEntry tab config (category, heading, classify)
  *   periodLabel – e.g. "Last Week"
  *   rangeText   – e.g. "07/27/2026 – 07/31/2026"
  */
@@ -300,7 +302,7 @@ export async function generateDriverReport({
   const pageW = doc.internal.pageSize.getWidth();
   const pageH = doc.internal.pageSize.getHeight();
   const contentW = pageW - PAGE_MARGIN * 2;
-  const color = hexToRgb(config.color) || DAVIS_BLUE;
+  const color = config.category ? catRgb(config.category) : DAVIS_BLUE;
   const itemField = config.classify?.field;
   const itemLabel = config.classify?.label || "Breakdown";
 
@@ -440,15 +442,6 @@ function drawSignoff(doc, x, y, w) {
     setColor(doc, TEXT_MUTED, "text");
     doc.text(label, cx, y + 46);
   });
-}
-
-// "#f97316" -> [249,115,22]; passthrough for an existing RGB triple.
-function hexToRgb(hex) {
-  if (Array.isArray(hex)) return hex;
-  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(String(hex || ""));
-  return m
-    ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)]
-    : null;
 }
 
 // Safe filename: "Alfred Morgan" + "Forgotten Freight" + "Last Week".

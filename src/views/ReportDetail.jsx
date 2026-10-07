@@ -331,16 +331,17 @@ export default function ReportDetail({
         )}
       </div>
 
+      {/* Counts, not statuses, so no status-coloured rule (red beside Damage's red). */}
       <div className="kpi-grid">
         <div className="kpi">
           <div className="kpi-label">Total Incidents</div>
           <div className="kpi-value">{incidents.length}</div>
         </div>
-        <div className="kpi red">
+        <div className="kpi">
           <div className="kpi-label">Driver Fault</div>
           <div className="kpi-value">{driverFault}</div>
         </div>
-        <div className="kpi green">
+        <div className="kpi">
           <div className="kpi-label">With Photos</div>
           <div className="kpi-value">{withPhotos}</div>
         </div>

@@ -131,7 +131,7 @@ export default function CategoryDetail({
               className={`dm-stat dm-stat-btn ${scope === "period" ? "active" : ""}`}
               onClick={() => setScope("period")}
             >
-              <div className="dm-stat-num" style={{ color: category.color }}>{periodDetail.total}</div>
+              <div className="dm-stat-num">{periodDetail.total}</div>
               <div className="dm-stat-lbl">{periodLabel}</div>
             </button>
             <button
@@ -200,7 +200,7 @@ export default function CategoryDetail({
                 >
                   <span className="lb-rank">{i + 1}</span>
                   <span className="cd-driver-name">{r.name}</span>
-                  <span className="cd-driver-n" style={{ color: category.color }}>{r.count}</span>
+                  <span className="cd-driver-n">{r.count}</span>
                   <span className="cd-driver-ytd">{r.ytd} ytd</span>
                 </button>
               ))}

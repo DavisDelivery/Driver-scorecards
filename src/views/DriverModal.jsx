@@ -3,6 +3,7 @@ import { getIncidentPhotos } from "../data/firebase.js";
 import { SOURCE_LABELS, LATE_REASON_LABELS, FAULT_CODES } from "../data/drivers.js";
 import { incidentYm, fmtIncidentDate } from "../data/incidentDate.js";
 import { buildCategoryDetail, monthsOfYear } from "../data/scorecardDetail.js";
+import { catChipStyle } from "../data/categories.js";
 
 const FAULT_LABEL = Object.fromEntries(FAULT_CODES.map((f) => [f.id, f.label]));
 
@@ -90,7 +91,7 @@ export function IncidentDetailRow({ inc, showDriver = false, onDriver, hideCateg
             {inc.driver_name || inc.driver_raw || "Unattributed"}
           </button>
         )}
-        {!hideCategory && <span className={`chip ${inc.category}`}>{inc.category}</span>}
+        {!hideCategory && <span className={`chip cat ${inc.category}`} style={catChipStyle(inc.category)}>{inc.category}</span>}
         {Array.isArray(inc.sources) &&
           inc.sources.map((s) => (
             <span key={s} className={`src-badge src-${s}`}>{SOURCE_LABELS[s] || s}</span>
@@ -155,7 +156,7 @@ export function HistoryAggRow({ row, showDriver = false, onDriver, hideCategory 
           </button>
         )}
         {!hideCategory && (
-          <span className={`chip ${row.category}`}>{CAT_LABEL[row.category] || row.category}</span>
+          <span className={`chip cat ${row.category}`} style={catChipStyle(row.category)}>{CAT_LABEL[row.category] || row.category}</span>
         )}
         <span className="dd-agg-count">× {row.count}</span>
         <span className="dd-agg-note">imported history · no per-incident detail</span>
@@ -256,7 +257,6 @@ function ScorecardDriverModal({ driver, scorecard, initialCategory, onClose }) {
                   type="button"
                   className={`dm-chip ${category === c.id ? "active" : ""}`}
                   onClick={() => setCategory(c.id)}
-                  style={category === c.id ? { borderColor: c.color, color: c.color } : undefined}
                 >
                   <i style={{ background: c.color }} />
                   {c.title} <b>{ytdAll.byCategory.get(c.id) || 0}</b>

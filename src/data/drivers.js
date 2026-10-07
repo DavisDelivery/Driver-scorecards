@@ -1,6 +1,7 @@
 // Driver roster seed + fault/category vocabularies for the Davis Driver Scorecard.
 // Drivers are loaded from the data-drivers Netlify function at runtime; SEED_DRIVERS
 // is used only to seed an empty store (see seeding logic in App).
+import { catLabel, catColor } from "./categories.js";
 
 export const SEED_DRIVERS = [
   { name: "Aaron Mitchell", role: "driver" },
@@ -75,33 +76,37 @@ export const SEED_DRIVERS = [
 // "Scott" and "Scott Hart" present, a NuVizz name that should have resolved to
 // Scott Hart matched nothing at all. Keep this list to full names only.
 
-// Incident categories (used across the scorecard, incident tables, and trends).
+// Incident categories (used across the scorecard, incident tables, and trends), in
+// the order the editor and the incident filters list them. Labels and colours come
+// from the category registry (categories.js) — this list used to carry its own
+// colours, and its Forgotten Freight orange no longer matched the charts'.
+//
+// Unable to Track is here so the incident log and editor can NAME it; the scorecard,
+// trends and history rollups leave it out — it is a record of a failed lookup, not
+// something charged to anyone (its polarity in the registry is "excluded").
 export const INCIDENT_CATEGORIES = [
-  { id: "late", label: "Late", color: "#facc15" },
-  { id: "damage", label: "Damage", color: "#dc3545" },
-  { id: "missing", label: "Lost/Missing", color: "#a855f7" },
-  { id: "misdelivery", label: "Misdelivery", color: "#f472b6" },
-  { id: "forgotten_freight", label: "Forgotten Freight", color: "#f97316" },
-  { id: "attempts", label: "Attempts", color: "#14b8a6" },
-  { id: "complaint", label: "Complaint", color: "#ef4444" },
-  { id: "compliment", label: "Compliment", color: "#22c55e" },
-  { id: "return", label: "Return", color: "#3b82f6" },
-  { id: "trace", label: "Trace", color: "#64748b" },
-  // Logged from Forgotten Freight when a PRO can't be tracked to a driver. It is here
-  // so the incident log and editor can NAME it; the scorecard, trends and history
-  // rollups enumerate their own category lists and deliberately leave it out — it is
-  // a record of a failed lookup, not something charged to anyone.
-  { id: "unable_to_track", label: "Unable to Track", color: "#94a3b8" },
-];
+  "late",
+  "damage",
+  "missing",
+  "misdelivery",
+  "forgotten_freight",
+  "attempts",
+  "complaint",
+  "compliment",
+  "return",
+  "trace",
+  "unable_to_track",
+].map((id) => ({ id, label: catLabel(id), color: catColor(id) }));
 
-// Fault attribution codes for an incident.
+// Fault attribution codes for an incident. These colours are status (who is at fault),
+// not category identity — exonerated is the status green, not Compliment's.
 export const FAULT_CODES = [
   { id: "driver", label: "Driver Fault", color: "#dc3545" },
   { id: "preload", label: "Preload (Wh)", color: "#d4a017" },
   { id: "warehouse", label: "Warehouse", color: "#d4a017" },
   { id: "customer", label: "Customer", color: "#64748b" },
   { id: "vendor", label: "Vendor (Uline)", color: "#64748b" },
-  { id: "exonerated", label: "Exonerated", color: "#22c55e" },
+  { id: "exonerated", label: "Exonerated", color: "#16a34a" },
   { id: "unknown", label: "Unknown", color: "#6b7891" },
 ];
 
@@ -122,9 +127,9 @@ export function newDriverId() {
 // Uline source reports an incident physically came in on (distinct from the
 // derived fault category). One incident can carry more than one of these.
 export const ULINE_SOURCES = [
-  { id: "laters", label: "Late", color: "#facc15" },
-  { id: "returns", label: "Return", color: "#3b82f6" },
-  { id: "traces", label: "Trace", color: "#64748b" },
+  { id: "laters", label: "Late" },
+  { id: "returns", label: "Return" },
+  { id: "traces", label: "Trace" },
 ];
 export const SOURCE_LABELS = Object.fromEntries(
   ULINE_SOURCES.map((s) => [s.id, s.label]),
