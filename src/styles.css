@@ -1259,6 +1259,7 @@ hr.div {
   .content .page-title,
   .content .section-head,
   .content .me-analytics-head,
+  .content .ff-feed-coverage,
   .content > h1,
   .content > h2 {
     max-width: 1800px;
@@ -2611,3 +2612,33 @@ table.data.analytics-subtable th {
   line-height: 1.45;
 }
 .ff-fill-flag-day { margin-top: 3px; }
+
+/* --- Dispatch-feed coverage (v0.19.2) ----------------------------------------
+   One line between the Attempts period row and its numbers: which days the counts
+   include, and which the feed has no data for. Parts end in a middle dot, so a
+   phone wraps after one. */
+.ff-feed-coverage {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 0;
+  margin: -2px 2px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-1);
+}
+.ff-feed-coverage > :not(:last-child)::after {
+  content: "·";
+  margin: 0 8px;
+  color: #94a3b8;
+}
+.ff-feed-coverage-k {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #334155;
+}
+.ff-feed-coverage-gap { color: #b45309; }
+.ff-feed-coverage-gap strong { font-weight: 600; }

@@ -36,7 +36,22 @@ function Stat({ label, value, color }) {
   );
 }
 
-export default function ManualEntryAnalytics({ title, color, records, drivers, onPeriodChange, leaderLabel = "Top driver" }) {
+// Two optional props for a tab whose records come partly from a feed (Attempts):
+//   statusLine  rendered directly under the period row, above the numbers it qualifies
+//   feedGap     set when the period has no feed data to count at all (not loaded,
+//               unreachable, every day without data). The numbers are then the
+//               hand-logged entries alone, so the tiles say so and an empty period
+//               shows this sentence — never a bare 0 over "No records".
+export default function ManualEntryAnalytics({
+  title,
+  color,
+  records,
+  drivers,
+  onPeriodChange,
+  leaderLabel = "Top driver",
+  statusLine = null,
+  feedGap = null,
+}) {
   const [periodSel, setPeriodSel] = React.useState("30d");
   // Day-precision (YYYY-MM-DD) custom range, distinct from Dashboard.jsx's
   // month-precision customFrom/customTo — different formats, deliberately
@@ -206,17 +221,23 @@ export default function ManualEntryAnalytics({ title, color, records, drivers, o
         </div>
       </div>
 
+      {statusLine}
+
       <div className="card" style={{ marginBottom: 18 }}>
         <div className="card-body">
           <div className="me-stat-row">
-            <Stat label="Total this period" value={total} color={color} />
+            <Stat
+              label={feedGap ? "Hand-logged only" : "Total this period"}
+              value={feedGap && !total ? "—" : total}
+              color={color}
+            />
             <Stat label="Busiest workday" value={topWeekday.count > 0 ? topWeekday.label : "—"} />
-            <Stat label="Avg / active day" value={avg} />
+            <Stat label="Avg / active day" value={feedGap && !total ? "—" : avg} />
             <Stat label={leaderLabel} value={topDriver} />
           </div>
 
           {total === 0 ? (
-            <div className="empty-state">No records in this period.</div>
+            <div className="empty-state">{feedGap || "No records in this period."}</div>
           ) : (
             <div className="me-chart-grid">
               <div>

@@ -278,62 +278,239 @@ export function daysInRange(start, end, cap = 400) {
   return out;
 }
 
+// The first day the feed covers. Its manifests begin with 06/24 and 06/25 (written
+// the next morning, no attempts) and the evening scan proper on 06/26; every day
+// before has no manifest at all. So earlier days aren't asked for, and read as
+// "hand-logged attempts only" rather than as a run of nights with no scan.
+export const FEED_EPOCH = "2026-06-25";
+
+// What one day of the feed can say, so a day with no data is never shown as a day
+// with no attempts. Checked against every manifest from 09/01 to 10/06:
+//
+//   ok            the evening scan ran. Zero orders is then a real zero — that
+//                 includes weekends and holidays, which come back planMissing with
+//                 counts of 0 (09/13) or with a plan of a few dozen stops (09/12: 22).
+//                 A day WITH orders is ok whatever its counts say: 09/04 and 09/11
+//                 carry no counts at all but list 9 and 10 orders.
+//   pending       today, before the 8 PM scan has written anything
+//   no_manifest   no scan that night (09/02)
+//   fetch_not_ok  the scan ran but couldn't read NuVizz (09/08: fetchOk false)
+//   failed        the request itself failed
+//   before_feed   before FEED_EPOCH: there was no feed yet, so not a missed scan
+export const DAY_STATUS_TEXT = {
+  ok: "loaded",
+  pending: "today's 8 PM scan hasn't run yet",
+  no_manifest: "no evening scan that night",
+  fetch_not_ok: "the evening scan couldn't read NuVizz",
+  failed: "couldn't reach the feed",
+  before_feed: "before the feed started",
+};
+
+// The statuses that mean "we don't know", as opposed to "nothing happened".
+export const NO_DATA_STATUSES = new Set(["no_manifest", "fetch_not_ok", "failed"]);
+
+export function classifyDay(j, { date, today = todayET() } = {}) {
+  if (Array.isArray(j?.attempts) && j.attempts.length) return "ok";
+  if (date && date < FEED_EPOCH) return "before_feed";
+  const m = j?.manifest;
+  // A day after today can't have had its scan either. fetchAttemptsRange never asks
+  // for one, so "pending" in a period only ever means today.
+  if (!m) return date && date >= today ? "pending" : "no_manifest";
+  if (m.fetchOk === false) return "fetch_not_ok";
+  return "ok";
+}
+
+// One day of the feed as every view keeps it.
+function dayEntry(date, j, today) {
+  // planMissing rides along on each row: it is the one reason an attempt can have no
+  // driver that the row itself can't show (see attemptLegs.js).
+  const planMissing = !!j?.manifest?.planMissing;
+  return {
+    status: classifyDay(j, { date, today }),
+    rows: (j?.attempts || []).map((a) => ({ ...a, date, planMissing })),
+    // The scan's own tallies (candidates is the 8:30 plan's size). Kept for later
+    // use; nothing reads them yet, because dispatch hasn't confirmed what they mean.
+    counts: j?.manifest?.counts || null,
+    // The dispatch app's nightly driver lookup reports here what it could not read
+    // (over its 10-call limit, no NuVizz id on file, a request that failed).
+    fill: j?.manifest?.fill || null,
+  };
+}
+
+const BEFORE_FEED = Object.freeze({ status: "before_feed", rows: [], counts: null, fill: null });
+
+// One cache of feed days for every view, so moving between periods — or leaving
+// the tab and coming back — refetches only what it hasn't got.
+//
+// Dispatch revises settled days after the fact: September's manifests carry a
+// backfilledAt / lastEditedAt of 10/01, weeks after their scans. So:
+//   - today is never cached; its 8 PM scan hasn't run, or has only just run;
+//   - the trailing RECENT_DAYS are kept for RECENT_TTL_MS, then read again. That
+//     covers yesterday too, whose late-night driver lookup can still fill names in;
+//   - older days are kept for the session;
+//   - a failed request is never kept, so the next look tries again.
+export const RECENT_DAYS = 14;
+export const RECENT_TTL_MS = 10 * 60_000;
+
+export function createDayCache({ recentDays = RECENT_DAYS, ttlMs = RECENT_TTL_MS } = {}) {
+  const store = new Map(); // date -> { entry, at }
+  return {
+    get(date, { today = todayET(), now = Date.now() } = {}) {
+      const hit = store.get(date);
+      if (!hit || date >= today) return null;
+      if (date >= shiftDay(today, -recentDays) && now - hit.at >= ttlMs) {
+        store.delete(date);
+        return null;
+      }
+      return hit.entry;
+    },
+    set(date, entry, { today = todayET(), now = Date.now() } = {}) {
+      if (date >= today || !entry || entry.status === "failed") return;
+      store.set(date, { entry, at: now });
+    },
+    // Called after anything that changes a day: deleting an attempt from the feed,
+    // or reassigning one.
+    invalidate(date) {
+      store.delete(date);
+    },
+    has(date) {
+      return store.has(date);
+    },
+    clear() {
+      store.clear();
+    },
+  };
+}
+
+export const dayCache = createDayCache();
+
 // The settled attempts for a whole PERIOD, by asking for each day.
 //
 // The feed is per-day by design, so a period means N requests — but each one is a
 // small Firestore read (no vendor traffic), and 30 days comes back in a few seconds
 // at this concurrency. It is capped anyway: a 3M/6M/12M window would be hundreds of
-// requests, so past `maxDays` this returns what it got and reports `capped` so the
+// requests, so past `maxDays` nothing is asked for and `capped` is reported, so the
 // caller can say the range is too wide rather than quietly showing a partial answer.
+//
+// Only the feed's own days are asked for, and only they count toward the cap: from
+// FEED_EPOCH (earlier days are marked before_feed) up to today. Days after today are
+// left out altogether — they have no scan to read, and "This Mo" used to ask for
+// every one of them on each load.
+//
+// `days` maps each of those days to { status, rows, counts, fill } (see
+// DAY_STATUS_TEXT), so a caller can tell a day with no attempts from a day it has no
+// data for. `totalDays` is how many feed days the range holds. Only the
+// nuvizz-attempts GET is ever called from here.
 export async function fetchAttemptsRange(
   start,
   end,
-  { signal, maxDays = 45, concurrency = 6, cache } = {},
+  {
+    signal,
+    maxDays = 45,
+    concurrency = 6,
+    cache = dayCache,
+    today = todayET(),
+    now = Date.now(),
+  } = {},
 ) {
-  const all = daysInRange(start, end);
-  const capped = all.length > maxDays;
-  const days = capped ? [] : all;
-  const byDay = new Map();
+  const days = new Map();
+  const feedDays = [];
+  for (const d of daysInRange(start, end > today ? today : end)) {
+    if (d < FEED_EPOCH) days.set(d, BEFORE_FEED);
+    else feedDays.push(d);
+  }
+  const capped = feedDays.length > maxDays;
+  const want = capped ? [] : feedDays;
   const fills = [];
   let failed = 0;
-  for (let i = 0; i < days.length; i += concurrency) {
-    const slice = days.slice(i, i + concurrency);
+  for (let i = 0; i < want.length; i += concurrency) {
+    const slice = want.slice(i, i + concurrency);
     const got = await Promise.all(
       slice.map(async (d) => {
-        const hit = cache?.get(d);
-        // Cached as { rows, fill }; a bare array is the pre-0.19 shape (rows only).
-        if (hit) return [d, Array.isArray(hit) ? { rows: hit, fill: null } : hit];
+        const hit = cache?.get(d, { today, now });
+        if (hit) return [d, hit];
         try {
-          const j = await fetchAttempts(d, { signal });
-          // planMissing rides along on each row: it is the one reason an attempt can
-          // have no driver that the row itself can't show (see attemptLegs.js).
-          const planMissing = !!j.manifest?.planMissing;
-          const rows = (j.attempts || []).map((a) => ({ ...a, date: d, planMissing }));
-          // The dispatch app's nightly driver lookup reports here what it could not
-          // read (over its 10-call limit, no NuVizz id on file, a request that failed).
-          const entry = { rows, fill: j.manifest?.fill || null };
-          cache?.set(d, entry);
+          const entry = dayEntry(d, await fetchAttempts(d, { signal }), today);
+          cache?.set(d, entry, { today, now });
           return [d, entry];
         } catch (err) {
           if (err?.name === "AbortError") throw err;
           failed++;
-          return [d, { rows: [], fill: null }];
+          return [
+            d,
+            { status: "failed", rows: [], counts: null, fill: null, error: err?.message || "" },
+          ];
         }
       }),
     );
     for (const [d, entry] of got) {
-      byDay.set(d, entry.rows);
+      days.set(d, entry);
       if (entry.fill) fills.push({ ...entry.fill, date: entry.fill.date || d });
     }
   }
   return {
-    rows: [...byDay.values()].flat(),
+    rows: [...days.values()].flatMap((e) => e.rows),
+    days,
     fills,
-    days: days.length,
-    totalDays: all.length,
+    totalDays: feedDays.length,
     capped,
     failed,
   };
+}
+
+// The feed's days inside [start, end], summed up for one line of status text:
+//   of          days the feed should cover (from FEED_EPOCH; today only once scanned)
+//   loaded      of those, the ones with data
+//   noData      [{ date, status }] — the days to name, oldest first
+//   pending     today is in the window and its 8 PM scan hasn't run
+//   todayFailed today is in the window and its request failed. Kept out of `of` like
+//               a pending today: before 8 PM there is nothing to miss yet.
+//   beforeFeed  days before FEED_EPOCH, which only hand-logged attempts can cover
+export function feedCoverage(days, start, end, { today = todayET() } = {}) {
+  const out = {
+    of: 0,
+    loaded: 0,
+    noData: [],
+    pending: false,
+    todayFailed: false,
+    beforeFeed: 0,
+  };
+  for (const [d, e] of days || []) {
+    if (d < start || d > end) continue;
+    if (e.status === "before_feed") out.beforeFeed++;
+    else if (e.status === "pending") out.pending = true;
+    else if (e.status === "failed" && d >= today) out.todayFailed = true;
+    else {
+      out.of++;
+      if (NO_DATA_STATUSES.has(e.status)) out.noData.push({ date: d, status: e.status });
+      else out.loaded++;
+    }
+  }
+  out.noData.sort((a, b) => a.date.localeCompare(b.date));
+  return out;
+}
+
+// feedCoverage's noData, for one line of text rather than a list: grouped by why,
+// in order of each reason's first day, with back-to-back days run together. A month
+// the feed was unreachable is one run of 30 days, not 30 dates.
+//   → [{ status, days, runs: [{ from, to, days }] }]
+export function noDataRuns(noData) {
+  const groups = new Map();
+  for (const { date, status } of [...(noData || [])].sort((a, b) =>
+    a.date.localeCompare(b.date),
+  )) {
+    if (!groups.has(status)) groups.set(status, { status, days: 0, runs: [] });
+    const g = groups.get(status);
+    const last = g.runs[g.runs.length - 1];
+    if (last && shiftDay(last.to, 1) === date) {
+      last.to = date;
+      last.days++;
+    } else {
+      g.runs.push({ from: date, to: date, days: 1 });
+    }
+    g.days++;
+  }
+  return [...groups.values()];
 }
 
 // The portal's Activity Timeline for ONE stop: Stop Planned / Dispatched / Updated /
@@ -413,12 +590,18 @@ export function actorsFromEvents(events) {
   return [...seen.values()].map((a) => ({ ...a, routes: [...a.routes] }));
 }
 
-// Remove one auto-detected attempt from the feed (by ET day + stopNbr).
-export async function deleteAttempt(date, stopNbr, { signal } = {}) {
+// Remove one auto-detected attempt from the feed (by ET day + stopNbr). The day is
+// dropped from the cache whether or not the delete went through, so the period's
+// charts read it again rather than keep counting a deleted attempt.
+export async function deleteAttempt(date, stopNbr, { signal, cache = dayCache } = {}) {
   const url =
     `${ATTEMPTS_FEED_URL}?date=${encodeURIComponent(date)}` +
     `&stopNbr=${encodeURIComponent(stopNbr)}`;
-  const res = await fetch(url, { method: "DELETE", signal });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json().catch(() => ({ ok: true }));
+  try {
+    const res = await fetch(url, { method: "DELETE", signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json().catch(() => ({ ok: true }));
+  } finally {
+    cache?.invalidate(date);
+  }
 }
