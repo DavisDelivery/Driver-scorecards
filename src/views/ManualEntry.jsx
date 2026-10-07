@@ -18,6 +18,12 @@ import {
   deleteAttempt,
   todayET,
   yesterdayET,
+  classifyDay,
+  feedCoverage,
+  noDataRuns,
+  NO_DATA_STATUSES,
+  DAY_STATUS_TEXT,
+  FEED_EPOCH,
 } from "../data/attemptsFeed.js";
 import {
   groupAttemptLegs,
@@ -29,6 +35,17 @@ import {
   fillLeftIndex,
   FILL_LEFT_REASON,
 } from "../data/attemptLegs.js";
+import {
+  buildAttemptRecords,
+  feedRecord,
+  overrideIndex,
+  feedAttribution,
+  feedOrderIndex,
+  feedOrderFor,
+  driverKey,
+  ATTRIBUTED_BY_TEXT,
+} from "../data/attemptRecords.js";
+import { reassignAttempt, overridesFor as savedOverridesFor } from "../data/attemptReassign.js";
 import { periodWindow } from "../data/period.js";
 import DriverModal from "./DriverModal.jsx";
 import StopDetailModal from "./StopDetailModal.jsx";
@@ -98,13 +115,6 @@ function AttemptStatusBadge({ a }) {
 // Its own category, so every existing chart, rollup and leaderboard ignores it by
 // construction: they all enumerate the categories they count, and this isn't one.
 export const UNABLE_TO_TRACK = "unable_to_track";
-
-// Where the dispatch app got an attempt's driver (its `attributedFrom`, v1.99.0+).
-const ATTRIBUTION_SOURCE = {
-  plan: "8:30 plan",
-  holder: "all-day record",
-  timeline: "NuVizz history",
-};
 
 export const UNABLE_TO_TRACK_CONFIG = {
   category: UNABLE_TO_TRACK,
@@ -265,6 +275,9 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     error: null,
     provisionalCount: 0,
     deriveError: null,
+    // What the settled list says about the day (attemptsFeed.js classifyDay), so a
+    // night the scan never ran reads as no data rather than as no attempts.
+    dayStatus: null,
   });
   // Bump to refetch. `scan` forces live detection off the dispatch stop index (the
   // "Run scan" button); a plain date change settles for "auto" — detect only when the
@@ -278,14 +291,20 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   // The auto attempts are the bulk of this tab and are NOT saved as incidents, so
   // without this the charts and totals only ever saw the handful that were — a
   // month with 132 real attempts across 38 drivers charted as a near-empty panel.
+  // `days` holds each day's status beside its rows (see attemptsFeed.js), so a day
+  // the feed has no data for is never counted as a day with no attempts. The days
+  // themselves come from the feed's shared day cache, so moving between overlapping
+  // periods — or leaving the tab and coming back — refetches only what's missing.
   const [periodFeed, setPeriodFeed] = React.useState({
     status: "idle",
-    rows: [],
+    days: new Map(),
     capped: false,
     totalDays: 0,
   });
-  // Per-day cache, so moving between overlapping periods refetches only new days.
-  const periodCache = React.useRef(new Map());
+  // Bump to read the period again. A failed day and today are never cached, so this
+  // asks for those again (and any recent day past its refresh time) and serves the
+  // rest from the cache.
+  const [periodNonce, setPeriodNonce] = React.useState(0);
 
   React.useEffect(() => {
     if (!feedEnabled) return;
@@ -294,15 +313,12 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     const controller = new AbortController();
     let active = true;
     setPeriodFeed((f) => ({ ...f, status: "loading" }));
-    fetchAttemptsRange(start, end, {
-      signal: controller.signal,
-      cache: periodCache.current,
-    })
+    fetchAttemptsRange(start, end, { signal: controller.signal })
       .then((r) => {
         if (!active) return;
         setPeriodFeed({
           status: "ready",
-          rows: r.rows,
+          days: r.days,
           fills: r.fills || [],
           capped: r.capped,
           totalDays: r.totalDays,
@@ -310,13 +326,13 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       })
       .catch((e) => {
         if (!active || e.name === "AbortError") return;
-        setPeriodFeed({ status: "error", rows: [], capped: false, totalDays: 0 });
+        setPeriodFeed({ status: "error", days: new Map(), capped: false, totalDays: 0 });
       });
     return () => {
       active = false;
       controller.abort();
     };
-  }, [feedEnabled, logPeriod.win, feedNonce]);
+  }, [feedEnabled, logPeriod.win, feedNonce, periodNonce]);
 
   React.useEffect(() => {
     if (!feedEnabled) return;
@@ -340,6 +356,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
           provisionalCount: j.provisionalCount || 0,
           carriedOver: j.carriedOver || 0,
           deriveError: j.deriveError || null,
+          dayStatus: classifyDay(j, { date: feedDate }),
         });
       })
       .catch((e) => {
@@ -350,6 +367,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
           error: e.message || "Failed to load",
           provisionalCount: 0,
           deriveError: null,
+          dayStatus: "failed",
         });
       });
     return () => {
@@ -360,28 +378,9 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
 
   // Saved driver-reassignments for a feed attempt (attributed "attempts" incidents
   // keyed to a stop). Their presence overrides the feed's driver and makes the
-  // attempt count toward that driver in the scorecard/analytics.
-  //
-  // An attempt can span two stops (the original and dispatch's "-1" copy), and a
-  // reassignment saved before they were grouped may sit on either, so every stop on
-  // the order is checked. The primary stop's wins when there's more than one.
-  const overridesFor = (a, date = feedDate) => {
-    const stops = new Set((a?.legRows || [a]).map((l) => String(l?.stopNbr ?? "")));
-    return incidents
-      .filter(
-        (i) =>
-          i.category === config.category &&
-          stops.has(String(i.attempt_stop_nbr ?? "")) &&
-          // Scope to the attempt's day: NuVizz stop numbers can repeat across days,
-          // so an override saved on one day must not match another day's row.
-          (i.delivered_date || "").slice(0, 10) === date,
-      )
-      .sort(
-        (x, y) =>
-          (String(y.attempt_stop_nbr) === String(a.stopNbr)) -
-          (String(x.attempt_stop_nbr) === String(a.stopNbr)),
-      );
-  };
+  // attempt count toward that driver in the scorecard/analytics. See
+  // attemptReassign.js for why every stop on the order is checked.
+  const overridesFor = (a, date = feedDate) => savedOverridesFor(a, date, incidents);
   const overrideFor = (a, date = feedDate) => overridesFor(a, date)[0];
 
   // Reassign (or clear) the driver an auto attempt is attributed to. Persists as
@@ -391,47 +390,33 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   // `date` is the attempt's own day — the period's Unassigned list reassigns
   // attempts from days other than the one the log is showing.
   async function reassignAuto(a, driverId, date = feedDate) {
-    const drv = drivers.find((d) => d.id === driverId);
-    const [existing, ...extra] = overridesFor(a, date);
-    try {
-      // One attempt, one reassignment. A second one left on the order's other stop
-      // would count the attempt twice on the Scorecard.
-      for (const dup of driverId ? extra : [existing, ...extra].filter(Boolean)) {
-        await deleteIncident(dup.id);
-        onSaved && onSaved({ type: "delete", id: dup.id });
-      }
-      if (!driverId) return; // cleared back to the feed's driver
-      const now = new Date().toISOString();
-      const saved = await saveIncident({
-        // Deterministic id from the natural key: two tabs reassigning the same
-        // stop on the same day converge on ONE document instead of each minting a
-        // random id and double-counting the attempt.
-        id: existing?.id || `att_${date}_${a.stopNbr}`,
-        pro_number: a.stopNbr,
-        category: config.category,
-        fault: "driver",
-        no_fault: false,
-        driver_id: drv.id,
-        driver_name: drv.name,
-        driver_raw: a.originalDriverName || "",
-        customer: a.businessName || "",
-        to_city: a.city || "",
-        to_state: a.state || "",
-        delivered_date: date,
-        reason: `Delivery attempt — reassigned from auto feed (was ${a.originalDriverName || "Unknown"})`,
-        notes: existing?.notes || "",
-        attempt_stop_nbr: existing?.attempt_stop_nbr || a.stopNbr,
-        shipment_nbr: a.shipmentNbr || "",
-        sources: [],
-        report_id: null,
-        manual_entry: true,
-        created_at: existing?.created_at || now,
-        ingested_at: existing?.ingested_at || now,
-        updated_at: now,
-      });
-      onSaved && onSaved({ type: "upsert", incident: saved });
-    } catch (e) {
-      setSavedMsg(`Reassign failed: ${e.message}`);
+    const drv = driverId ? drivers.find((d) => d.id === driverId) : null;
+    if (driverId && !drv) {
+      setSavedWarn(true);
+      setSavedMsg("Reassign failed: that driver isn't on the roster any more.");
+      return;
+    }
+    const r = await reassignAttempt({
+      order: a,
+      date,
+      driver: drv,
+      incidents,
+      save: saveIncident,
+      remove: deleteIncident,
+      onSaved,
+    });
+    if (r.error) {
+      setSavedWarn(true);
+      setSavedMsg(`Reassign failed: ${r.error}`);
+    } else if (r.pendingSync) {
+      setSavedWarn(true);
+      setSavedMsg(
+        `⚠ ${a.shipmentNbr || a.stopNbr} reassigned to ${drv.name} on THIS DEVICE only — not synced to the server yet. It will retry automatically; other people won't see it until it syncs.`,
+      );
+    } else {
+      // The row's dropdown shows the result; just don't leave an earlier failure up.
+      setSavedWarn(false);
+      setSavedMsg("");
     }
   }
 
@@ -456,7 +441,10 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         onSaved && onSaved({ type: "delete", id: existing.id });
       }
       setFeedNonce((n) => n + 1); // refetch
+      setSavedWarn(false);
+      setSavedMsg("");
     } catch (e) {
+      setSavedWarn(true);
       setSavedMsg(`Auto-attempt delete failed: ${e.message}`);
     } finally {
       setFeedDeletingId(null);
@@ -508,10 +496,12 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       };
       if (classifyField) patch[classifyField] = editClassify;
       const saved = await saveIncident(patch);
+      setSavedWarn(false);
       setSavedMsg(`Updated — ${inc.pro_number} now charged to ${drv.name}.`);
       setEditingId(null);
       onSaved && onSaved({ type: "upsert", incident: saved || patch });
     } catch (err) {
+      setSavedWarn(true);
       setSavedMsg(`Update failed: ${err.message}`);
     } finally {
       setRowBusy(false);
@@ -527,10 +517,12 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     setRowBusy(true);
     try {
       await deleteIncident(inc.id);
+      setSavedWarn(false);
       setSavedMsg(`Deleted — ${inc.pro_number} removed from the log.`);
       if (editingId === inc.id) setEditingId(null);
       onSaved && onSaved({ type: "delete", id: inc.id });
     } catch (err) {
+      setSavedWarn(true);
       setSavedMsg(`Delete failed: ${err.message}`);
     } finally {
       setRowBusy(false);
@@ -573,54 +565,25 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       "Unassigned",
     [drivers],
   );
+  // The key the by-driver chart, the driver filter and the printouts all share — the
+  // same one an attempt record carries, so a bar, the log and a print can't disagree.
+  const keyOf = driverKey;
 
-  // Per-driver rollup for the current period: who made mistakes, and how many.
-  // Deactivated drivers are left out — this chart is "who am I managing", not a
-  // record of the period. Their rows stay in the log and in every count below.
-  // The period's auto attempts, turned into records the charts can count.
-  //
-  // Attribution order matters: a saved reassignment WINS, because that's an operator
-  // correcting the feed. Then the feed's own morning-plan driver, matched to the
-  // roster so "Ben  Paintsil" and "Ben Paintsil" are one bar rather than two.
-  // Anything still nameless stays nameless rather than being guessed onto someone.
-  //
-  // Counted per ORDER, not per stop: dispatch's "-1" copy of a failed stop is the
-  // same failure, and counted on its own it always landed in "Unassigned" — 25 of the
-  // 40 unassigned attempts in one 30-day window. See attemptLegs.js.
-  const feedRecords = React.useMemo(() => {
-    if (!feedEnabled) return [];
-    const overrides = new Map();
-    for (const i of logIncidents) {
-      if (!i.attempt_stop_nbr) continue;
-      overrides.set(
-        `${i.attempt_stop_nbr}|${(i.delivered_date || "").slice(0, 10)}`,
-        i,
-      );
-    }
-    return groupAttemptLegs(periodFeed.rows).map((a) => {
-      const ov = [a, ...a.legRows]
-        .map((l) => overrides.get(`${l.stopNbr}|${a.date}`))
-        .find(Boolean);
-      const matched = ov ? null : matchDriver(a.originalDriverName || "", drivers);
-      return {
-        id: `feed:${a.date}:${a.stopNbr}`,
-        pro_number: a.shipmentNbr || a.stopNbr,
-        category: config.category,
-        driver_id: ov?.driver_id || matched?.id || null,
-        driver_name: ov?.driver_name || matched?.name || a.originalDriverName || "",
-        driver_raw: a.originalDriverName || "",
-        customer: a.businessName || "",
-        to_city: a.city || "",
-        to_state: a.state || "",
-        delivered_date: a.date,
-        created_at: a.detectedAt || a.date,
-        notes: a.note || "",
-        from_feed: true,
-        // The order behind the record, for the Unassigned list's reassign/open.
-        attempt: a,
-      };
-    });
-  }, [feedEnabled, periodFeed.rows, logIncidents, drivers, config.category]);
+  // Every attempt in the period, one record per order: the feed's auto attempts plus
+  // hand-logged ones, from the one builder every screen counts attempts with (see
+  // attemptRecords.js for the rules — -1/-2 duplicates folded into their original,
+  // a saved reassignment winning, reassignment rows not counted twice).
+  const attemptBuild = React.useMemo(
+    () =>
+      feedEnabled
+        ? buildAttemptRecords({ feedDays: periodFeed.days, incidents, drivers })
+        : null,
+    [feedEnabled, periodFeed.days, incidents, drivers],
+  );
+  const feedRecords = React.useMemo(
+    () => (attemptBuild ? attemptBuild.records.filter((r) => r.from_feed) : []),
+    [attemptBuild],
+  );
 
   // Nights the dispatch app's driver lookup could not finish (its 10-call limit, a
   // stop with no NuVizz id, a failed request), inside the period on screen.
@@ -639,14 +602,14 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     const rows = feedRecords
       .filter((r) => inWin(r.delivered_date) && !r.driver_name)
       .map((r) => {
-        const leadName = closedOutBy(r.attempt);
+        const leadName = closedOutBy(r.order);
         return {
           ...r,
-          why: unassignedReason(r.attempt) || "not_in_plan",
+          why: unassignedReason(r.order) || "not_in_plan",
           leadName,
           lead: leadName ? matchDriver(leadName, drivers) : null,
           // The nightly lookup's own report, when it could not read this one.
-          fillLeft: fillLeft.get(`${r.delivered_date}|${r.attempt?.stopNbr}`) || null,
+          fillLeft: fillLeft.get(`${r.delivered_date}|${r.order?.stopNbr}`) || null,
         };
       })
       .sort(
@@ -658,19 +621,46 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     for (const r of rows) byReason[r.why] = (byReason[r.why] || 0) + 1;
     // Stops folded into another stop's attempt — what dispatch's own total counts
     // on top of ours.
-    const copies =
-      periodFeed.rows.filter((a) => inWin(a.date)).length -
-      feedRecords.filter((r) => inWin(r.delivered_date)).length;
+    const copies = feedRecords
+      .filter((r) => inWin(r.delivered_date))
+      .reduce((n, r) => n + (r.order.legRows?.length || 1) - 1, 0);
     return { rows, byReason, withLead: rows.filter((r) => r.lead).length, copies };
-  }, [feedEnabled, feedRecords, periodFeed.rows, logPeriod.win, drivers, fillLeft]);
+  }, [feedEnabled, feedRecords, logPeriod.win, drivers, fillLeft]);
 
-  // What the analytics panel counts. On the feed tab that's the auto attempts plus
-  // any hand-entered ones — but NOT the reassignment rows, which are the attribution
-  // for a feed row and would otherwise count that attempt twice.
-  const analyticsRecords = React.useMemo(() => {
-    if (!feedEnabled) return logIncidents;
-    return [...feedRecords, ...logIncidents.filter((i) => !i.attempt_stop_nbr)];
-  }, [feedEnabled, feedRecords, logIncidents]);
+  // What the analytics panel counts. On the feed tab that's every attempt record
+  // (auto plus hand-entered); elsewhere, the category's incidents.
+  const analyticsRecords = React.useMemo(
+    () => (attemptBuild ? attemptBuild.records : logIncidents),
+    [attemptBuild, logIncidents],
+  );
+
+  // How much of the period the dispatch feed actually covers, for the line above
+  // the analytics: a day it has no data for is named, never counted as a quiet day.
+  const coverage = React.useMemo(() => {
+    const { start, end } = logPeriod.win;
+    return feedCoverage(periodFeed.days, start, end);
+  }, [periodFeed.days, logPeriod.win]);
+
+  // When the period has no feed data to count at all, every number in the panel is
+  // the hand-logged attempts alone — so it says that, rather than a bare 0 over "No
+  // records in this period" while the feed's ~100 attempts a month go unseen.
+  const feedGap = React.useMemo(() => {
+    if (!feedEnabled || periodFeed.status === "loading" || periodFeed.status === "idle")
+      return null;
+    const why =
+      periodFeed.status === "error"
+        ? "Couldn't reach the dispatch feed for this period"
+        : periodFeed.capped
+          ? "The dispatch feed isn't loaded for a period this long"
+          : coverage.of > 0 && coverage.loaded === 0
+            ? "The dispatch feed has no data for this period"
+            : coverage.of === 0 && (coverage.pending || coverage.todayFailed)
+              ? "Today's 8 PM scan hasn't run yet"
+              : coverage.of === 0 && coverage.beforeFeed > 0
+                ? `This period is before the dispatch feed started (${fmtMDY(FEED_EPOCH)})`
+                : null;
+    return why ? `${why} — only hand-logged attempts are counted, and none were logged.` : null;
+  }, [feedEnabled, periodFeed.status, periodFeed.capped, coverage]);
 
   // Rows for the ANALYTICS period, whatever the log below happens to be showing.
   // On the feed-backed tab the log is a single day, but the by-driver breakdown has
@@ -685,20 +675,23 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     });
   }, [analyticsRecords, logPeriod.win]);
 
+  // Per-driver rollup for the current period: who made mistakes, and how many.
+  // Deactivated drivers are left out — this chart is "who am I managing", not a
+  // record of the period. Their rows stay in the log and in every count below.
   const byDriver = React.useMemo(() => {
     const hidden = hiddenDriverIds(drivers);
     const m = new Map();
     for (const i of periodRows) {
       if (i.driver_id && hidden.has(i.driver_id)) continue;
       const name = driverNameOf(i);
-      const key = i.driver_id || `name:${name}`;
+      const key = keyOf(i);
       if (!m.has(key)) m.set(key, { key, id: i.driver_id || null, name, count: 0 });
       m.get(key).count += 1;
     }
     return [...m.values()].sort(
       (a, b) => b.count - a.count || a.name.localeCompare(b.name),
     );
-  }, [periodRows, driverNameOf, drivers]);
+  }, [periodRows, driverNameOf, drivers, keyOf]);
 
   // Build a handout PDF for the currently selected driver, covering exactly the
   // period the charts and log are showing. Uses the same driver key the chart
@@ -707,7 +700,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     if (!driverFilter) return;
     const row = byDriver.find((d) => d.key === driverFilter);
     const entries = periodRows.filter(
-      (i) => (i.driver_id || `name:${driverNameOf(i)}`) === driverFilter,
+      (i) => keyOf(i) === driverFilter,
     );
     if (!entries.length) {
       alert("No entries for that driver in this period.");
@@ -752,7 +745,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       .map((row) => ({
         row,
         entries: periodRows.filter(
-          (i) => (i.driver_id || `name:${driverNameOf(i)}`) === row.key,
+          (i) => keyOf(i) === row.key,
         ),
       }))
       .filter((t) => t.entries.length);
@@ -793,8 +786,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     const q = logSearch.trim().toLowerCase();
     return manualForView.filter((i) => {
       if (driverFilter) {
-        const key = i.driver_id || `name:${driverNameOf(i)}`;
-        if (key !== driverFilter) return false;
+        if (keyOf(i) !== driverFilter) return false;
       }
       if (!q) return true;
       return [
@@ -807,7 +799,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         fmtMDY(i.created_at),
       ].some((f) => String(f || "").toLowerCase().includes(q));
     });
-  }, [manualForView, logSearch, classifyField, driverFilter, driverNameOf]);
+  }, [manualForView, logSearch, classifyField, driverFilter, keyOf]);
 
   // filteredLog grouped under driver-name headers (only used when groupByDriver).
   const logGroups = React.useMemo(() => {
@@ -833,12 +825,24 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     [feedEnabled, feed.attempts, feedDate],
   );
 
-  // Same search applied to the auto (feed) rows — by PRO/driver/customer/route/stop.
+  // Same search applied to the auto (feed) rows — by PRO/driver/customer/route/stop —
+  // and the same driver filter, keyed by the driver the order is counted under (a
+  // saved reassignment included), so a bar's count and the day's rows agree.
+  const feedDayKeys = React.useMemo(() => {
+    if (!feedEnabled) return new Map();
+    const overrides = overrideIndex(incidents);
+    return new Map(
+      feedOrders.map((a) => [a, keyOf(feedRecord(a, { overrides, drivers }))]),
+    );
+  }, [feedEnabled, feedOrders, incidents, drivers, keyOf]);
   const filteredFeed = React.useMemo(() => {
     if (!feedEnabled) return [];
     const q = logSearch.trim().toLowerCase();
-    if (!q) return feedOrders;
-    return feedOrders.filter((a) =>
+    const forDriver = driverFilter
+      ? feedOrders.filter((a) => feedDayKeys.get(a) === driverFilter)
+      : feedOrders;
+    if (!q) return forDriver;
+    return forDriver.filter((a) =>
       [
         a.shipmentNbr,
         ...a.legRows.map((l) => l.stopNbr),
@@ -850,7 +854,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         a.routeName,
       ].some((f) => String(f || "").toLowerCase().includes(q)),
     );
-  }, [feedEnabled, feedOrders, logSearch]);
+  }, [feedEnabled, feedOrders, feedDayKeys, driverFilter, logSearch]);
 
   async function doPull() {
     const p = normalizeOrderId(pro);
@@ -991,6 +995,21 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
 
   const feedRows = feedOrders;
 
+  // Hand-logged rows on this day that the feed has too — same PRO, same day. The
+  // period counts each once, as the feed order (attemptRecords.js), so the log tags
+  // the hand-logged row and leaves it out of the day's count rather than disagree
+  // with the charts by one.
+  const handOnFeed = React.useMemo(() => {
+    if (!feedEnabled) return new Map();
+    const index = feedOrderIndex(feedOrders);
+    const m = new Map();
+    for (const i of manualForView) {
+      const o = feedOrderFor(i, index);
+      if (o) m.set(i.id, o);
+    }
+    return m;
+  }, [feedEnabled, feedOrders, manualForView]);
+
   // Open an attempt in the detail modal with every stop on its order. A duplicate
   // order (-1/-2) listed without its original opens as itself: its original has
   // nothing to do with it (Chad, 2026-10-01), so its history is not pulled in.
@@ -998,7 +1017,15 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   // Counts for the current view. On the feed-backed tab everything is scoped to
   // the selected day (manualForView is already date-filtered); elsewhere it's the
   // all-time manual total.
-  const totalOnRecord = manualForView.length + feedRows.length;
+  const manualCounted = manualForView.length - handOnFeed.size;
+  const totalOnRecord = manualCounted + feedRows.length;
+  // A day the feed has no data for (or that is before it, or whose request failed)
+  // must not read as "0 auto" in the heading.
+  const feedDayMissing =
+    feedEnabled &&
+    (feed.status === "error" ||
+      (feed.status === "ready" &&
+        (NO_DATA_STATUSES.has(feed.dayStatus) || feed.dayStatus === "before_feed")));
   const totalShown = filteredLog.length + filteredFeed.length;
   const allTimeManual = logIncidents.filter((i) => !i.attempt_stop_nbr).length;
 
@@ -1141,9 +1168,11 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       <h1 className="page-heading">
         {config.heading}
         <span className="meta">
-          {feedEnabled
-            ? ` · ${totalOnRecord} on ${fmtMDY(feedDate)} (${feedRows.length} auto, ${manualForView.length} manual) · ${allTimeManual} logged all-time`
-            : ` · ${manualForView.length} in ${logPeriod.label} · ${allTimeManual} all-time`}
+          {!feedEnabled
+            ? ` · ${manualForView.length} in ${logPeriod.label} · ${allTimeManual} all-time`
+            : feedDayMissing
+              ? ` · no feed data on ${fmtMDY(feedDate)} (${manualCounted} manual) · ${allTimeManual} logged all-time`
+              : ` · ${totalOnRecord} on ${fmtMDY(feedDate)} (${feedRows.length} auto, ${manualCounted} manual${handOnFeed.size ? `, ${handOnFeed.size} also on the feed` : ""}) · ${allTimeManual} logged all-time`}
         </span>
       </h1>
 
@@ -1351,6 +1380,16 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         drivers={drivers}
         onPeriodChange={setLogPeriod}
         leaderLabel={config.leaderLabel}
+        feedGap={feedGap}
+        statusLine={
+          feedEnabled ? (
+            <FeedCoverage
+              periodFeed={periodFeed}
+              coverage={coverage}
+              onRetry={() => setPeriodNonce((n) => n + 1)}
+            />
+          ) : null
+        }
       />
 
       {byDriver.length > 0 && (
@@ -1371,14 +1410,6 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                 <span className="meta">
                   {" "}· {byDriver.length} driver{byDriver.length === 1 ? "" : "s"},{" "}
                   {periodRows.length} entr{periodRows.length === 1 ? "y" : "ies"}
-                  {feedEnabled && periodFeed.status === "loading" && " · loading the period…"}
-                  {/* The auto attempts are fetched a day at a time, so a multi-month
-                      window would be hundreds of requests. Say the range is too wide
-                      rather than drawing a chart that silently omits them. */}
-                  {feedEnabled && periodFeed.capped &&
-                    ` · auto attempts not included over ${periodFeed.totalDays} days — pick a month or less`}
-                  {feedEnabled && periodFeed.status === "error" &&
-                    " · couldn't load the period's auto attempts"}
                 </span>
               </span>
               {/* Always-visible way to print one driver's report. Bound to the
@@ -1523,7 +1554,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                 periodLabel={logPeriod.label}
                 driverOptions={driverOptions}
                 onOpen={openAttempt}
-                onAssign={(r, driverId) => reassignAuto(r.attempt, driverId, r.delivered_date)}
+                onAssign={(r, driverId) => reassignAuto(r.order, driverId, r.delivered_date)}
               />
             )}
           </div>
@@ -1606,7 +1637,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                 {groupByDriver ? "☑ Grouped by driver" : "Group by driver"}
               </button>
             )}
-            {!feedEnabled && driverFilter && (
+            {driverFilter && (
               <button
                 type="button"
                 className="btn ghost sm"
@@ -1623,6 +1654,21 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
           {feedEnabled && feed.status === "error" && (
             <div className="empty-state" style={{ color: "var(--accent-red)" }}>
               Couldn't load auto attempts for {fmtMDY(feedDate)} ({feed.error}).
+            </div>
+          )}
+          {/* A night the evening scan never ran (or couldn't read NuVizz) is not a
+              night with no attempts — say which it is. */}
+          {feedEnabled && feed.status === "ready" && NO_DATA_STATUSES.has(feed.dayStatus) && (
+            <div className="empty-state" style={{ color: "#b45309" }}>
+              No data from the dispatch feed for {fmtMDY(feedDate)}:{" "}
+              {DAY_STATUS_TEXT[feed.dayStatus]}. That isn&apos;t the same as no attempts —
+              only hand-logged ones can show here.
+            </div>
+          )}
+          {feedEnabled && feed.status === "ready" && feed.dayStatus === "before_feed" && (
+            <div className="empty-state">
+              {fmtMDY(feedDate)} is before the dispatch feed started ({fmtMDY(FEED_EPOCH)}) —
+              only hand-logged attempts can show here.
             </div>
           )}
           {feedEnabled && feed.status === "ready" && feed.deriveError && (
@@ -1648,7 +1694,10 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
             </div>
           )}
           {totalOnRecord === 0 &&
-            !(feedEnabled && (feed.status === "loading" || feed.status === "error")) && (
+            !(
+              feedEnabled &&
+              (feed.status === "loading" || feedDayMissing)
+            ) && (
               <div className="empty-state">
                 {feedEnabled
                   ? `No attempts (auto or manual) for ${fmtMDY(feedDate)}.`
@@ -1720,7 +1769,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                   >
                     <option value="">
                       {a.originalDriverName
-                        ? `${a.originalDriverName} · ${ATTRIBUTION_SOURCE[a.attributedFrom] || "from feed"}`
+                        ? `${a.originalDriverName} · ${ATTRIBUTED_BY_TEXT[feedAttribution(a)]}`
                         : a.provisional
                           ? `Not yet attributed${a.currentDriverName ? ` · now on ${a.currentDriverName}` : ""}`
                           : "Unassigned — pick a driver"}
@@ -1788,11 +1837,21 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
           {/* Manually-logged entries. Feed tab keeps the compact flat rows;
               elsewhere they render as a column-headed, optionally grouped table. */}
           {feedEnabled
-            ? filteredLog.map((inc) => (
+            ? filteredLog.map((inc) => {
+                const onFeed = handOnFeed.get(inc.id);
+                return (
                 <div key={inc.id} className="ff-log-entry">
                   <div className="dd-incident-head" onClick={() => openDriver(inc)}>
                     <span className="ff-src-chip manual">MANUAL</span>
                     <span className="pro-num">{inc.pro_number}</span>
+                    {onFeed && (
+                      <span
+                        className="ff-item-chip"
+                        title={`The dispatch feed has this order on the same day, so it is counted once, as the feed's order — under ${overrideFor(onFeed)?.driver_name || onFeed.originalDriverName || "nobody yet"}. To charge someone else, reassign the feed's row above.`}
+                      >
+                        counted with feed order {onFeed.shipmentNbr || onFeed.stopNbr}
+                      </span>
+                    )}
                     <span className="lb-name" style={{ width: "auto" }}>{inc.driver_name}</span>
                     <span className="meta">{inc.customer || ""}</span>
                     {classifyField && inc[classifyField] && (
@@ -1806,7 +1865,8 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                   </div>
                   {renderEditRow(inc)}
                 </div>
-              ))
+                );
+              })
             : filteredLog.length > 0 && (
                 <>
                   <div className={`${gridClass} ff-log-head`}>
@@ -1853,6 +1913,95 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   );
 }
 
+// One line above the Attempts analytics: how much of the period the dispatch feed
+// covers, and which days it has no data for. The charts draw only the days that had
+// attempts, so without this a night the scan never ran looked exactly like a quiet
+// day. No-data days are grouped by reason and run together, so a week-long outage
+// is one range rather than seven dates.
+function FeedCoverage({ periodFeed, coverage, onRetry }) {
+  const retry = (
+    <button type="button" className="btn ghost sm" onClick={onRetry}>
+      Try again
+    </button>
+  );
+  let body;
+  if (periodFeed.status === "loading" || periodFeed.status === "idle") {
+    body = <span>loading the period…</span>;
+  } else if (periodFeed.status === "error") {
+    body = (
+      <>
+        <span className="ff-feed-coverage-gap">
+          couldn&apos;t load the period — only hand-logged attempts are counted below
+        </span>
+        {retry}
+      </>
+    );
+  } else if (periodFeed.capped) {
+    // A multi-month window would be hundreds of requests, so it isn't asked for.
+    body = (
+      <span className="ff-feed-coverage-gap">
+        not loaded — {periodFeed.totalDays} feed days is more than it can be asked for at
+        once (45). Pick a month or less; only hand-logged attempts are counted below.
+      </span>
+    );
+  } else {
+    const { of, loaded, noData, pending, todayFailed, beforeFeed } = coverage;
+    const groups = noDataRuns(noData);
+    body = (
+      <>
+        {of > 0 && (
+          <span>
+            {loaded} of {of} day{of === 1 ? "" : "s"}
+          </span>
+        )}
+        {groups.length > 0 && (
+          <span
+            className="ff-feed-coverage-gap"
+            title={noData.map((d) => `${fmtMDY(d.date)}: ${DAY_STATUS_TEXT[d.status]}`).join("\n")}
+          >
+            no data on{" "}
+            {groups.map((g, i) => (
+              <React.Fragment key={g.status}>
+                {i ? "; " : ""}
+                <strong>{fmtRuns(g.runs)}</strong> (
+                {g.days > 1 ? `${g.days} days, ` : ""}
+                {DAY_STATUS_TEXT[g.status]})
+              </React.Fragment>
+            ))}{" "}
+            — not counted as zero
+          </span>
+        )}
+        {pending && <span>{DAY_STATUS_TEXT.pending}</span>}
+        {todayFailed && (
+          <span className="ff-feed-coverage-gap">
+            today: {DAY_STATUS_TEXT.failed}
+          </span>
+        )}
+        {beforeFeed > 0 && (
+          <span>before {fmtMDY(FEED_EPOCH)}: hand-logged attempts only</span>
+        )}
+        {(todayFailed || noData.some((d) => d.status === "failed")) && retry}
+      </>
+    );
+  }
+  return (
+    <div className="ff-feed-coverage" role="status">
+      <span className="ff-feed-coverage-k">Dispatch feed</span>
+      {body}
+    </div>
+  );
+}
+
+// "09/02/2026, 09/08–10/07/2026": a single day in full, a run as MM/DD–MM/DD/YYYY.
+// Past three runs the rest are counted; every date is in the line's tooltip.
+function fmtRuns(runs) {
+  const one = (r) =>
+    r.from === r.to ? fmtMDY(r.from) : `${fmtMDY(r.from).slice(0, 5)}–${fmtMDY(r.to)}`;
+  const shown = runs.slice(0, 3).map(one).join(", ");
+  const rest = runs.slice(3).reduce((n, r) => n + r.days, 0);
+  return rest ? `${shown} and ${rest} more` : shown;
+}
+
 // The period's attempts with no driver, each with the reason and, when the feed has
 // one, a lead — so the "Unassigned" bar is a list to work through, not a mystery.
 // Assigning here saves the same reassignment the log's dropdown does, on the
@@ -1895,7 +2044,7 @@ function UnassignedAttempts({ data, periodLabel, driverOptions, onOpen, onAssign
               <button
                 type="button"
                 className="pro-num pro-num-link"
-                onClick={() => onOpen(r.attempt)}
+                onClick={() => onOpen(r.order)}
                 title="Open this order — details and its activity history"
               >
                 {r.pro_number}
