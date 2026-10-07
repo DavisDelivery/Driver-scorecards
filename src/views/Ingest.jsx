@@ -13,6 +13,7 @@ import {
 import { parseExcelFiles, buildIncidents, dedupeIncidents, resolveDriverId } from "../parsers/excelParser.js";
 import { fetchPhotosForProsBatch } from "../parsers/nuvizzClient.js";
 import { reportDateBounds, suggestReportName, reportSpanLabel } from "../reports/reportNaming.js";
+import { catChipStyle } from "../data/categories.js";
 
 /** Return the coming Friday (or today if today is Friday) in YYYY-MM-DD. */
 function nextFriday() {
@@ -642,7 +643,7 @@ export default function Ingest({ drivers, onReportCreated, onNavigateToReport })
                       <tr key={idx}>
                         <td className="pro-num">{inc.pro_number}</td>
                         <td>
-                          <span className={`chip ${inc.category}`}>
+                          <span className={`chip cat ${inc.category}`} style={catChipStyle(inc.category)}>
                             {inc.category}
                           </span>
                         </td>

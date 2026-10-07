@@ -1,17 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import {
-  ResponsiveContainer,
-  ComposedChart,
-  BarChart,
-  Bar,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-} from "recharts";
-import {
   getReports,
   getHistory,
   deleteIncidentsForReport,
@@ -26,21 +14,30 @@ import {
   buildYearlyTotals,
   availableYears,
   aggregateReport,
-  incidentDate,
-  relativeTime,
+  reportColumn,
+  REPORT_OTHER,
 } from "../data/analytics.js";
-import { reportSpanLabel } from "../reports/reportNaming.js";
+import { OTHER_COLOR, categoriesFor } from "../data/categories.js";
+import { historyCoverage } from "../data/liveHistoryBlend.js";
+import { reportSpanLabel, reportStartLabel } from "../reports/reportNaming.js";
+import { useHashState } from "../data/hashState.js";
+import { csvName } from "../data/csv.js";
 import ReportDetail from "./ReportDetail.jsx";
+import ChartCard from "./kit/ChartCard.jsx";
+import StackedColumns from "./kit/charts/StackedColumns.jsx";
+import { chartTable } from "./kit/shape.js";
+import { BRAND, PRIOR, axisTick } from "./kit/chartTheme.js";
 
-const DRIVER_FAULT_COLOR = "#234294";
+// The six stacked categories, bottom first, in the registry's order and colours.
+const SERIES = ANALYTICS_CATEGORIES.map((c) => ({ id: c.id, label: c.label, color: c.color }));
+// A weekly column also stacks "other" — returns, traces, complaints — in the gray an
+// uncharted category gets, so it adds up to the report's Inc.
+const WEEK_SERIES = [...SERIES, { id: REPORT_OTHER, label: "Other", color: OTHER_COLOR }];
+const GRANS = ["weekly", "monthly", "yearly"];
+const ymOf = (year, month) => `${year}-${String(month).padStart(2, "0")}`;
 
-// Weekly category columns surfaced in the dense table.
-const WEEK_COLS = [
-  { id: "damage", label: "Damage" },
-  { id: "misdelivery", label: "Misdeliv" },
-  { id: "missing", label: "Lost" },
-  { id: "late", label: "Late" },
-];
+// Weekly category columns surfaced in the dense table, in registry order.
+const WEEK_COLS = categoriesFor(["damage", "misdelivery", "late", "missing"]);
 
 // ── small presentational helpers ─────────────────────────────────────────────
 
@@ -106,21 +103,17 @@ function Sparkline({ values, width = 76, height = 22 }) {
   );
 }
 
-// Shared recharts tooltip styling.
-const TT_STYLE = {
-  background: "#fff",
-  border: "1px solid #dde3ec",
-  borderRadius: 6,
-  fontFamily: "JetBrains Mono",
-  fontSize: 11,
-  boxShadow: "0 2px 8px rgba(17,24,39,0.1)",
-};
-const LEGEND_STYLE = {
-  fontFamily: "JetBrains Mono",
-  fontSize: 10,
-  textTransform: "uppercase",
-  letterSpacing: "0.06em",
-};
+// A category column header: a swatch beside ink, never coloured text.
+function CatTh({ c }) {
+  return (
+    <th className="num">
+      <span className="th-swatch">
+        <i style={{ background: c.color }} aria-hidden="true" />
+        {c.label}
+      </span>
+    </th>
+  );
+}
 
 export default function Reports({
   drivers,
@@ -134,9 +127,12 @@ export default function Reports({
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState(initialReportId || null);
 
-  const [gran, setGran] = useState("weekly");
-  const [selectedYear, setSelectedYear] = useState(null);
-  const [selectedMonth, setSelectedMonth] = useState("all");
+  // Granularity, year and month live in the hash (rp.*), so they survive a tab switch
+  // and travel with a link.
+  const [granParam, setGran] = useHashState("rp.g", "weekly");
+  const gran = GRANS.includes(granParam) ? granParam : "weekly";
+  const [yearParam, setYearParam] = useHashState("rp.y", "");
+  const [selectedMonth, setSelectedMonth] = useHashState("rp.m", "all");
   const [search, setSearch] = useState("");
   const [sortCol, setSortCol] = useState("date");
   const [sortDir, setSortDir] = useState("desc");
@@ -169,12 +165,13 @@ export default function Reports({
     [incidents, history],
   );
 
-  // Default the year to the latest available once data loads.
-  useEffect(() => {
-    if (selectedYear == null && years.length > 0) {
-      setSelectedYear(years[years.length - 1]);
-    }
-  }, [years, selectedYear]);
+  // The year defaults to the latest available once data loads.
+  const selectedYear = years.includes(Number(yearParam))
+    ? Number(yearParam)
+    : years.length > 0
+      ? years[years.length - 1]
+      : null;
+  const setSelectedYear = (y) => setYearParam(String(y));
 
   // ── Weekly model: one row per report, enriched from live incidents ──────────
   const weeklyAll = useMemo(() => {
@@ -243,11 +240,12 @@ export default function Reports({
     const inYear = weeklyAll.filter(
       (r) => !selectedYear || Number(String(r.date).slice(0, 4)) === selectedYear,
     );
-    return inYear.slice(-12).map((r) => {
-      const row = { name: reportSpanLabel(r.report), fault: r.driverFault };
-      for (const c of ANALYTICS_CATEGORIES) row[c.id] = r.byCat[c.id] || 0;
-      return row;
-    });
+    return inYear.slice(-12).map((r) => ({
+      name: reportSpanLabel(r.report),
+      start: reportStartLabel(r.report),
+      fault: r.driverFault,
+      ...reportColumn(r.byCat, r.count),
+    }));
   }, [weeklyAll, selectedYear]);
 
   // ── Monthly / Yearly models (reconcile with Trends + Dashboard) ─────────────
@@ -268,14 +266,23 @@ export default function Reports({
     });
   }, [monthly]);
 
+  // Which categories each history month tracked: an untracked one reads "—", not 0.
+  const tracked = useMemo(() => historyCoverage(history, ANALYTICS_CATEGORY_IDS), [history]);
+
   const monthlyChart = useMemo(() => {
+    // A month with no data at all (no live rows, no history) is a gap in the chart and
+    // "—" in its table, never a column or a line point at 0.
     return monthly.map((m) => {
-      const ghost = prevMonthly[m.month - 1]?.total ?? 0;
-      const row = { name: m.monthName, ghost };
-      for (const c of ANALYTICS_CATEGORIES) row[c.id] = m.byCat[c.id] || 0;
+      const prior = prevMonthly[m.month - 1];
+      const ghost = !prior || prior.source === "none" ? null : prior.total;
+      const row = { name: m.monthName, ghost, source: m.source };
+      const has = m.source === "history" ? tracked(ymOf(selectedYear, m.month)) : null;
+      for (const c of ANALYTICS_CATEGORIES) {
+        row[c.id] = m.source === "none" || (has && !has.has(c.id)) ? null : m.byCat[c.id] || 0;
+      }
       return row;
     });
-  }, [monthly, prevMonthly]);
+  }, [monthly, prevMonthly, tracked, selectedYear]);
 
   const yearly = useMemo(
     () => buildYearlyTotals(incidents, history),
@@ -290,11 +297,16 @@ export default function Reports({
   const yearlyChart = useMemo(
     () =>
       yearly.map((y) => {
-        const row = { name: String(y.year) };
-        for (const c of ANALYTICS_CATEGORIES) row[c.id] = y.byCat[c.id] || 0;
+        const row = { name: String(y.year), source: y.source };
+        // A history-only year shows "—" for what none of its months tracked.
+        const has = new Set();
+        if (y.source === "history") for (let m = 1; m <= 12; m++) for (const c of tracked(ymOf(y.year, m))) has.add(c);
+        for (const c of ANALYTICS_CATEGORIES) {
+          row[c.id] = y.source === "history" && !has.has(c.id) ? null : y.byCat[c.id] || 0;
+        }
         return row;
       }),
-    [yearly],
+    [yearly, tracked],
   );
 
   // Reports whose representative date falls in a given year+month (for expanders).
@@ -505,34 +517,46 @@ export default function Reports({
 }
 
 // ── WEEKLY ───────────────────────────────────────────────────────────────────
+// The driver-fault count shares the incidents' count axis, so it can sit on the same
+// chart as a line; a rate or a percentage never could.
+const WEEK_FAULT_LINE = { id: "fault", label: "Driver fault", color: BRAND, line: true, dots: true };
 function WeeklyView({ rows, chart, kbIndex, onOpen, onDelete, onSort, sortArrow }) {
+  // The axis names each week by its first day; twelve whole spans ran into one smear at
+  // phone width. Ticks that would still collide are skipped, never overlapped.
+  const startOf = new Map(chart.map((r) => [r.name, r.start]));
   return (
     <>
-      <div className="card chart-band">
-        <div className="card-header">
-          <div className="card-title">Incidents per week · stacked by category</div>
-          <div className="chart-legend-note">line = driver-fault</div>
-        </div>
-        <div className="card-body" style={{ height: 260 }}>
-          {chart.length === 0 ? (
+      {chart.length === 0 ? (
+        <div className="card chart-band">
+          <div className="card-body">
             <div className="empty-state">No weeks in this period</div>
-          ) : (
-            <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={chart} margin={{ top: 10, right: 16, left: -8, bottom: 4 }}>
-                <CartesianGrid stroke="#eef2f7" vertical={false} />
-                <XAxis dataKey="name" tick={{ fontSize: 9, fontFamily: "JetBrains Mono", fill: "#6b7280" }} interval={0} angle={-20} textAnchor="end" height={50} />
-                <YAxis allowDecimals={false} tick={{ fontSize: 10, fontFamily: "JetBrains Mono", fill: "#6b7280" }} />
-                <Tooltip contentStyle={TT_STYLE} cursor={{ fill: "rgba(30,91,146,0.06)" }} />
-                <Legend wrapperStyle={LEGEND_STYLE} />
-                {ANALYTICS_CATEGORIES.map((c) => (
-                  <Bar key={c.id} dataKey={c.id} name={c.label} stackId="a" fill={c.color} />
-                ))}
-                <Line type="monotone" dataKey="fault" name="Driver fault" stroke={DRIVER_FAULT_COLOR} strokeWidth={2} dot={{ r: 2 }} />
-              </ComposedChart>
-            </ResponsiveContainer>
-          )}
+          </div>
         </div>
-      </div>
+      ) : (
+        <ChartCard
+          className="chart-band"
+          title="Incidents per week · stacked by category"
+          legend={[...WEEK_SERIES, WEEK_FAULT_LINE]}
+          table={chartTable({
+            rows: chart,
+            x: { key: "name", label: "Week" },
+            series: WEEK_SERIES,
+            lines: [WEEK_FAULT_LINE],
+            total: true,
+            source: "weekly report",
+          })}
+          csv={csvName("Reports weekly")}
+          height={280}
+        >
+          <StackedColumns
+            data={chart}
+            xKey="name"
+            series={WEEK_SERIES}
+            lines={[WEEK_FAULT_LINE]}
+            xAxis={{ tickFormatter: (name) => startOf.get(name) || name, interval: "preserveStartEnd", minTickGap: 6 }}
+          />
+        </ChartCard>
+      )}
 
       {rows.length === 0 ? (
         <div className="empty-state">No reports match this period</div>
@@ -550,7 +574,10 @@ function WeeklyView({ rows, chart, kbIndex, onOpen, onDelete, onSort, sortArrow 
                     <th onClick={() => onSort("withPhotos")} className="sortable num">Photos{sortArrow("withPhotos")}</th>
                     {WEEK_COLS.map((c) => (
                       <th key={c.id} onClick={() => onSort(c.id)} className="sortable num">
-                        {c.label}{sortArrow(c.id)}
+                        <span className="th-swatch">
+                          <i style={{ background: c.color }} aria-hidden="true" />
+                          {c.label}{sortArrow(c.id)}
+                        </span>
                       </th>
                     ))}
                     <th className="num">Trend</th>
@@ -606,28 +633,27 @@ function WeeklyView({ rows, chart, kbIndex, onOpen, onDelete, onSort, sortArrow 
 
 // ── MONTHLY ──────────────────────────────────────────────────────────────────
 function MonthlyView({ year, rows, chart, expandedKey, setExpandedKey, reportsInMonth, onOpen }) {
+  const priorLine = { id: "ghost", label: `${year - 1} total`, color: PRIOR, line: true };
   return (
     <>
-      <div className="card chart-band">
-        <div className="card-header">
-          <div className="card-title">{year} · monthly trend (stacked) with prior-year line</div>
-        </div>
-        <div className="card-body" style={{ height: 260 }}>
-          <ResponsiveContainer width="100%" height="100%">
-            <ComposedChart data={chart} margin={{ top: 10, right: 16, left: -8, bottom: 4 }}>
-              <CartesianGrid stroke="#eef2f7" vertical={false} />
-              <XAxis dataKey="name" tick={{ fontSize: 10, fontFamily: "JetBrains Mono", fill: "#6b7280" }} />
-              <YAxis allowDecimals={false} tick={{ fontSize: 10, fontFamily: "JetBrains Mono", fill: "#6b7280" }} />
-              <Tooltip contentStyle={TT_STYLE} cursor={{ fill: "rgba(30,91,146,0.06)" }} />
-              <Legend wrapperStyle={LEGEND_STYLE} />
-              {ANALYTICS_CATEGORIES.map((c) => (
-                <Bar key={c.id} dataKey={c.id} name={c.label} stackId="a" fill={c.color} />
-              ))}
-              <Line type="monotone" dataKey="ghost" name={`${year - 1} total`} stroke="#94a3b8" strokeWidth={2} strokeDasharray="4 3" dot={false} />
-            </ComposedChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
+      {/* Last year's total is a solid gray line: a dashed one reads as a projection. */}
+      <ChartCard
+        className="chart-band"
+        title={`${year} · monthly trend (stacked) with prior-year line`}
+        legend={[...SERIES, priorLine]}
+        table={chartTable({
+          rows: chart,
+          x: { key: "name", label: "Month" },
+          series: SERIES,
+          lines: [priorLine],
+          total: true,
+          source: (r) => r.source,
+        })}
+        csv={csvName("Reports monthly", year)}
+        height={280}
+      >
+        <StackedColumns data={chart} xKey="name" series={SERIES} lines={[priorLine]} />
+      </ChartCard>
 
       {rows.length === 0 ? (
         <div className="empty-state">No data for {year}</div>
@@ -642,7 +668,7 @@ function MonthlyView({ year, rows, chart, expandedKey, setExpandedKey, reportsIn
                     <th className="num">Total</th>
                     <th className="num">vs prior</th>
                     {ANALYTICS_CATEGORIES.map((c) => (
-                      <th key={c.id} className="num" style={{ color: c.color }}>{c.label}</th>
+                      <CatTh key={c.id} c={c} />
                     ))}
                     <th>Source</th>
                   </tr>
@@ -709,29 +735,30 @@ function MonthlyView({ year, rows, chart, expandedKey, setExpandedKey, reportsIn
 function YearlyView({ rows, chart, expandedKey, setExpandedKey, monthlyForYear }) {
   return (
     <>
-      <div className="card chart-band">
-        <div className="card-header">
-          <div className="card-title">Year totals by category</div>
-        </div>
-        <div className="card-body" style={{ height: 260 }}>
-          {chart.length === 0 ? (
+      {chart.length === 0 ? (
+        <div className="card chart-band">
+          <div className="card-body">
             <div className="empty-state">No yearly data</div>
-          ) : (
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chart} margin={{ top: 10, right: 16, left: -8, bottom: 4 }}>
-                <CartesianGrid stroke="#eef2f7" vertical={false} />
-                <XAxis dataKey="name" tick={{ fontSize: 12, fontFamily: "JetBrains Mono", fill: "#6b7280" }} />
-                <YAxis allowDecimals={false} tick={{ fontSize: 10, fontFamily: "JetBrains Mono", fill: "#6b7280" }} />
-                <Tooltip contentStyle={TT_STYLE} cursor={{ fill: "rgba(30,91,146,0.06)" }} />
-                <Legend wrapperStyle={LEGEND_STYLE} />
-                {ANALYTICS_CATEGORIES.map((c) => (
-                  <Bar key={c.id} dataKey={c.id} name={c.label} stackId="a" fill={c.color} />
-                ))}
-              </BarChart>
-            </ResponsiveContainer>
-          )}
+          </div>
         </div>
-      </div>
+      ) : (
+        <ChartCard
+          className="chart-band"
+          title="Year totals by category"
+          legend={SERIES}
+          table={chartTable({
+            rows: chart,
+            x: { key: "name", label: "Year" },
+            series: SERIES,
+            total: true,
+            source: (r) => r.source,
+          })}
+          csv={csvName("Reports yearly")}
+          height={280}
+        >
+          <StackedColumns data={chart} xKey="name" series={SERIES} xAxis={{ tick: { ...axisTick, fontSize: 12 } }} />
+        </ChartCard>
+      )}
 
       {rows.length === 0 ? (
         <div className="empty-state">No yearly data</div>
@@ -746,7 +773,7 @@ function YearlyView({ rows, chart, expandedKey, setExpandedKey, monthlyForYear }
                     <th className="num">Total</th>
                     <th className="num">YoY</th>
                     {ANALYTICS_CATEGORIES.map((c) => (
-                      <th key={c.id} className="num" style={{ color: c.color }}>{c.label}</th>
+                      <CatTh key={c.id} c={c} />
                     ))}
                   </tr>
                 </thead>

@@ -46,21 +46,14 @@ import {
   ATTRIBUTED_BY_TEXT,
 } from "../data/attemptRecords.js";
 import { reassignAttempt, overridesFor as savedOverridesFor } from "../data/attemptReassign.js";
-import { periodWindow } from "../data/period.js";
+import { catColor } from "../data/categories.js";
+import { csvName } from "../data/csv.js";
 import DriverModal from "./DriverModal.jsx";
 import StopDetailModal from "./StopDetailModal.jsx";
-import ManualEntryAnalytics from "./ManualEntryAnalytics.jsx";
-import {
-  ResponsiveContainer,
-  BarChart,
-  Bar,
-  Cell,
-  XAxis,
-  YAxis,
-  Tooltip,
-  CartesianGrid,
-  LabelList,
-} from "recharts";
+import ManualEntryAnalytics, { useTabPeriod } from "./ManualEntryAnalytics.jsx";
+import ChartCard from "./kit/ChartCard.jsx";
+import EmphasisBars from "./kit/charts/EmphasisBars.jsx";
+import { chartTable } from "./kit/shape.js";
 
 // Normalize what's typed into "Pull Order". Uline PROs are numeric and
 // zero-padded to 9 digits, so a purely-numeric entry gets that treatment
@@ -112,13 +105,17 @@ function AttemptStatusBadge({ a }) {
 // Config presets for the manual-entry tabs. Both pull a PRO from NuVizz, attribute
 // it to a driver, and log it as a manual incident; they differ only in copy,
 // category, and whether they carry a classification dropdown.
+//
+// A tab's colour is its category's, from categories.js — the configs used to carry
+// their own, and Forgotten Freight's orange no longer matched the charts'. `ns` is the
+// tab's namespace for its period in the URL hash (ff.p, att.p …).
 // Its own category, so every existing chart, rollup and leaderboard ignores it by
 // construction: they all enumerate the categories they count, and this isn't one.
 export const UNABLE_TO_TRACK = "unable_to_track";
 
 export const UNABLE_TO_TRACK_CONFIG = {
   category: UNABLE_TO_TRACK,
-  color: "#64748b",
+  ns: "utt",
   // Never a driver fault: the record is that we couldn't attribute the PRO, not that
   // somebody did something wrong.
   fault: "",
@@ -146,7 +143,7 @@ export const UNABLE_TO_TRACK_CONFIG = {
 
 export const FF_CONFIG = {
   category: "forgotten_freight",
-  color: "#f97316",
+  ns: "ff",
   heading: "Forgotten Freight",
   logTitle: "Forgotten Freight Log",
   // The driver with the most of these is the worst offender, not a top performer.
@@ -178,7 +175,7 @@ export const FF_CONFIG = {
 
 export const MISDELIVERY_CONFIG = {
   category: "misdelivery",
-  color: "#f472b6",
+  ns: "mis",
   heading: "Mis-Deliveries",
   logTitle: "Mis-Delivery Log",
   leaderLabel: "Most mis-deliveries",
@@ -196,7 +193,7 @@ export const MISDELIVERY_CONFIG = {
 
 export const COMPLIMENTS_CONFIG = {
   category: "compliment",
-  color: "#22c55e",
+  ns: "cmp",
   // A compliment is positive credit to the driver — NOT a fault. Empty fault keeps
   // it out of driver-fault counts while still crediting the compliment category.
   fault: "",
@@ -213,7 +210,7 @@ export const COMPLIMENTS_CONFIG = {
 
 export const ATTEMPTS_CONFIG = {
   category: "attempts",
-  color: "#14b8a6",
+  ns: "att",
   heading: "Attempts",
   logTitle: "Attempts Log",
   leaderLabel: "Most attempts",
@@ -248,14 +245,12 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   const [savedWarn, setSavedWarn] = React.useState(false);
   const [focus, setFocus] = React.useState(null);
   const [logSearch, setLogSearch] = React.useState("");
-  // The window + label the analytics panel is currently showing; the detail log
-  // scopes itself to this so the log matches the charts (non-feed tabs). Seeded
-  // with the analytics default (30d) to avoid a first-render flash before the
-  // panel's onPeriodChange fires.
-  const [logPeriod, setLogPeriod] = React.useState(() => ({
-    win: periodWindow("30d"),
-    label: "Last 30 Days",
-  }));
+  // The window + label the analytics panel is showing; the detail log scopes itself
+  // to this so the log matches the charts (non-feed tabs). Both read the same period
+  // from the URL hash, so they can't disagree.
+  const { win: logWin, label: logLabel } = useTabPeriod(config.ns);
+  const logPeriod = React.useMemo(() => ({ win: logWin, label: logLabel }), [logWin, logLabel]);
+  const color = catColor(config.category);
   // Log view controls: group rows under driver headers, and/or filter to one
   // driver (set by clicking a driver in the By-Driver summary).
   const [groupByDriver, setGroupByDriver] = React.useState(false);
@@ -1375,10 +1370,11 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
 
       <ManualEntryAnalytics
         title={config.heading}
-        color={config.color || "var(--davis-blue)"}
+        color={color}
         records={analyticsRecords}
         drivers={drivers}
-        onPeriodChange={setLogPeriod}
+        ns={config.ns}
+        sourceLabel={feedEnabled ? "dispatch feed + hand-logged" : "logged entries"}
         leaderLabel={config.leaderLabel}
         feedGap={feedGap}
         statusLine={
@@ -1459,55 +1455,29 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                 </button>
               </span>
             </div>
-            <ResponsiveContainer
-              width="100%"
+            <ChartCard
+              inset
+              title="Entries by driver"
+              table={chartTable({
+                rows: byDriver,
+                x: { key: "name", label: "Driver" },
+                series: [{ id: "count", label: config.heading }],
+                source: feedEnabled ? "dispatch feed + hand-logged" : "logged entries",
+              })}
+              csv={csvName(config.heading, "by driver", logPeriod.label)}
               height={Math.max(120, byDriver.length * 30 + 16)}
             >
-              <BarChart
+              <EmphasisBars
+                layout="bars"
                 data={byDriver}
-                layout="vertical"
-                margin={{ top: 4, right: 30, left: 8, bottom: 4 }}
-                barCategoryGap={7}
-              >
-                <CartesianGrid strokeDasharray="3 3" stroke="#eef1f5" horizontal={false} />
-                <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
-                <YAxis
-                  type="category"
-                  dataKey="name"
-                  width={132}
-                  tick={{ fontSize: 12 }}
-                  interval={0}
-                />
-                <Tooltip
-                  cursor={{ fill: "rgba(0,0,0,0.04)" }}
-                  formatter={(v) => [v, "Entries"]}
-                />
-                <Bar
-                  dataKey="count"
-                  radius={[0, 3, 3, 0]}
-                  cursor="pointer"
-                  onClick={(d) =>
-                    setDriverFilter(driverFilter === d.key ? null : d.key)
-                  }
-                >
-                  <LabelList
-                    dataKey="count"
-                    position="right"
-                    style={{ fontSize: 11, fill: "#475569", fontFamily: "var(--mono)" }}
-                  />
-                  {byDriver.map((d) => (
-                    <Cell
-                      key={d.key}
-                      fill={
-                        driverFilter && driverFilter !== d.key
-                          ? "#cbd5e1"
-                          : config.color || "var(--davis-blue)"
-                      }
-                    />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+                xKey="name"
+                valueName="Entries"
+                color={color}
+                highlightKey={driverFilter}
+                onMark={(d) => setDriverFilter(driverFilter === d.key ? null : d.key)}
+                labelAll
+              />
+            </ChartCard>
             <div className="ff-bydriver-hint">
               {driverFilter ? (
                 <button

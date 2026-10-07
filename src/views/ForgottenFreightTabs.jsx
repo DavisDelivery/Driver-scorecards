@@ -10,6 +10,7 @@
 // charts and leaderboard read category === "forgotten_freight" and never see these.
 import React from "react";
 import ManualEntry, { FF_CONFIG, UNABLE_TO_TRACK_CONFIG, UNABLE_TO_TRACK } from "./ManualEntry.jsx";
+import { useHashState } from "../data/hashState.js";
 
 const TABS = [
   ["ff", "Forgotten Freight"],
@@ -17,7 +18,10 @@ const TABS = [
 ];
 
 export default function ForgottenFreightTabs({ drivers, incidents, onSaved }) {
-  const [sub, setSub] = React.useState("ff");
+  // In the hash (ff.sub) so a link, or a trip to another tab and back, lands on the
+  // same sub-tab.
+  const [subParam, setSub] = useHashState("ff.sub", "ff");
+  const sub = TABS.some(([id]) => id === subParam) ? subParam : "ff";
   const untrackedCount = incidents.filter((i) => i.category === UNABLE_TO_TRACK).length;
 
   return (

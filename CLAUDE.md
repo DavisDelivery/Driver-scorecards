@@ -52,10 +52,26 @@ seeding), catch it there deliberately and say why in a comment.
 - File an incident under a month with `incidentYm()` / `incidentDateStr()` from
   `src/data/incidentDate.js`. Hand-copied date precedences drifted apart before.
 
+## Categories, charts and screen state
+
+- `src/data/categories.js` is the only place a category gets its label, polarity
+  (failure / attempt / credit / excluded) or colour — screens and both PDFs read it.
+  Never spell a category hex anywhere else, CSS included; `test/categories.test.mjs` fails
+  if you do. A hex that is also a status or neutral token (the fault red, the slates) is
+  allowed only in the files that test names, with the reason.
+  The stack order is validated with the dataviz palette validator; re-run it before
+  changing a hue or the order.
+- Charts go through the kit in `src/views/kit/` (`ChartCard` with its table view and CSV,
+  `StackedColumns`, `EmphasisBars`, `PeriodBar`). Text stays ink; colour is on the marks.
+  What a chart draws is decided in `kit/shape.js`, which is pure and tested.
+- The open tab and each tab's filters live in the URL hash (`src/data/hashState.js`),
+  under per-tab keys (`sc.p`, `att.p`, `tr.y` …) — never a bare shared key.
+
 ## Reports
 
 - `src/reports/pdfGenerator.js` — the weekly accountability report across all drivers.
-  Owns the shared style primitives (palette, `drawBadge`, `loadImage`, `fitDims`).
+  Owns the shared print primitives (brand and ink palette, `drawBadge`, `loadImage`,
+  `fitDims`). Category colours come from `categories.js`, not from here.
 - `src/reports/driverReport.js` — single-driver handout for the selected period, printed
   from the manual-entry tabs. Imports its styling from `pdfGenerator.js` so the two can't
   drift apart.

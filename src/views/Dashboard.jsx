@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { INCIDENT_CATEGORIES, hiddenDriverIds } from "../data/drivers.js";
+import { hiddenDriverIds } from "../data/drivers.js";
 import { getHistory } from "../data/firebase.js";
 import DriverModal from "./DriverModal.jsx";
 import CategoryDetail from "./CategoryDetail.jsx";
@@ -7,6 +7,11 @@ import { CategoryLeaderboard } from "./leaderboard.jsx";
 import AttemptsScorecardCard from "./AttemptsScorecardCard.jsx";
 import { countsTowardCharts } from "../data/liveHistoryBlend.js";
 import { incidentDateStr } from "../data/incidentDate.js";
+import { COUNTED8, categoriesFor } from "../data/categories.js";
+import { MONTH_PRESETS, monthWindow, currentYmET } from "../data/period.js";
+import { useHashState } from "../data/hashState.js";
+import PeriodBar, { usePeriodState } from "./kit/PeriodBar.jsx";
+import StatTile from "./kit/StatTile.jsx";
 
 // Month names used throughout the scorecard.
 const MONTH_NAMES = [
@@ -14,82 +19,32 @@ const MONTH_NAMES = [
   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
-// Scorecard chart categories — derived from INCIDENT_CATEGORIES, using the
-// display titles that appear in the bundle (bundle wins on text).  Only the 8
-// categories that have chart panels are included here.
-const CHART_CATEGORIES = [
-  { id: "forgotten_freight", title: "Forgotten Freight", color: "#fb923c" },
-  { id: "damage",            title: "Damages",           color: "#dc3545" },
-  { id: "missing",           title: "Lost / Missing",    color: "#a855f7" },
-  { id: "misdelivery",       title: "Misdeliveries",     color: "#f472b6" },
-  { id: "attempts",          title: "Attempts",          color: "#14b8a6" },
-  { id: "late",              title: "Lates",             color: "#facc15" },
-  { id: "complaint",         title: "Complaints",        color: "#ef4444" },
-  { id: "compliment",        title: "Compliments",       color: "#22c55e" },
-];
+// Scorecard chart categories: the eight the history rollup tracks, in the registry's
+// order and colours (categories.js), with the plural chart titles.
+const CHART_CATEGORIES = categoriesFor(COUNTED8).map(({ id, title, color }) => ({ id, title, color }));
 
 const CHART_CAT_IDS = CHART_CATEGORIES.map((c) => c.id);
-
-// Validate ids against INCIDENT_CATEGORIES to stay in sync with the shared vocabulary.
-// (Runtime check only — does not affect bundle output.)
-const _validIds = new Set(INCIDENT_CATEGORIES.map((c) => c.id));
-CHART_CATEGORIES.forEach((c) => {
-  if (!_validIds.has(c.id)) {
-    console.warn(`Dashboard: category id "${c.id}" not found in INCIDENT_CATEGORIES`);
-  }
-});
-
-
-// List of YYYY-MM strings for the selected comparison period.
-function computePeriodMonths(sel, from, to) {
-  const now = new Date();
-  const ym = (d) => `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
-  const cur = new Date(Date.UTC(now.getFullYear(), now.getMonth(), 1));
-  if (sel === "this") return [ym(cur)];
-  if (sel === "last") {
-    return [ym(new Date(Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth() - 1, 1)))];
-  }
-  if (sel === "custom") {
-    if (!from || !to) return [ym(cur)];
-    let [fy, fm] = from.split("-").map(Number);
-    const [ty, tm] = to.split("-").map(Number);
-    const out = [];
-    while (fy < ty || (fy === ty && fm <= tm)) {
-      out.push(`${fy}-${String(fm).padStart(2, "0")}`);
-      fm++;
-      if (fm > 12) { fm = 1; fy++; }
-      if (out.length >= 36) break; // sanity cap
-    }
-    return out.length ? out : [ym(cur)];
-  }
-  const n = Number(sel) || 1;
-  const out = [];
-  for (let i = 0; i < n; i++) {
-    out.push(ym(new Date(Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth() - i, 1))));
-  }
-  return out;
-}
 
 const PERIOD_LABELS = { this: "MO", last: "LMO", 3: "3M", 6: "6M", 12: "12M", custom: "SEL" };
 
 // ─── Dashboard (default export) ──────────────────────────────────────────────
 export default function Dashboard({ incidents, drivers }) {
-  const now = new Date();
-  // Local (not UTC) YYYY-MM so the default month doesn't jump ahead on the last
-  // evening of the month in the US/Eastern operating timezone.
-  const [selectedMonth, setSelectedMonth] = useState(
-    `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`,
-  );
-  const [faultFilter, setFaultFilter] = useState("all");
+  // The month picker, the period and the fault scope live in the URL hash under sc.*,
+  // so they survive a tab switch and a link opens the same view. The default month is
+  // the current month in Eastern time, so it doesn't jump ahead on the last evening of
+  // the month.
+  const [monthParam, setSelectedMonth] = useHashState("sc.m", currentYmET());
+  const selectedMonth = /^\d{4}-\d{2}$/.test(monthParam) ? monthParam : currentYmET();
+  const [faultParam, setFaultFilter] = useHashState("sc.fault", "all");
+  const faultFilter = faultParam === "driver" ? "driver" : "all";
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   // Drill-downs. `focus` is a driver opened from a chart (scoped to that chart's
   // category); `openCat` is a whole chart opened for its full detail.
   const [focus, setFocus] = useState(null); // { id, category }
   const [openCat, setOpenCat] = useState(null); // { category, roleGroup }
-  const [periodSel, setPeriodSel] = useState("this"); // this|last|3|6|12|custom
-  const [customFrom, setCustomFrom] = useState("");
-  const [customTo, setCustomTo] = useState("");
+  const [period, setPeriod] = usePeriodState("sc", MONTH_PRESETS, "this");
+  const { p: periodSel, from: customFrom, to: customTo } = period;
 
   // Load all history records on mount.
   useEffect(() => {
@@ -177,9 +132,14 @@ export default function Dashboard({ incidents, drivers }) {
       return entry;
     };
 
-    // The window of months we need: the selected year (for YTD) plus enough
-    // months before the selected month to cover the trailing period.
-    const periodMonths = computePeriodMonths(periodSel, customFrom, customTo);
+    // The window of months we need: the selected year (for YTD) plus the period. The
+    // period still counts back from THIS month, not the picked one, exactly as before;
+    // anchoring it to the month picker is a number change and ships on its own.
+    const periodMonths = monthWindow(periodSel, {
+      anchor: currentYmET(),
+      from: customFrom,
+      to: customTo,
+    }).months;
     // Year to date means the year being looked at — the month picker's year, which is
     // what selectedYear and yearHistory already use. This used to take the year of the
     // OLDEST month in the trailing period, so any period reaching back over Jan 1 moved
@@ -408,90 +368,44 @@ export default function Dashboard({ incidents, drivers }) {
       </h1>
 
       <div className="toolbar">
-        <select
-          value={selectedMonth}
-          onChange={(e) => setSelectedMonth(e.target.value)}
-          style={{ width: 180 }}
-        >
-          {availableMonths.map((ym) => {
-            const [yr, mo] = ym.split("-");
-            return (
-              <option key={ym} value={ym}>
-                {MONTH_NAMES[parseInt(mo, 10) - 1]} {yr}
-              </option>
-            );
-          })}
-        </select>
-
-        <div className="month-picker">
-          {[
-            ["this", "This Mo"],
-            ["last", "Last Mo"],
-            ["3", "3M"],
-            ["6", "6M"],
-            ["12", "12M"],
-            ["custom", "Custom"],
-          ].map(([val, label]) => (
-            <button
-              key={val}
-              className={`month-btn ${periodSel === val ? "active" : ""}`}
-              onClick={() => setPeriodSel(val)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        {periodSel === "custom" && (
-          <div className="custom-range">
-            <input type="month" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} />
-            <span className="meta">to</span>
-            <input type="month" value={customTo} onChange={(e) => setCustomTo(e.target.value)} />
-          </div>
-        )}
-
-        <div className="month-picker">
-          <button
-            className={`month-btn ${faultFilter === "all" ? "active" : ""}`}
-            onClick={() => setFaultFilter("all")}
-          >
-            All Incidents
-          </button>
-          <button
-            className={`month-btn ${faultFilter === "driver" ? "active" : ""}`}
-            onClick={() => setFaultFilter("driver")}
-            disabled={isHistorical}
-            title={isHistorical ? "Fault filter unavailable for historical rollup data" : ""}
-          >
-            Driver Fault Only
-          </button>
-        </div>
+        <PeriodBar
+          grain="month"
+          presets={MONTH_PRESETS}
+          value={period}
+          onChange={setPeriod}
+          anchor={{
+            value: selectedMonth,
+            onChange: setSelectedMonth,
+            label: "Month",
+            options: availableMonths.map((ym) => {
+              const [yr, mo] = ym.split("-");
+              return { value: ym, label: `${MONTH_NAMES[parseInt(mo, 10) - 1]} ${yr}` };
+            }),
+          }}
+          fault={{
+            value: faultFilter,
+            onChange: setFaultFilter,
+            disabled: isHistorical,
+            title: isHistorical ? "Fault filter unavailable for historical rollup data" : "",
+          }}
+        />
       </div>
 
+      {/* Plain tiles: none of these numbers is a status, so none wears a status
+          colour — the old amber and red rules sat beside Late's and Damage's hues. */}
       <div className="kpi-grid">
-        <div className="kpi">
-          <div className="kpi-label">This Month</div>
-          <div className="kpi-value">{totalThisMonth}</div>
-          <div className="kpi-delta">Total incidents</div>
-        </div>
-        <div className="kpi amber">
-          <div className="kpi-label">Year to Date</div>
-          <div className="kpi-value">{totalYtd}</div>
-          <div className="kpi-delta">{selectedYear} cumulative</div>
-        </div>
-        <div className="kpi red">
-          <div className="kpi-label">Driver Fault (Month)</div>
-          <div className="kpi-value">{driverFaultCount === null ? "—" : driverFaultCount}</div>
-          <div className="kpi-delta">
-            {driverFaultCount === null ? "Not tracked in history" : "Attributed to drivers"}
-          </div>
-        </div>
-        <div className="kpi green">
-          <div className="kpi-label">Exonerated (Month)</div>
-          <div className="kpi-value">{exoneratedCount === null ? "—" : exoneratedCount}</div>
-          <div className="kpi-delta">
-            {exoneratedCount === null ? "Not tracked in history" : "Preload / warehouse / vendor"}
-          </div>
-        </div>
+        <StatTile label="This Month" value={totalThisMonth} sub="Total incidents" />
+        <StatTile label="Year to Date" value={totalYtd} sub={`${selectedYear} cumulative`} />
+        <StatTile
+          label="Driver Fault (Month)"
+          value={driverFaultCount === null ? "—" : driverFaultCount}
+          sub={driverFaultCount === null ? "Not tracked in history" : "Attributed to drivers"}
+        />
+        <StatTile
+          label="Exonerated (Month)"
+          value={exoneratedCount === null ? "—" : exoneratedCount}
+          sub={exoneratedCount === null ? "Not tracked in history" : "Preload / warehouse / vendor"}
+        />
       </div>
 
       <div className="section-head">

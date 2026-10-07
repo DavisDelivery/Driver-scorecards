@@ -14,6 +14,7 @@ import {
   getIncidentPhotosBatch,
 } from "../data/firebase.js";
 import IncidentEditor from "./IncidentEditor.jsx";
+import { catChipStyle } from "../data/categories.js";
 
 // Category group ordering for the grouped view.
 const CATEGORY_ORDER = [
@@ -721,7 +722,7 @@ export default function IncidentTable({
                               <td>{inc.ship_date || inc.return_date || inc.delivered_date || inc.trace_date || "—"}</td>
                               {grouping !== "category" && (
                                 <td>
-                                  <span className={`chip ${inc.category}`}>
+                                  <span className={`chip cat ${inc.category}`} style={catChipStyle(inc.category)}>
                                     {inc.category}
                                   </span>
                                 </td>

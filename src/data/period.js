@@ -206,3 +206,154 @@ export function periodLabel(sel, rangeFrom, rangeTo) {
   const found = PERIODS.find(([v]) => v === sel);
   return found ? found[1] : "";
 }
+
+// ── Month grain and calendar helpers ─────────────────────────────────────────
+// The Scorecard picks whole months; the manual-entry tabs pick days. Both live here so
+// there is one ET-safe vocabulary, and nothing in it ever puts a YYYY-MM-DD through
+// new Date(ymd) — that reads a bare date as UTC midnight, which in Eastern time is the
+// PREVIOUS day. Every day below is read from the string's own year/month/day.
+
+const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const ymdParts = (ymd) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(ymd || ""));
+  return m ? [+m[1], +m[2], +m[3]] : null;
+};
+const fromUTC = (t) => {
+  const d = new Date(t);
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
+};
+const daysIn = (y, m) => new Date(Date.UTC(y, m, 0)).getUTCDate();
+const fmtYm = (ym) => `${MONTH_ABBR[Number(ym.slice(5, 7)) - 1]} ${ym.slice(0, 4)}`;
+
+// Weekday of a calendar day, 0 = Sun … 6 = Sat; null for anything that isn't a date.
+export function weekdayOfYmd(ymd) {
+  const p = ymdParts(ymd);
+  return p ? new Date(Date.UTC(p[0], p[1] - 1, p[2])).getUTCDay() : null;
+}
+
+// A calendar day moved by k days (k may be negative). UTC arithmetic, so no DST.
+export function addDays(ymd, k) {
+  const p = ymdParts(ymd);
+  return p ? fromUTC(Date.UTC(p[0], p[1] - 1, p[2] + k)) : "";
+}
+
+// "YYYY-MM" moved by k months (k may be negative), across year ends.
+export function shiftYm(ym, k) {
+  const [y, m] = String(ym).split("-").map(Number);
+  const i = y * 12 + (m - 1) + k;
+  return ymKey(Math.floor(i / 12), (((i % 12) + 12) % 12) + 1);
+}
+
+// The current month in Eastern time, as YYYY-MM.
+export const currentYmET = () => {
+  const now = nowET();
+  return ymKey(now.getFullYear(), now.getMonth() + 1);
+};
+
+// Mon–Fri days in a month, counting only days up to `throughDay` when given (a day
+// number, or a YYYY-MM-DD in that month) — so a month still in progress is compared
+// on the days it has had. Holidays are not removed: there is no holiday calendar.
+export function workdaysInMonth(ym, { throughDay } = {}) {
+  const [y, m] = String(ym).split("-").map(Number);
+  let last = daysIn(y, m);
+  if (throughDay != null) {
+    const day = typeof throughDay === "string" ? ymdParts(throughDay)?.[2] : Number(throughDay);
+    if (Number.isFinite(day)) last = Math.max(0, Math.min(last, day));
+  }
+  let n = 0;
+  for (let d = 1; d <= last; d++) {
+    const wd = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+    if (wd >= 1 && wd <= 5) n++;
+  }
+  return n;
+}
+
+// Month-grain presets, as the Scorecard shows them.
+export const MONTH_PRESETS = [
+  ["this", "This Mo"],
+  ["last", "Last Mo"],
+  ["3", "3M"],
+  ["6", "6M"],
+  ["12", "12M"],
+  ["custom", "Custom"],
+];
+const MONTH_PRESET_LABEL = {
+  this: "This Mo",
+  last: "Last Mo",
+  3: "Last 3 Mo",
+  6: "Last 6 Mo",
+  12: "Last 12 Mo",
+};
+
+// Resolve a month-grain preset into { months, label }, months ascending (YYYY-MM).
+//   anchor      the month the preset counts back from (default: this month, ET)
+//   from / to   YYYY-MM bounds for "custom"
+// "ytd" is January through the anchor. A custom range missing either end, or picked
+// backwards, falls back to the anchor month, and is capped at 36 months — exactly what
+// the Scorecard's own month list did before it moved here.
+export function monthWindow(preset, { anchor, from, to } = {}) {
+  const a = /^\d{4}-\d{2}$/.test(anchor || "") ? anchor : currentYmET();
+  const span = (first, n) => Array.from({ length: n }, (_, i) => shiftYm(first, i));
+  if (preset === "this") return { months: [a], label: MONTH_PRESET_LABEL.this };
+  if (preset === "last") return { months: [shiftYm(a, -1)], label: MONTH_PRESET_LABEL.last };
+  if (preset === "ytd") {
+    const n = Number(a.slice(5, 7));
+    return { months: span(`${a.slice(0, 4)}-01`, n), label: `YTD ${a.slice(0, 4)}` };
+  }
+  if (preset === "custom") {
+    const ok = (s) => /^\d{4}-\d{2}$/.test(s || "");
+    if (!ok(from) || !ok(to) || from > to) return { months: [a], label: fmtYm(a) };
+    const months = [];
+    for (let ym = from; ym <= to && months.length < 36; ym = shiftYm(ym, 1)) months.push(ym);
+    const label =
+      months.length === 1 ? fmtYm(months[0]) : `${fmtYm(months[0])} – ${fmtYm(months[months.length - 1])}`;
+    return { months, label };
+  }
+  const n = Number(preset) || 1;
+  return {
+    months: span(shiftYm(a, -(n - 1)), n),
+    label: MONTH_PRESET_LABEL[n] || `Last ${n} Mo`,
+  };
+}
+
+const monthStart = (ym) => `${ym}-01`;
+const monthEnd = (ym) => `${ym}-${pad2(daysIn(Number(ym.slice(0, 4)), Number(ym.slice(5, 7))))}`;
+
+// The window to compare a window against, in the same shape.
+//   "prior"  the same length immediately before it
+//   "yoy"    the same months (or days) one year earlier; Feb 29 falls back to Feb 28
+// Works for month windows ({ months }) and day windows ({ start, end }).
+export function comparisonWindow(win, mode = "prior") {
+  if (win && Array.isArray(win.months) && win.months.length && !win.start) {
+    const months =
+      mode === "yoy"
+        ? win.months.map((ym) => shiftYm(ym, -12))
+        : win.months.map((ym) => shiftYm(ym, -win.months.length));
+    return { months, label: mode === "yoy" ? "Same months last year" : `Prior ${months.length} mo` };
+  }
+  const p = ymdParts(win?.start);
+  const q = ymdParts(win?.end);
+  if (!p || !q) return null;
+  // A day window that is whole calendar months (This Mo, 6M) compares month for month,
+  // and its days are rebuilt from those months so the two can't disagree. Counting
+  // 184 days back from May 1 lands on Oct 29, three days outside the prior six months;
+  // a year back from Feb 28, 2025 would miss Feb 29, 2024.
+  const ms = win.months || [];
+  if (ms.length && win.start === monthStart(ms[0]) && win.end === monthEnd(ms[ms.length - 1])) {
+    const months = ms.map((ym) => shiftYm(ym, mode === "yoy" ? -12 : -ms.length));
+    return { ...win, start: monthStart(months[0]), end: monthEnd(months[months.length - 1]), months };
+  }
+  let start;
+  let end;
+  if (mode === "yoy") {
+    const back = ([y, m, d]) => fromUTC(Date.UTC(y - 1, m - 1, Math.min(d, daysIn(y - 1, m))));
+    start = back(p);
+    end = back(q);
+  } else {
+    const len = daysBetween(win.start, win.end);
+    end = addDays(win.start, -1);
+    start = addDays(end, -(len - 1));
+  }
+  // A part-month range keeps its days; its months are whichever those days touch.
+  return { ...win, start, end, months: ms.length ? monthsBetween(start, end) : [] };
+}

@@ -26,3 +26,33 @@ export function countsTowardCharts(inc, { categoryIds, faultFilter = null } = {}
   if (!Array.isArray(categoryIds)) return false;
   return categoryIds.includes(inc.category);
 }
+
+// Which categories a rolled-up history month actually tracked, as ym => Set of ids.
+//
+// The backfill held lost/missing only for 2023 and FF/damage/misdelivery only for 2024,
+// and a report rollup never carries FF or attempts. So in a month served from history,
+// a 0 for any other category means "not tracked", not "none happened", and a table
+// shows it as "—". A category counts as tracked in a month when one of the sources the
+// month's records came from (backfill, report) holds that category anywhere in the
+// same year. This only decides how a cell reads; it never changes a count.
+export function historyCoverage(history, categoryIds) {
+  const catsBy = new Map(); // "year|source" -> Set of category ids
+  const sourcesBy = new Map(); // ym -> Set of sources
+  const add = (map, key, value) => (map.get(key) || map.set(key, new Set()).get(key)).add(value);
+  for (const rec of history || []) {
+    if (!rec || !categoryIds.includes(rec.category)) continue;
+    const y = Number(rec.year);
+    const m = Number(rec.month);
+    if (!y || !m) continue;
+    const source = rec.source || "";
+    add(catsBy, `${y}|${source}`, rec.category);
+    add(sourcesBy, `${y}-${String(m).padStart(2, "0")}`, source);
+  }
+  return (ym) => {
+    const out = new Set();
+    for (const source of sourcesBy.get(ym) || []) {
+      for (const c of catsBy.get(`${ym.slice(0, 4)}|${source}`) || []) out.add(c);
+    }
+    return out;
+  };
+}

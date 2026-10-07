@@ -69,3 +69,13 @@ export function reportSpanLabel(report) {
   if (report?.week_ending) return `Week ending ${report.week_ending}`;
   return report?.range_label || "—";
 }
+
+// The first day of a report's span, short ("Jun 30"), or its week ending for a report
+// that predates spans: the weekly chart's axis tick, where a whole span doesn't fit at
+// phone width. The tooltip and the table carry the span.
+export function reportStartLabel(report) {
+  const start = report?.starts_at || report?.ends_at || report?.week_ending;
+  if (!/^\d{4}-\d{2}-\d{2}/.test(String(start || ""))) return reportSpanLabel(report);
+  const s = parts(String(start).slice(0, 10));
+  return `${MONTH_NAMES[s.m - 1]} ${s.d}`;
+}

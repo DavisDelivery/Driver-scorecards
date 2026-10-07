@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, Fragment } from "react";
 import { saveIncident, deleteIncident, deleteIncidentsBatch } from "../data/firebase.js";
 import { FAULT_CODES, INCIDENT_CATEGORIES } from "../data/drivers.js";
+import { catChipStyle } from "../data/categories.js";
 import IncidentEditor from "./IncidentEditor.jsx";
 
 // ---------------------------------------------------------------------------
@@ -477,7 +478,7 @@ function IncidentList({
                             <td>{inc.ship_date || inc.return_date || inc.delivered_date || inc.trace_date || "—"}</td>
                             {groupBy !== "category" && (
                               <td>
-                                <span className={`chip ${inc.category}`}>
+                                <span className={`chip cat ${inc.category}`} style={catChipStyle(inc.category)}>
                                   {inc.category}
                                 </span>
                               </td>

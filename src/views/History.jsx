@@ -1,5 +1,5 @@
 import React, { useState, useRef } from "react";
-import { INCIDENT_CATEGORIES } from "../data/drivers.js";
+import { catColor, catLabel } from "../data/categories.js";
 import { saveHistoryBatch, deleteAllHistory } from "../data/firebase.js";
 import {
   parseHistoryFiles,
@@ -233,15 +233,14 @@ This OVERWRITES any existing rollup record for the same (driver × year × month
             {Object.entries(byCategory)
               .sort()
               .map(([catId, count]) => {
-                const cat = INCIDENT_CATEGORIES.find((c) => c.id === catId);
+                // Swatch beside ink: the label itself never wears the colour.
                 return (
                   <div
                     key={catId}
                     style={{ fontFamily: "var(--mono)", fontSize: 12 }}
                   >
-                    <strong style={{ color: cat?.color }}>
-                      {cat?.label || catId}
-                    </strong>
+                    <span className="cat-swatch" style={{ background: catColor(catId) }} />
+                    <strong>{catLabel(catId)}</strong>
                     : {count} incidents
                   </div>
                 );

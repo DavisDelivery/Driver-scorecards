@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { buildSeededDrivers } from "./data/drivers.js";
 import davisLogo from "./assets/davis-logo.svg";
 import {
@@ -26,8 +26,9 @@ import ManualEntry, {
 import ForgottenFreightTabs from "./views/ForgottenFreightTabs.jsx";
 import { migrateBlobsToFirestore } from "./data/migrateFromBlobs.js";
 import { rescueLocalEntries } from "./data/rescueLocal.js";
+import { useHashState } from "./data/hashState.js";
 
-export const APP_VERSION = "0.19.2";
+export const APP_VERSION = "0.20.0";
 // Host the app is actually served from — shown in the footer so two people can
 // instantly confirm they're on the SAME deploy/store (a mismatch is a common
 // reason one person's entries never reach another's view).
@@ -51,9 +52,16 @@ const TABS = [
   { id: "history", label: "History Import", icon: "↥", shortcut: "h" },
   { id: "drivers", label: "Drivers", icon: "◉", shortcut: "v" },
 ];
+// Every screen the hash can open: the sidebar tabs plus New Report (`n`).
+const TAB_IDS = new Set([...TABS.map((x) => x.id), "ingest"]);
 
 export default function App() {
-  const [tab, setTab] = useState("dashboard");
+  // The open tab lives in the URL hash (#tab=reports), alongside each tab's own filters
+  // (sc.p, att.p …; see hashState.js), so a link opens the same screen and Back returns
+  // to the previous tab. An unknown tab in a link falls back to the Scorecard.
+  const [hashTab, setHashTab] = useHashState("tab", "dashboard");
+  const tab = TAB_IDS.has(hashTab) ? hashTab : "dashboard";
+  const setTab = useCallback((id) => setHashTab(id, { push: true }), [setHashTab]);
   const [menuOpen, setMenuOpen] = useState(false); // mobile nav drawer
   const [incidents, setIncidents] = useState([]);
   const [drivers, setDrivers] = useState([]);

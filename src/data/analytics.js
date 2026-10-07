@@ -12,18 +12,17 @@
 //     already populated by the save-time rollup with the same count, so the
 //     history-only Trends view agrees too.)
 //
-//   The category set mirrors Trends' CATEGORY_IDS (the 6 tracked, driver-attributed
-//   categories). Returns/Traces/Complaints/Compliments are intentionally excluded
-//   from these rollups, matching Trends.
+//   The category set is the registry's CHARTED6 — the same six Trends charts.
+//   Returns/Traces/Complaints/Compliments are intentionally excluded from these
+//   rollups, matching Trends.
+import { CHARTED6, categoriesFor } from "./categories.js";
 
-export const ANALYTICS_CATEGORIES = [
-  { id: "damage", label: "Damage", color: "#dc3545" },
-  { id: "missing", label: "Lost/Missing", color: "#a855f7" },
-  { id: "misdelivery", label: "Misdelivery", color: "#f472b6" },
-  { id: "forgotten_freight", label: "Forgotten Freight", color: "#fb923c" },
-  { id: "late", label: "Late", color: "#facc15" },
-  { id: "attempts", label: "Attempts", color: "#14b8a6" },
-];
+// The six, in the registry's validated stack order (categories.js owns the colours).
+export const ANALYTICS_CATEGORIES = categoriesFor(CHARTED6).map(({ id, label, color }) => ({
+  id,
+  label,
+  color,
+}));
 
 export const ANALYTICS_CATEGORY_IDS = ANALYTICS_CATEGORIES.map((c) => c.id);
 
@@ -153,6 +152,22 @@ export function aggregateReport(reportId, incidents) {
     for (const s of sources) if (s in bySource) bySource[s] += 1;
   }
   return { count: list.length, byCat, bySource, driverFault, withPhotos };
+}
+
+// A weekly report as one stacked column: the six charted categories, then "other" for
+// everything else on the report — returns, traces, complaints. A report counts every
+// incident on it, so a column of the six alone came up one or two short of the
+// report's own Inc. in half the weeks; with "other" on top it adds up to `count`.
+export const REPORT_OTHER = "other";
+export function reportColumn(byCat, count) {
+  const row = {};
+  let charted = 0;
+  for (const id of ANALYTICS_CATEGORY_IDS) {
+    row[id] = byCat[id] || 0;
+    charted += row[id];
+  }
+  row[REPORT_OTHER] = Math.max(0, (count || 0) - charted);
+  return row;
 }
 
 // Relative "x ago" string for a timestamp.

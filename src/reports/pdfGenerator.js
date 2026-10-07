@@ -10,8 +10,12 @@ import {
   fitWithinPrintCap,
 } from "./photoEncoding.js";
 import { getIncidentPhotosBatch } from "../data/firebase.js";
+import { catRgb } from "../data/categories.js";
 
-// Palette (RGB triples) matching the app theme.
+// Print palette (RGB triples) matching the app theme. These are the brand, ink and
+// fault-status colours; CATEGORY colours are not here — they come from categories.js,
+// the same source as the screen, so print and screen can't disagree on Late or FF
+// again (and Attempts no longer prints gray).
 // The brand blue of the Davis Delivery Service logo, so print matches the artwork.
 export const DAVIS_BLUE = [35, 66, 148];
 const AMBER = [212, 160, 23];
@@ -21,21 +25,7 @@ export const TEXT_DARK = [55, 65, 81];
 export const TEXT_MUTED = [107, 114, 128];
 export const LINE = [229, 231, 235];
 
-function categoryColor(cat) {
-  return (
-    {
-      damage: RED,
-      late: AMBER,
-      missing: [168, 85, 247],
-      misdelivery: [244, 114, 182],
-      forgotten_freight: [249, 115, 22],
-      complaint: RED,
-      compliment: GREEN,
-      return: [59, 130, 246],
-      trace: TEXT_MUTED,
-    }[cat] || TEXT_MUTED
-  );
-}
+const categoryColor = (cat) => catRgb(cat);
 
 function faultColor(fault) {
   return (
@@ -71,9 +61,9 @@ const CATEGORY_LABEL = {
   attempts: "Attempts",
 };
 
-// Section header marking the start of a category run: a colored rule with the
-// category name and how many incidents it covers, so a reader flipping through
-// the cards always knows which section they're in.
+// Section header marking the start of a category run: a rule in the category's
+// colour under the category name and how many incidents it covers, so a reader
+// flipping through the cards always knows which section they're in.
 function drawCategoryHeader(doc, category, count, x, y, w) {
   const color = categoryColor(category);
   const label = (CATEGORY_LABEL[category] || category || "Other").toUpperCase();
@@ -83,7 +73,7 @@ function drawCategoryHeader(doc, category, count, x, y, w) {
   doc.setFontSize(9);
   doc.setFont("helvetica", "bold");
   const labelW = doc.getTextWidth(label);
-  setColor(doc, color, "text");
+  setColor(doc, TEXT_DARK, "text"); // ink; the rule beneath carries the colour
   doc.text(label, x, baseline);
 
   const countText = `${count} ${count === 1 ? "incident" : "incidents"}`;
@@ -104,16 +94,34 @@ function drawCategoryHeader(doc, category, count, x, y, w) {
 }
 const CATEGORY_HEADER_H = 24;
 
+// A colour mixed toward white: `amount` of the colour, the rest paper.
+const tint = (rgb, amount) => rgb.map((v) => Math.round(255 - (255 - v) * amount));
+
 // Draw a rounded pill badge with uppercase text; returns its width.
+//
+// White text is for the status fills that hold it (red, brand blue, gray). A CATEGORY
+// badge passes { tinted: true } and is drawn like the screen's .chip.cat — a light tint
+// of the category colour, its ink text and a faint ring — because white on the category
+// hues fell to about 2.3:1 (Forgotten Freight, Attempts). Those hues are made for marks.
 export function drawBadge(doc, text, x, y, color, opts = {}) {
   const fontSize = opts.fontSize || 7;
   doc.setFontSize(fontSize);
   doc.setFont("helvetica", "bold");
   const w = doc.getTextWidth(text.toUpperCase()) + 10;
   const h = fontSize + 4;
-  setColor(doc, color, "fill");
-  doc.roundedRect(x, y - h + 2, w, h, 2, 2, "F");
-  doc.setTextColor(255, 255, 255);
+  if (opts.tinted) {
+    const lineW = doc.getLineWidth();
+    setColor(doc, tint(color, 0.16), "fill");
+    setColor(doc, tint(color, 0.3), "draw");
+    doc.setLineWidth(0.6);
+    doc.roundedRect(x, y - h + 2, w, h, 2, 2, "FD");
+    doc.setLineWidth(lineW);
+    setColor(doc, TEXT_DARK, "text");
+  } else {
+    setColor(doc, color, "fill");
+    doc.roundedRect(x, y - h + 2, w, h, 2, 2, "F");
+    doc.setTextColor(255, 255, 255);
+  }
   doc.text(text.toUpperCase(), x + 5, y);
   return w;
 }
@@ -492,7 +500,7 @@ function drawCardHeader(doc, inc, x, y, w, h) {
   drawBadge(doc, rightBadgeText, badgeRight - faultW, headY, faultColor(isLateRow && inc.late_reason ? "driver" : inc.fault));
   badgeRight -= faultW + 5;
   const catW = doc.getTextWidth(inc.category.toUpperCase()) + 10;
-  drawBadge(doc, inc.category, badgeRight - catW, headY, catColor);
+  drawBadge(doc, inc.category, badgeRight - catW, headY, catColor, { tinted: true });
   badgeRight -= catW + 5;
   for (const s of Array.isArray(inc.sources) ? inc.sources : []) {
     const t = SOURCE_PDF[s];
