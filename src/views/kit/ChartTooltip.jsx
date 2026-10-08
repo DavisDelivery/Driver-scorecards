@@ -10,10 +10,11 @@ import React from "react";
 // row's `__notes` (strings) follow the values: why a day has no data, how many of the
 // fleet's were Unassigned. A row's `__head` replaces the x label as the head line, when
 // the label wants a word more ("Apr 2026 · 22 workdays").
-export default function ChartTooltip({ active, payload, label, series = [], lines = [], total = false }) {
+// `unit` follows each value ("%" on a 100% stack).
+export default function ChartTooltip({ active, payload, label, series = [], lines = [], total = false, unit = "" }) {
   if (!active || !payload || !payload.length) return null;
   const row = payload[0].payload || {};
-  const fmt = (v) => (v === null || v === undefined ? "—" : Number(v).toLocaleString());
+  const fmt = (v) => (v === null || v === undefined ? "—" : `${Number(v).toLocaleString()}${unit}`);
   const rows = [...series, ...lines];
   return (
     <div className="ct" role="status">

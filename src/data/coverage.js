@@ -356,11 +356,14 @@ export function likeForLike(P, C, cats, cov, { allowSourceChange = false } = {})
   return { pairs, exclusions: [...dropped.values()] };
 }
 
-// A caveat chip's words: "Lost/Missing · Oct 2024 – Dec 2024 · not tracked in the
-// comparison months".
-export function exclusionText(e) {
-  const where = e.side === "both" || e.reason === "source_change" ? "" : e.side === "current" ? " this period" : " in the comparison months";
-  return `${catLabel(e.cat)} · ${monthsText(e.months)} · ${DROP_TEXT[e.reason]}${where}`;
+// A caveat chip's words: the category, the months of this period left out, and why —
+// naming the comparison months when the reason lies there: "Lost/Missing · Oct 2024 –
+// Dec 2024 · not tracked in Oct 2023 – Dec 2023". `withCat` false leaves the category
+// out, for a row that already names it.
+export function exclusionText(e, { withCat = true } = {}) {
+  const where =
+    e.side === "both" || e.reason === "source_change" ? "" : e.side === "current" ? " this period" : ` in ${monthsText(e.cmpMonths)}`;
+  return `${withCat ? `${catLabel(e.cat)} · ` : ""}${monthsText(e.months)} · ${DROP_TEXT[e.reason]}${where}`;
 }
 
 // Months in words, runs joined: "Oct 2024 – Dec 2025", "Jul 2025, Dec 2025".

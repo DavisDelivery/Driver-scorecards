@@ -160,7 +160,7 @@ test("like-for-like keeps whole cells captured the same way, and names every one
     exclusionText(by["forgotten_freight|conflict|current"]),
     "Forgotten Freight · Jan 2026 · live and history disagree this period",
   );
-  assert.equal(exclusionText(by["late|not_tracked|comparison"]), "Late · Jun 2026 · not tracked in the comparison months");
+  assert.equal(exclusionText(by["late|not_tracked|comparison"]), "Late · Jun 2026 · not tracked in Jun 2025");
   // Allowing a source change keeps June's app-vs-spreadsheet pairs, marked.
   const allowed = likeForLike(P, C, ["damage"], cov, { allowSourceChange: true });
   const june = allowed.pairs.find((p) => p.cur === "2026-06");

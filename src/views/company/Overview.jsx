@@ -5,7 +5,7 @@ import { addDays } from "../../data/period.js";
 import { csvName } from "../../data/csv.js";
 import { fetchAttemptsRange, todayET, FEED_EPOCH } from "../../data/attemptsFeed.js";
 import { buildAttemptRecords } from "../../data/attemptRecords.js";
-import { STATE_TEXT, APP_ERA, fmtYm, monthsText, exclusionText } from "../../data/coverage.js";
+import { STATE_TEXT, APP_ERA, fmtYm, monthsText } from "../../data/coverage.js";
 import {
   monthlySeries,
   sparkRuns,
@@ -24,10 +24,12 @@ import { chartTable } from "../kit/shape.js";
 import { BRAND, PRIOR, SURFACE, axisTick } from "../kit/chartTheme.js";
 import { openDrill } from "../kit/drillNav.js";
 import { openCoverage } from "./nav.js";
+import WhatChanged from "./WhatChanged.jsx";
+import LeftOut from "./LeftOut.jsx";
 
 // Company History › Overview: the headline over the picked window, what it was
-// compared on, every month on file, and the dispatch feed's attempted orders beside —
-// never inside — the failures.
+// compared on and what changed (WhatChanged.jsx), every month on file, and the dispatch
+// feed's attempted orders beside — never inside — the failures.
 //
 // Every number is a coverage cell (coverage.js) and every click opens the drawer on
 // exactly what was counted, with the number shown (test/drill-reconcile.test.mjs).
@@ -119,10 +121,13 @@ export default function Overview({ cov, months, label, cmpMonths, cats, measure,
   const { workdays } = tiles.perWorkday;
   const cmpLabel = monthsText(cmpMonths);
   const [showCompared, setShowCompared] = React.useState(false);
-  const [showCaveats, setShowCaveats] = React.useState(false);
   const [focus, setFocus] = React.useState(null);
   // A legend isolation whose category was since switched off isolates nothing.
   const isolated = cats.includes(focus) ? focus : null;
+  // A What-changed sentence hovered: its categories forward, the rest gray, for as long
+  // as the pointer (or focus) is on it.
+  const [hover, setHover] = React.useState(null);
+  const emphasis = hover && hover.some((c) => cats.includes(c)) ? hover : isolated;
 
   // The drawer on a set of failures and months, with the number it was clicked from.
   const open = (categoryIds, ms, expected, scopeLabel, title = null) =>
@@ -195,11 +200,10 @@ export default function Overview({ cov, months, label, cmpMonths, cats, measure,
   const usedGlyphs = new Set(glyphs);
 
   const caveats = result.exclusions;
-  const CAVEATS_SHOWN = phone ? 2 : 4;
 
   return (
     <>
-      <div className="kpi-grid co-kpis">
+      <div className="co-top">
         <div className="kpi co-hero">
           <div className="kpi-label">Counted failures</div>
           <button
@@ -237,64 +241,78 @@ export default function Overview({ cov, months, label, cmpMonths, cats, measure,
           )}
           <Sparkline rows={sparkRows} today={today} />
         </div>
-        <StatTile
-          label="Per workday"
-          value={tiles.perWorkday.value === null ? "—" : tiles.perWorkday.value.toFixed(2)}
-          sub={
-            compared && measureRate(result)
-              ? `${plural(workdays, "workday")} · compared ${measureRate(result)}`
-              : `${plural(workdays, "workday")} (Mon–Fri) in the months on file`
-          }
-          title="Counted failures over the Mon–Fri days of the months that hold them. Holidays aren't removed."
+        <WhatChanged
+          cov={cov}
+          months={months}
+          label={label}
+          cmpMonths={cmpMonths}
+          cmpLabel={cmpLabel}
+          cats={cats}
+          lfl={lfl}
+          allowSourceChange={allowSourceChange}
+          today={today}
+          onFocus={setHover}
         />
-        <StatTile
-          label="Drivers involved"
-          value={tiles.drivers.value}
-          sub={
-            tiles.drivers.value
-              ? `${tiles.drivers.perDriver.toFixed(1)} per driver · inactive and off-roster included`
-              : "none"
-          }
-          title="Drivers with at least one counted failure in the window. Drivers with none can't be counted: history stores no zeros."
-        />
-        <StatTile
-          label="Unattributed"
-          value={tiles.unattributed.value === null ? "—" : tiles.unattributed.value}
-          sub={
-            tiles.unattributed.value === null
-              ? tiles.unattributed.reason
-              : `in no total${tiles.unattributed.noFault ? ` · +${tiles.unattributed.noFault} marked no-fault` : ""}` +
-                (tiles.unattributed.liveOnly ? " · live months only" : "")
-          }
-          title="Failures with no driver, not marked no-fault: in no driver's total and no company total. Marked no-fault ones would count against nobody anyway."
-          onClick={tiles.unattributed.drill ? () => openDrill(tiles.unattributed.drill) : null}
-        >
-          <button type="button" className="kpi-action" onClick={() => openCoverage({ section: "unattributed" })}>
-            By month in Data Coverage →
-          </button>
-        </StatTile>
-        <StatTile
-          label="Driver-fault share"
-          value={tiles.fault.value === null ? "—" : `${Math.round(tiles.fault.value * 100)}%`}
-          sub={
-            tiles.fault.value === null
-              ? tiles.fault.reason
-              : `${tiles.fault.n} of ${tiles.fault.total} counted live · reviewed ${Math.round(tiles.fault.reviewed * 100)}%` +
-                (tiles.fault.historyMonths.length ? ` · ${plural(tiles.fault.historyMonths.length, "history month")} not tracked` : "")
-          }
-          title="Live failures whose fault is the driver's, of every counted live failure. Imported history has no fault field."
-        />
-        <StatTile
-          label="Compliments"
-          value={tiles.compliments.value === null ? "—" : tiles.compliments.value}
-          sub={
-            tiles.compliments.value === null
-              ? tiles.compliments.reason
-              : `credit, never netted${tiles.compliments.from ? ` · logged from ${fmtYm(tiles.compliments.from)}` : ""}`
-          }
-          title="Compliments are a credit: never added to or netted against failures"
-          onClick={tiles.compliments.drill ? () => openDrill(tiles.compliments.drill) : null}
-        />
+        <div className="kpi-grid co-kpis">
+          <StatTile
+            label="Per workday"
+            value={tiles.perWorkday.value === null ? "—" : tiles.perWorkday.value.toFixed(2)}
+            sub={
+              compared && measureRate(result)
+                ? `${plural(workdays, "workday")} · compared ${measureRate(result)}`
+                : `${plural(workdays, "workday")} (Mon–Fri) in the months on file`
+            }
+            title="Counted failures over the Mon–Fri days of the months that hold them. Holidays aren't removed."
+          />
+          <StatTile
+            label="Drivers involved"
+            value={tiles.drivers.value}
+            sub={
+              tiles.drivers.value
+                ? `${tiles.drivers.perDriver.toFixed(1)} per driver · inactive and off-roster included`
+                : "none"
+            }
+            title="Drivers with at least one counted failure in the window. Drivers with none can't be counted: history stores no zeros."
+          />
+          <StatTile
+            label="Unattributed"
+            value={tiles.unattributed.value === null ? "—" : tiles.unattributed.value}
+            sub={
+              tiles.unattributed.value === null
+                ? tiles.unattributed.reason
+                : `in no total${tiles.unattributed.noFault ? ` · +${tiles.unattributed.noFault} marked no-fault` : ""}` +
+                  (tiles.unattributed.liveOnly ? " · live months only" : "")
+            }
+            title="Failures with no driver, not marked no-fault: in no driver's total and no company total. Marked no-fault ones would count against nobody anyway."
+            onClick={tiles.unattributed.drill ? () => openDrill(tiles.unattributed.drill) : null}
+          >
+            <button type="button" className="kpi-action" onClick={() => openCoverage({ section: "unattributed" })}>
+              By month in Data Coverage →
+            </button>
+          </StatTile>
+          <StatTile
+            label="Driver-fault share"
+            value={tiles.fault.value === null ? "—" : `${Math.round(tiles.fault.value * 100)}%`}
+            sub={
+              tiles.fault.value === null
+                ? tiles.fault.reason
+                : `${tiles.fault.n} of ${tiles.fault.total} counted live · reviewed ${Math.round(tiles.fault.reviewed * 100)}%` +
+                  (tiles.fault.historyMonths.length ? ` · ${plural(tiles.fault.historyMonths.length, "history month")} not tracked` : "")
+            }
+            title="Live failures whose fault is the driver's, of every counted live failure. Imported history has no fault field."
+          />
+          <StatTile
+            label="Compliments"
+            value={tiles.compliments.value === null ? "—" : tiles.compliments.value}
+            sub={
+              tiles.compliments.value === null
+                ? tiles.compliments.reason
+                : `credit, never netted${tiles.compliments.from ? ` · logged from ${fmtYm(tiles.compliments.from)}` : ""}`
+            }
+            title="Compliments are a credit: never added to or netted against failures"
+            onClick={tiles.compliments.drill ? () => openDrill(tiles.compliments.drill) : null}
+          />
+        </div>
       </div>
 
       {showCompared && compared && (
@@ -361,27 +379,7 @@ export default function Overview({ cov, months, label, cmpMonths, cats, measure,
         </div>
       )}
 
-      {lfl && caveats.length > 0 && (
-        <div className="co-caveats" aria-label="Left out of the comparison">
-          <span className="co-caveats-h">Left out of the comparison</span>
-          {(showCaveats ? caveats : caveats.slice(0, CAVEATS_SHOWN)).map((e) => (
-            <button
-              key={`${e.cat}|${e.reason}|${e.side}`}
-              type="button"
-              className="dr-chip co-caveat"
-              onClick={() => openCoverage({ ym: caveatMonth(e), cat: e.cat })}
-              title={`${exclusionText(e)} — compared with ${monthsText(e.cmpMonths)}. Opens Data Coverage at ${fmtYm(caveatMonth(e))}.`}
-            >
-              {exclusionText(e)}
-            </button>
-          ))}
-          {caveats.length > CAVEATS_SHOWN && (
-            <button type="button" className="kpi-note-n" onClick={() => setShowCaveats((v) => !v)}>
-              {showCaveats ? "Show fewer" : `+${caveats.length - CAVEATS_SHOWN} more`}
-            </button>
-          )}
-        </div>
-      )}
+      {lfl && <LeftOut exclusions={caveats} phone={phone} />}
 
       <div ref={plotRef}>
         <ChartCard
@@ -422,7 +420,7 @@ export default function Overview({ cov, months, label, cmpMonths, cats, measure,
             keyOf={(r) => r.ym}
             series={SERIES}
             lines={[LINE]}
-            focusId={isolated}
+            focusId={emphasis}
             decimals={measure === "workday"}
             annotations={
               crossesApp
@@ -453,10 +451,6 @@ export default function Overview({ cov, months, label, cmpMonths, cats, measure,
     </>
   );
 }
-
-// The month a caveat chip opens Data Coverage at: where its reason lies — the comparison
-// month when only that side lacks what this one has.
-const caveatMonth = (e) => (e.side === "comparison" ? e.cmpMonths[0] : e.months[0]);
 
 // "1.79 vs 1.92 a workday" — the compared cells' rates, when there are both.
 function measureRate(r) {
