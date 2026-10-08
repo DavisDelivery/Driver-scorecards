@@ -252,7 +252,14 @@ export function driverDrill(driverId, base = {}, then = null) {
 // The drawer's own scope totals are left behind. They are the whole chart's (every
 // driver in the category), never this driver's, and carried over they checked the
 // driver's root level against the company figure and raised a false "numbers
-// disagree". What the driver's drawer vouches for is only the count on the row clicked.
+// disagree". What the driver's drawer vouches for is only the count on the row clicked:
+// on the step that narrows to what the drawer counted, or — when the driver's drawer
+// opens on exactly that (Company History's headline: every failure, the same months) —
+// on the scope it was clicked under.
+//
+// The screen's vocabulary is only used when the drawer's categories are inside it. A
+// drawer over something else on the screen (Company History's compliments, beside its
+// failures) opens the driver on that, never on the screen's failures.
 export function driverFromDrawer(state, driverId, x) {
   const levels = drillLevels(state);
   const level = levels[levels.length - 1];
@@ -270,20 +277,29 @@ export function driverFromDrawer(state, driverId, x) {
     : root.months
       ? [{ label: root.label || "", months: root.months }]
       : [];
+  const rootCats = root.categoryIds || [];
+  const inVocab = state.vocab?.length && rootCats.every((c) => state.vocab.includes(c));
   const base = {
     // The screen's whole vocabulary, so the breadcrumb can pop back out to every category.
-    categoryIds: state.vocab?.length ? state.vocab : root.categoryIds || [],
+    categoryIds: inVocab ? state.vocab : rootCats,
     scopes: scopes.map(({ expected, ...s }) => s), // eslint-disable-line no-unused-vars
     scope,
     fault: root.fault || null,
   };
-  let next = driverDrill(driverId, base, cats.length === 1 ? { category: cats[0], x: monthOp ? undefined : x } : null);
+  // A one-category drawer whose vocabulary is that category opens the driver on it
+  // already: a step to the same category would only repeat it in the breadcrumb.
+  const narrower = cats.length === 1 && !(base.categoryIds.length === 1 && base.categoryIds[0] === cats[0]);
+  let next = driverDrill(driverId, base, narrower ? { category: cats[0], x: monthOp ? undefined : x } : null);
   const vocab = new Set(base.categoryIds);
   if (cats.length > 1 && (cats.length !== vocab.size || cats.some((c) => !vocab.has(c)))) {
     const label = level.spec.title || root.title || `${cats.length} categories`;
     next = pushStep(next, { categories: cats, label, x: monthOp ? undefined : x });
   }
   if (monthOp) next = pushStep(next, { month: monthOp.month, x });
+  // Nothing narrower to carry the count: the driver's drawer counts what the row did.
+  if (!next.path?.length && typeof x === "number" && next.scopes[scope]) {
+    next = { ...next, scopes: next.scopes.map((s, i) => (i === scope ? { ...s, expected: x } : s)) };
+  }
   return next;
 }
 

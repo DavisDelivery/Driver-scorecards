@@ -123,10 +123,11 @@ export function AnalyticsProvider({
   const hidden = React.useMemo(() => hiddenDriverIds(drivers), [drivers]);
   const roleOf = React.useCallback((id) => people.get(id)?.role || "driver", [people]);
 
-  // The attempt records the Attempts tab has loaded (attemptRecords.js), so a drawer
-  // opened from one of its tiles counts the very same orders. Only that tab can load
-  // them — they come from the dispatch feed a period at a time — so it publishes them
-  // once its period is in, and takes them back (null) when it closes.
+  // The attempt records the open screen has loaded (attemptRecords.js), so a drawer
+  // opened from one of its numbers counts the very same orders. They come from the
+  // dispatch feed a period at a time, so the screen that loads them — the Attempts tab,
+  // or Company History's attempted-orders card — publishes them once they're in, and
+  // takes them back (null) when it closes. One tab is open at a time, so one publishes.
   //
   // `error` is set when the feed couldn't be reached for the period: the records are
   // then the hand-logged attempts alone, and a drawer says so rather than waiting for

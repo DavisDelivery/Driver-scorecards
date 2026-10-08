@@ -1235,6 +1235,7 @@ hr.div {
   .content .ff-feed-coverage,
   .content .chart-card,
   .content .chart-grid,
+  .content .co-page,
   .content > h1,
   .content > h2 {
     max-width: 1800px;
@@ -3306,4 +3307,272 @@ table.data.analytics-subtable th {
 .period-bar .period-day input { width: auto; max-width: 100%; font-family: var(--mono); font-size: 12px; }
 @media (max-width: 700px) {
   .lb-nums.wide { width: 80px; }
+}
+
+/* --- Company History (v0.23.0) ---------------------------------------------
+   The whole company over every month on file, and what each month covers. One filter
+   row above everything; the hero is the full covered total, its comparison says how
+   much of it was compared; the coverage grid scrolls inside its own box on a phone. */
+.co-filters { display: flex; flex-direction: column; gap: 8px; margin-bottom: 18px; }
+.co-filters .month-picker { justify-content: flex-start; }
+.co-filters .month-btn:disabled { opacity: 0.45; cursor: default; }
+.co-filters .co-through { width: 170px; }
+.co-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.co-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-1);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.co-chip i { width: 9px; height: 9px; border-radius: 2px; opacity: 0.35; }
+.co-chip.on { color: var(--text-0); border-color: var(--border-hot); box-shadow: var(--shadow-sm); }
+.co-chip.on i { opacity: 1; }
+.co-chip:focus-visible { outline: 2px solid #234294; outline-offset: 2px; }
+/* A recompute keeps the last view up, faded — never a blank flash. */
+.co-pending { opacity: 0.6; transition: opacity 0.15s ease; }
+
+.co-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.co-kpis .co-hero { grid-column: 1 / -1; }
+@media (min-width: 900px) {
+  .co-kpis { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+}
+@media (min-width: 1280px) {
+  .co-kpis { grid-template-columns: minmax(300px, 1.7fr) repeat(5, minmax(0, 1fr)); }
+  .co-kpis .co-hero { grid-column: auto; }
+}
+/* The hero: the one 48px figure on the page, in the same sans as the rest, with
+   proportional digits. */
+.co-hero-num.kpi-value {
+  font-family: var(--sans);
+  font-size: 48px;
+  font-weight: 700;
+  font-variant-numeric: proportional-nums;
+  letter-spacing: -0.01em;
+  line-height: 1.05;
+}
+.co-delta { margin-top: 6px; font-size: 12.5px; line-height: 1.5; color: var(--text-1); }
+.co-delta b { color: var(--text-0); }
+.co-compared { margin-left: 6px; font-size: 11px; font-family: var(--mono); }
+.co-spark { margin-top: 8px; }
+.co-spark svg { width: 100%; max-width: 360px; height: auto; display: block; overflow: visible; }
+.co-spark svg:focus { outline: none; }
+.co-spark svg:focus-visible { outline: 2px solid #234294; outline-offset: 2px; border-radius: 4px; }
+.co-spark-read { font-family: var(--mono); font-size: 10.5px; color: var(--text-2); min-height: 16px; }
+
+.co-compared-card { margin-bottom: 14px; }
+.co-table td,
+.co-table th { text-align: left; text-transform: none; letter-spacing: 0; }
+.co-table th { text-transform: uppercase; letter-spacing: 0.08em; }
+.co-table td.num,
+.co-table th.num { text-align: right; }
+.co-table td { color: var(--text-1); }
+.co-months { font-size: 11.5px; color: var(--text-1); }
+/* Long cells wrap inside their card instead of running off it (analytics tables never
+   wrap by default). */
+table.data.analytics-table.co-table td.co-months,
+table.data.analytics-table.co-table td.co-cause { white-space: normal; }
+table.data.analytics-table td.wrap { white-space: normal; min-width: 180px; }
+.co-table .co-total td { font-weight: 700; color: var(--text-0); border-top: 1px solid var(--border); }
+.co-caveats { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 16px; }
+.co-caveats-h {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  margin-right: 4px;
+}
+.co-caveat { cursor: pointer; text-align: left; }
+.co-caveat:hover { border-color: var(--border-hot); color: var(--text-0); }
+.co-caveat:focus-visible { outline: 2px solid #234294; outline-offset: 2px; }
+
+/* A chart card's note line: what it leaves out, and how to read its glyphs. */
+.cc-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  padding: 6px 18px 0;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-2);
+}
+.cc-note b { color: var(--text-0); }
+.co-glyph-key { display: inline-flex; align-items: center; gap: 4px; }
+.co-glyph-key svg { display: block; }
+.cc-legend-btn {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.cc-legend-btn.off { color: var(--text-2); }
+.cc-legend-btn.off i { opacity: 0.3; }
+.cc-legend-btn:focus-visible { outline: 2px solid #234294; outline-offset: 2px; }
+.co-monthly,
+.co-attempts { margin-bottom: 16px; }
+.co-error { color: var(--accent-red); }
+
+/* Data Coverage */
+.co-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin-bottom: 14px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-2);
+}
+.co-status b { color: var(--text-1); font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; font-size: 10px; }
+.co-matrix { margin-bottom: 16px; }
+.co-split { margin-bottom: 16px; }
+.co-split > .card { min-width: 0; }
+.co-card { margin-bottom: 16px; }
+.co-list { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--text-1); line-height: 1.5; }
+.co-list .meta { font-family: var(--mono); font-size: 11px; color: var(--text-2); }
+.co-gap { color: var(--text-0); }
+.co-sub-h {
+  margin-top: 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.co-report { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 10px; }
+.co-report .kpi-action { margin-top: 0; white-space: nowrap; }
+.co-foot { margin-top: 6px; font-size: 12px; color: var(--text-2); }
+.co-cause { font-size: 12px; color: var(--text-1); min-width: 220px; }
+.co-actions { display: flex; flex-wrap: wrap; gap: 4px 8px; }
+.co-actions:empty { display: none; }
+.co-actions .kpi-action { margin-top: 4px; }
+/* Trends and History Import point at Company History. */
+.co-link-card { margin-bottom: 16px; }
+.co-link-card .card-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  font-size: 13px;
+  color: var(--text-1);
+}
+
+/* The coverage grid. Fills come from the chart theme (--live, --hist set inline). */
+.cm { padding: 2px 0 4px; }
+.cm-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--text-1);
+  margin-bottom: 6px;
+}
+.cm-key span { display: inline-flex; align-items: center; gap: 5px; }
+.cm-key .cm-cell { width: 12px; height: 12px; line-height: 12px; font-size: 8px; display: inline-block; cursor: default; }
+.cm-win-key { display: inline-block; width: 14px; height: 2px; background: var(--border-hot); }
+.cm-read { font-family: var(--mono); font-size: 10.5px; color: var(--text-1); min-height: 32px; margin-bottom: 4px; }
+.cm-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; padding: 2px 2px 8px; }
+.cm-grid { display: grid; row-gap: 6px; min-width: min-content; }
+.cm-row { display: grid; grid-template-columns: 136px repeat(var(--n, 12), 18px); column-gap: 2px; align-items: center; }
+.cm-head { row-gap: 0; }
+.cm-lbl {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 8px;
+  background: var(--bg-1);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* A label covers its whole row band — the cells scrolling under it, their outlines, the
+   capture-window hairline 4px below them and the grid box's 2px padding to its left —
+   so nothing shows around it. */
+.cm-row > .cm-lbl {
+  align-self: stretch;
+  box-shadow:
+    0 4px 0 var(--bg-1),
+    0 -3px 0 var(--bg-1),
+    -4px 0 0 var(--bg-1),
+    -4px 4px 0 var(--bg-1),
+    -4px -3px 0 var(--bg-1);
+}
+.cm-lbl i { width: 8px; height: 8px; border-radius: 2px; flex: 0 0 auto; }
+.cm-lbl-long,
+.cm-lbl-short { overflow: hidden; text-overflow: ellipsis; }
+.cm-lbl-short { display: none; }
+.cm-corner { justify-content: flex-end; font-size: 9px; color: var(--text-2); letter-spacing: 0; }
+.cm-year { font-family: var(--mono); font-size: 9px; color: var(--text-2); white-space: nowrap; overflow: visible; }
+.cm-mon { font-family: var(--mono); font-size: 9px; color: var(--text-2); text-align: center; }
+.cm-mon.jan { color: var(--text-0); }
+.cm-cell {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 18px;
+  text-align: center;
+  color: var(--text-1);
+  cursor: default;
+}
+.cm-cell.win::after {
+  content: "";
+  position: absolute;
+  left: -1px;
+  right: -1px;
+  bottom: -4px;
+  height: 2px;
+  background: var(--border-hot);
+}
+.cm-cell.s-live { background: var(--live); cursor: pointer; }
+.cm-cell.s-history { background: var(--hist); cursor: pointer; }
+.cm-cell.s-partial { cursor: pointer; }
+.cm-cell.s-partial.i-app { background: linear-gradient(to top, var(--live) 50%, var(--bg-1) 50%); box-shadow: inset 0 0 0 1px var(--live); }
+.cm-cell.s-partial.i-backfill { background: linear-gradient(to top, var(--hist) 50%, var(--bg-1) 50%); box-shadow: inset 0 0 0 1px var(--hist); }
+.cm-cell.s-no_data { box-shadow: inset 0 0 0 1px var(--border-hot); color: var(--text-2); }
+.cm-cell.s-conflict { background: var(--bg-1); box-shadow: inset 0 0 0 1px var(--text-1); color: var(--text-0); cursor: pointer; }
+.cm-cell.s-not_tracked { pointer-events: auto; }
+.cm-cell.focus { outline: 2px solid var(--text-0); outline-offset: 1px; z-index: 1; }
+.cm-cell:focus { outline: none; }
+.cm-cell:focus-visible { outline: 2px solid #234294; outline-offset: 1px; z-index: 1; }
+.cm-cell.s-live:hover,
+.cm-cell.s-history:hover { filter: brightness(1.15); }
+@media (max-width: 640px) {
+  .cm-row { grid-template-columns: 104px repeat(var(--n, 12), 18px); }
+  .cm-lbl-long { display: none; }
+  .cm-lbl-short { display: inline; }
+  .co-report { grid-template-columns: minmax(0, 1fr); }
+  .co-report .kpi-action { justify-self: start; }
+  .co-hero-num.kpi-value { font-size: 40px; }
+  .co-cause { min-width: 180px; }
 }

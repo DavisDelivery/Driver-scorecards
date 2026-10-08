@@ -7,8 +7,8 @@ import { monthsOfYear } from "../data/scorecardDetail.js";
 import { driverDrill } from "../data/drill.js";
 import { nameOf } from "../data/people.js";
 import { CHARTED6, categoriesFor } from "../data/categories.js";
-import { nowET } from "../data/period.js";
-import { useHashState } from "../data/hashState.js";
+import { nowET, shiftYm, currentYmET } from "../data/period.js";
+import { useHashState, writeHash } from "../data/hashState.js";
 import { csvName } from "../data/csv.js";
 import ChartCard from "./kit/ChartCard.jsx";
 import StackedColumns from "./kit/charts/StackedColumns.jsx";
@@ -198,6 +198,17 @@ export default function Trends() {
     return { byMonth, cats };
   }, [cube, perDriverId, year]);
 
+  // Company History with its Range set to the year picked here: the whole year, or this
+  // year through the last complete month.
+  const openCompany = () => {
+    const last = shiftYm(currentYmET(), -1);
+    const to = year < thisYear ? `${year}-12` : last >= `${year}-01` ? last : `${year}-01`;
+    writeHash(
+      { tab: "company", drill: null, "co.sub": null, "co.r": "custom", "co.from": `${year}-01`, "co.to": to },
+      { push: true },
+    );
+  };
+
   const TABS = [
     ["overview", "Overview"],
     ["yoy", "Year over Year"],
@@ -211,6 +222,25 @@ export default function Trends() {
       <h1 className="page-heading">
         Trends <span className="meta">· live + 3-yr history blend</span>
       </h1>
+
+      {/* Company History carries this tab's Overview and Year over Year forward, with
+          what each month covers; the link opens it on the year picked here. */}
+      <div className="card co-link-card">
+        <div className="card-body">
+          <span>
+            Company trends with coverage — what every month on file actually captured, and like-for-like
+            comparisons — now live in <b>Company History</b>. It counts failures only; the totals here include
+            Attempts (logged).
+          </span>
+          <button
+            type="button"
+            className="btn ghost sm"
+            onClick={openCompany}
+          >
+            Open {year} in Company History →
+          </button>
+        </div>
+      </div>
 
       <div className="toolbar">
         <div className="month-picker">

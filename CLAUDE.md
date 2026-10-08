@@ -87,6 +87,20 @@ seeding), catch it there deliberately and say why in a comment.
   period and year to date count back from the month picker. Its dispatch-feed count is
   read from the shared feed cache only — landing on the Scorecard never loads a period
   from the feed.
+- **What a month covers is decided in `src/data/coverage.js`.** Every (month, category)
+  cell is live, history, partial, conflict, no data or not tracked, from the capture
+  windows Chad confirmed on 10/07 (`CAPTURE_WINDOWS`: 2023's spreadsheet held lost/missing
+  only; the entry tabs began June 2026, so earlier months of theirs are not captured, not
+  zero; the Uline categories follow the reports' spans by day). A cell that holds a count
+  is never a gap, so the cells always add up to the blend. Hand-logged entries never roll up,
+  so a month of report rollups whose report rows match history is whole, not a conflict
+  (Data Coverage still lists the difference and why). Compare months only through
+  `likeForLike` — whole cells captured the same way on both sides — and name what it drops.
+  Company History (`src/views/CompanyHistory.jsx`, `company/`) counts through
+  `companyMetrics.js`: its headline is the full covered total and drills to exactly that;
+  the delta says how much of it was compared. Its Data Coverage page never writes — a stale
+  or missing report rollup is fixed with Re-sync in Report Detail. The rollup's counting
+  is `src/data/rollup.js`, which firebase.js imports, so the page and the rollup agree.
 - File an incident under a month with `incidentYm()` / `incidentDateStr()` from
   `src/data/incidentDate.js`. Hand-copied date precedences drifted apart before.
 - The manual-entry tabs (Forgotten Freight, Unable to Track, Mis-Deliveries, Compliments,
