@@ -10,7 +10,9 @@ import { downloadCsv } from "../../data/csv.js";
 //
 //   title    the chart's name
 //   count    a short figure for the header ("312 total")
-//   legend   [{ id, label, color, line? }] — drawn only for 2+ series
+//   legend   [{ id, label, color, line?, dot?, ring? }] — drawn only for 2+ series; the
+//            key mirrors the mark: a stroke for a line, a round dot for a dot plot, a
+//            hollow ring for the points a chart draws hollow
 //   table    { columns, rows } from shape.js chartTable()
 //   csv      file name for the export (off when absent)
 //   height   plot height, INCLUDING the x-axis band, so the card never scrolls inside
@@ -89,7 +91,11 @@ export default function ChartCard({
               </button>
             ) : (
               <span key={s.id} className="cc-legend-item">
-                <i className={s.line ? "line" : ""} style={{ background: s.color }} aria-hidden="true" />
+                <i
+                  className={s.line ? "line" : s.dot ? "dot" : s.ring ? "ring" : ""}
+                  style={s.ring ? { borderColor: s.color } : { background: s.color }}
+                  aria-hidden="true"
+                />
                 {s.label}
               </span>
             ),

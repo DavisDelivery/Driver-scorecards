@@ -92,6 +92,9 @@ function defaultIsLive(liveByYm) {
 // driverId    : restrict to one driver, or null for everyone
 // inGroup     : role-group predicate on a driver id (drivers vs loaders)
 // unattributed: also count history records with no driver_id (company totals only)
+// inCell      : (ym, category) => boolean — only these cells of the months × categories
+//               count (a like-for-like total: each category over its own compared
+//               months), or null for all of them
 export function buildCategoryDetail({
   scopeMonths = [],
   liveByYm = {},
@@ -102,21 +105,23 @@ export function buildCategoryDetail({
   driverId = null,
   inGroup = () => true,
   unattributed = false,
+  inCell = null,
 }) {
   const wantCat = (c) => (categoryId ? c === categoryId : categoryIds.includes(c));
   const keep = (c, d) => wantCat(c) && (!driverId || d === driverId) && inGroup(d);
   const out = collector();
 
   for (const ym of new Set(scopeMonths)) {
+    const counted = (c) => !inCell || inCell(ym, c);
     // A live cell: its incidents ARE the count. History for that category this month is
     // not consulted, exactly as the cards don't — counting both would double it.
     for (const inc of liveByYm[ym] || []) {
-      if (!isLive(ym, inc.category) || !keep(inc.category, inc.driver_id)) continue;
+      if (!isLive(ym, inc.category) || !counted(inc.category) || !keep(inc.category, inc.driver_id)) continue;
       out.incidents.push(inc);
       out.bump(inc.driver_id, inc.driver_name || inc.driver_raw, inc.category, ym, 1);
     }
     // Every other cell of the month is history's.
-    const fromHistory = (c, d) => !isLive(ym, c) && keep(c, d);
+    const fromHistory = (c, d) => !isLive(ym, c) && counted(c) && keep(c, d);
     for (const row of historyRowsFor(history, ym, fromHistory, unattributed)) {
       out.historyRows.push(row);
       out.bump(row.driver_id, row.driver_name, row.category, ym, row.count);

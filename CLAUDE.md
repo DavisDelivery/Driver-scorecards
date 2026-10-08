@@ -101,6 +101,15 @@ seeding), catch it there deliberately and say why in a comment.
   the delta says how much of it was compared. Its Data Coverage page never writes — a stale
   or missing report rollup is fixed with Re-sync in Report Detail. The rollup's counting
   is `src/data/rollup.js`, which firebase.js imports, so the page and the rollup agree.
+  A like-for-like total adds each category over its own compared months, so its drawer is
+  a blend spec with `cells` (`cellsDrill`), never the plain months × categories block.
+  "What changed" is `src/data/narrative.js`: deterministic sentences over the compared
+  cells, every count carrying its drawer (`test/narrative.test.mjs` holds each to
+  `resolveDrill`); it names no inactive driver, and no driver at all without the roster.
+  Compare's builders (`compareByCategory`, `yearLines`, `quarterMix`) hand each mark its
+  drawer, so the screen only opens it. The years chart is like-for-like too: a point not
+  captured whole, or captured differently from the selected year's month, is drawn
+  hollow off its line and named — never joined to the points it can't be compared with.
 - File an incident under a month with `incidentYm()` / `incidentDateStr()` from
   `src/data/incidentDate.js`. Hand-copied date precedences drifted apart before.
 - The manual-entry tabs (Forgotten Freight, Unable to Track, Mis-Deliveries, Compliments,

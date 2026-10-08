@@ -3340,14 +3340,10 @@ table.data.analytics-subtable th {
 /* A recompute keeps the last view up, faded — never a blank flash. */
 .co-pending { opacity: 0.6; transition: opacity 0.15s ease; }
 
+/* The five tiles under the headline (.co-top lays the three parts out). */
 .co-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.co-kpis .co-hero { grid-column: 1 / -1; }
 @media (min-width: 900px) {
   .co-kpis { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-}
-@media (min-width: 1280px) {
-  .co-kpis { grid-template-columns: minmax(300px, 1.7fr) repeat(5, minmax(0, 1fr)); }
-  .co-kpis .co-hero { grid-column: auto; }
 }
 /* The hero: the one 48px figure on the page, in the same sans as the rest, with
    proportional digits. */
@@ -3575,4 +3571,237 @@ table.data.analytics-table td.wrap { white-space: normal; min-width: 180px; }
   .co-report .kpi-action { justify-self: start; }
   .co-hero-num.kpi-value { font-size: 40px; }
   .co-cause { min-width: 180px; }
+}
+
+/* --- Company History: What changed and Compare (v0.24.0) ----------------------
+   On a wide screen the headline and its tiles stack on the left and the sentences that
+   explain them run down the right, so neither leaves a blank under it and the monthly
+   chart the sentences point at stays near the fold. On anything narrower the sentences
+   follow the tiles. */
+.co-top {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "hero" "tiles" "what";
+  margin-bottom: 20px;
+}
+.co-top > .co-hero { grid-area: hero; }
+.co-top > .co-what { grid-area: what; }
+.co-top > .co-kpis { grid-area: tiles; margin-bottom: 0; }
+@media (min-width: 1024px) {
+  .co-top {
+    grid-template-columns: minmax(340px, 1fr) minmax(0, 1fr);
+    grid-template-rows: auto 1fr;
+    grid-template-areas: "hero what" "tiles what";
+  }
+  .co-top > .co-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; }
+}
+@media (min-width: 1400px) {
+  .co-top > .co-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+.co-what { min-width: 0; display: flex; flex-direction: column; }
+.co-what .card-header { padding: 10px 16px; gap: 10px; }
+.co-what .card-body { padding: 12px 16px 14px; }
+.wc-against { font-family: var(--mono); font-size: 10.5px; color: var(--text-2); margin-bottom: 8px; }
+.wc-list { list-style: none; display: flex; flex-direction: column; gap: 4px; }
+.wc-list li {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-1);
+  padding: 4px 8px;
+  margin: 0 -8px;
+  border-radius: 6px;
+}
+.wc-list li:hover,
+.wc-list li:focus-within { background: var(--bg-2); }
+.wc-list b { color: var(--text-0); font-weight: 700; }
+/* A count in a sentence opens what it counted. */
+.wc-n {
+  border: 0;
+  background: transparent;
+  padding: 0 1px;
+  font: inherit;
+  font-weight: 700;
+  color: var(--text-0);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: #cbd5e1;
+  text-underline-offset: 3px;
+}
+.wc-n:hover { color: #234294; text-decoration-color: currentColor; }
+.wc-open {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: #234294;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.wc-open:hover { text-decoration: underline; }
+.wc-n:focus-visible,
+.wc-open:focus-visible,
+.wc-caveat:focus-visible { outline: 2px solid #234294; outline-offset: 2px; border-radius: 3px; }
+.wc-caveats {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 11.5px;
+  color: var(--text-2);
+  line-height: 1.5;
+}
+.wc-caveats ul { list-style: none; margin: 4px 0; display: flex; flex-direction: column; gap: 2px; }
+.wc-caveat {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.wc-caveat:hover { color: var(--text-0); text-decoration: underline; text-decoration-color: #cbd5e1; }
+
+/* A dot legend key mirrors a dot mark; a ring, a hollow point. */
+.cc-legend-item i.dot { border-radius: 50%; }
+.cc-legend-item i.ring { border-radius: 50%; border: 2px solid; background: transparent; width: 9px; height: 9px; }
+/* The years chart: a press on it never takes focus (YearLines.jsx). */
+.yl { height: 100%; }
+
+.co-compare,
+.co-years,
+.co-mix { margin-bottom: 16px; }
+
+/* The dumbbell: label · track · the change in words. The track's ends keep room for
+   the value labels (36px a side); every dot sits on one 0..max scale. */
+.db { display: flex; flex-direction: column; padding: 6px 18px 12px; }
+.db-row {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr) 230px;
+  align-items: center;
+  gap: 4px 14px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--bg-3);
+}
+.db-row:last-child { border-bottom: 0; }
+.db-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.db-label i { width: 9px; height: 9px; border-radius: 2px; flex: 0 0 auto; }
+.db-track { position: relative; height: 40px; --pad: 36px; }
+.db-rule {
+  position: absolute;
+  left: var(--pad);
+  right: var(--pad);
+  top: 50%;
+  height: 1px;
+  background: var(--bg-3);
+}
+.db-link {
+  position: absolute;
+  top: 50%;
+  height: 2px;
+  margin-top: -0.5px;
+  left: calc(var(--pad) + var(--from) * (100% - 2 * var(--pad)));
+  width: calc((var(--to) - var(--from)) * (100% - 2 * var(--pad)));
+  background: #94a3b8;
+}
+/* Each dot's 24px target leans off the line — the comparison's up, this period's down —
+   so two dots on (or near) the same value can both be hovered and clicked. The dot
+   itself stays on the line. */
+.db-dot {
+  position: absolute;
+  top: 50%;
+  left: calc(var(--pad) + var(--x) * (100% - 2 * var(--pad)));
+  width: 24px;
+  height: 24px;
+  margin: calc(-12px + var(--dy)) 0 0 -12px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.db-dot.a { --dy: -8px; }
+.db-dot.b { --dy: 8px; }
+.db-dot span {
+  position: absolute;
+  left: 50%;
+  top: calc(50% - var(--dy));
+  width: 11px;
+  height: 11px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--c);
+  box-shadow: 0 0 0 2px var(--bg-1);
+}
+/* Equal values: one dot, half comparison gray, half this period's blue. */
+.db-dot.b.same span { clip-path: inset(-3px -3px -3px 50%); }
+.db-dot.b { z-index: 1; }
+.db-dot:hover span,
+.db-dot:focus-visible span { box-shadow: 0 0 0 2px var(--bg-1), 0 0 0 3.5px var(--c); }
+.db-dot:focus { outline: none; }
+.db-dot:disabled { cursor: default; }
+.db-val {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-0);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.db-val.right { left: calc(var(--pad) + var(--x) * (100% - 2 * var(--pad)) + 10px); }
+.db-val.left { right: calc(100% - var(--pad) - var(--x) * (100% - 2 * var(--pad)) + 10px); }
+/* A dot's readout sits over it: centred on a dot near the middle, reaching right from
+   one near the left end and left from one near the right end, and wrapping rather than
+   running past the card (on a phone the track is the card's width, so it stays in it). */
+.db-tip {
+  --at: calc(var(--pad) + var(--x) * (100% - 2 * var(--pad)));
+  position: absolute;
+  bottom: calc(50% + 22px);
+  left: var(--at);
+  transform: translateX(-50%);
+  z-index: 3;
+  width: max-content;
+  max-width: 320px;
+  white-space: normal;
+  pointer-events: none;
+  color: var(--text-1);
+}
+.db-tip.l { transform: translateX(-24px); }
+.db-tip.r { left: auto; right: calc(100% - var(--at) - 24px); transform: none; }
+/* A row that couldn't be compared says why in words, as long as they run. */
+.db-row:has(.db-reason) .db-track { height: auto; min-height: 40px; display: flex; align-items: center; }
+.db-reason { display: block; padding: 4px 0 4px var(--pad); font-size: 12px; line-height: 1.4; color: var(--text-2); font-style: italic; }
+.db-reason .kpi-note-n { font-style: normal; }
+.db-side { font-size: 12px; color: var(--text-1); line-height: 1.45; }
+.db-side b { color: var(--text-0); font-family: var(--mono); font-size: 11.5px; }
+.db-verdict { color: var(--text-2); }
+.db-note { font-size: 11px; color: var(--text-2); margin-top: 2px; }
+@media (max-width: 760px) {
+  .db { padding: 4px 14px 10px; }
+  .db-row {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "label" "track" "side";
+    gap: 2px;
+    padding: 8px 0;
+  }
+  .db-label { grid-area: label; }
+  .db-track { grid-area: track; --pad: 34px; }
+  .db-side { grid-area: side; }
+  .db-reason { padding-left: 0; line-height: 1.35; }
+  .db-row:has(.db-reason) .db-track { min-height: 22px; }
+  .db-tip { max-width: min(320px, 76%); }
+  .db-tip.l { max-width: min(320px, calc(100% - var(--at) + 24px)); }
+  .db-tip.r { max-width: min(320px, calc(var(--at) + 24px)); }
 }

@@ -52,13 +52,17 @@ import {
 //   onSegment    (row, seriesId, index) => void — a click on one painted segment picks
 //                that category of that column; a click elsewhere in the column's band
 //                still goes to onMark
-//   focusId      a series id in focus (a legend click): the other series go gray, and
-//                no series ever takes another's colour
+//   focusId      a series id in focus (a legend click), or several (a What-changed
+//                sentence hovered): the other series go gray, and no series ever takes
+//                another's colour
 //   annotations  [{ x, before, after }] — a hairline at the left edge of column x,
 //                labelled at the top on either side of it: where what the chart counts
 //                changes (Company History's April 2026: "spreadsheet backfill ←" before
 //                it, "→ app incidents" after)
 //   decimals     the values aren't whole counts (per workday): the axis may show tenths
+//   capLabels    false: no column total on top (a 100% stack, where every total is 100)
+//   yAxis        extra YAxis props (a fixed 0–100 domain, a "%" tick)
+//   unit         a suffix for the hover readout's values ("%")
 export default function StackedColumns({
   data,
   xKey,
@@ -74,11 +78,15 @@ export default function StackedColumns({
   focusId = null,
   annotations = [],
   decimals = false,
+  capLabels = true,
+  yAxis = {},
+  unit = "",
 }) {
   const keys = series.map((s) => s.id);
   const tops = topSegments(data, keys);
   const totals = data.map((r) => rowTotal(r, keys));
-  const labelled = new Set(labelIndexes(totals));
+  const labelled = new Set(capLabels ? labelIndexes(totals) : []);
+  const inFocus = (id) => !focusId || (Array.isArray(focusId) ? focusId.includes(id) : focusId === id);
   // __cap is a zero-height bar at the top of every stack: it carries the total label.
   const rows = data.map((r, i) => ({ ...r, __total: totals[i], __cap: 0 }));
   const plotMargin = margin || { top: 18, right: 10, left: -12, bottom: 0 };
@@ -110,15 +118,18 @@ export default function StackedColumns({
       >
         <CartesianGrid {...gridProps} />
         <XAxis dataKey={xKey} {...axisProps} {...xAxis} />
-        <YAxis {...axisProps} allowDecimals={decimals} width={44} />
-        <Tooltip cursor={cursorFill} content={<ChartTooltip series={series} lines={lines} total={series.length > 1} />} />
+        <YAxis {...axisProps} allowDecimals={decimals} width={44} {...yAxis} />
+        <Tooltip
+          cursor={cursorFill}
+          content={<ChartTooltip series={series} lines={lines} total={capLabels && series.length > 1} unit={unit} />}
+        />
         {series.map((s) => (
           <Bar
             key={s.id}
             dataKey={s.id}
             name={s.label}
             stackId="s"
-            fill={focusId && focusId !== s.id ? DEEMPH : s.color}
+            fill={inFocus(s.id) ? s.color : DEEMPH}
             maxBarSize={MAX_BAR}
             isAnimationActive={false}
             onClick={

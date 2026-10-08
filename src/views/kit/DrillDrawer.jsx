@@ -70,13 +70,14 @@ export function DrillHost() {
   return <DrillDrawer state={state} onChange={openDrill} onClose={closeDrill} />;
 }
 
-const SOURCE_GLYPH = { live: "●", mixed: "◐", history: "○", not_tracked: "⊘", none: "–" };
+const SOURCE_GLYPH = { live: "●", mixed: "◐", history: "○", not_tracked: "⊘", none: "–", left_out: "×" };
 const SOURCE_TEXT = {
   live: "live entries",
   mixed: "part live, part history",
   history: "imported history",
   not_tracked: "not tracked (history has no fault)",
   none: "no data",
+  left_out: "not compared",
 };
 
 // Where each category of a month comes from (blend.js monthCells), in words: "Forgotten
@@ -374,6 +375,9 @@ function DrawerBody({
         cats.includes(c.category),
       );
     }
+    // A like-for-like drawer (cells) counts some categories in some months only: a
+    // conflict in a cell it left out isn't one of its numbers.
+    if (detail.countsCell) all = all.filter((c) => detail.countsCell(c.ym, c.category));
     const inMonths = new Set(months);
     return { counts, mixed, conflicts: all.filter((c) => inMonths.has(c.ym)), all };
   }, [detail]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -586,6 +590,11 @@ function DrawerBody({
         )}
         {counts.none > 0 && !detail.liveOnly && (
           <span className="dr-chip">– {counts.none} month{counts.none === 1 ? "" : "s"} with no data</span>
+        )}
+        {counts.left_out > 0 && (
+          <span className="dr-chip">
+            × {counts.left_out} month{counts.left_out === 1 ? "" : "s"} not compared — nothing counted
+          </span>
         )}
         {coverage.conflicts.map((c) => (
           <span key={`${c.ym}-${c.category}`} className="dr-chip warn" title="A category with live entries in a month is counted from them; the history that month also holds for it is not added.">

@@ -14,6 +14,7 @@ import {
 } from "../data/companyMetrics.js";
 import { AnalyticsGate, LoadError, HistoryRefresh } from "./kit/LoadState.jsx";
 import Overview from "./company/Overview.jsx";
+import Compare from "./company/Compare.jsx";
 import DataCoverage from "./company/DataCoverage.jsx";
 
 // Company History: the whole company, month to month and year to year, over every
@@ -25,11 +26,12 @@ import DataCoverage from "./company/DataCoverage.jsx";
 // the stale rollups it finds are fixed from Report Detail's Re-sync.
 //
 // Its filters live in the hash under co.* (hashState.js), so a link opens the same view.
-// The sub-tabs still to come (Compare, Drivers, Where & Why) aren't listed until they
-// exist.
+// One filter row scopes Overview and Compare alike. The sub-tabs still to come (Drivers,
+// Where & Why) aren't listed until they exist.
 
 const SUBS = [
   ["overview", "Overview"],
+  ["compare", "Compare"],
   ["coverage", "Data Coverage"],
 ];
 const CMP = [
@@ -39,6 +41,11 @@ const CMP = [
 const MEASURES = [
   ["count", "Count"],
   ["workday", "Per workday"],
+];
+// How many years Compare's month-by-month chart draws: this year and last by default.
+const YEARS = [
+  ["2", "2 years"],
+  ["3", "3 years"],
 ];
 
 // Phones open on 12 months: 24 columns don't fit 390px.
@@ -78,6 +85,9 @@ export default function CompanyHistory({ onOpenReport }) {
   const lfl = lflParam !== "0";
   const [srcParam, setSrc] = useHashState("co.src", "0");
   const allowSourceChange = srcParam === "1";
+  const [yrsParam, setYrs] = useHashState("co.yrs", "2");
+  const years = yrsParam === "3" ? 3 : 2;
+  const filtered = sub === "overview" || sub === "compare";
 
   // The coverage of every cell, from the all-fault blend: the Uline reports' days, the
   // history documents that exist, today's month as the one still in progress, and the
@@ -116,8 +126,8 @@ export default function CompanyHistory({ onOpenReport }) {
 
   // Recomputing keeps the last view on screen, faded, rather than flashing empty.
   const params = React.useMemo(
-    () => ({ months: win.months, label: win.label, cmpMonths, cats, measure, lfl, allowSourceChange }),
-    [win, cmpMonths, cats, measure, lfl, allowSourceChange],
+    () => ({ months: win.months, label: win.label, cmpMonths, cats, measure, lfl, allowSourceChange, years }),
+    [win, cmpMonths, cats, measure, lfl, allowSourceChange, years],
   );
   const shown = React.useDeferredValue(params);
   const pending = shown !== params;
@@ -138,7 +148,7 @@ export default function CompanyHistory({ onOpenReport }) {
     <div className="co-page">
       <div className="page-title">Company History</div>
       <h1 className="page-heading sc-heading">
-        Company History <span className="meta">· {sub === "overview" ? win.label : "every month on file"}</span>
+        Company History <span className="meta">· {filtered ? win.label : "every month on file"}</span>
       </h1>
 
       <div className="toolbar">
@@ -160,7 +170,7 @@ export default function CompanyHistory({ onOpenReport }) {
         <HistoryRefresh />
       </div>
 
-      {sub === "overview" && (
+      {filtered && (
         <div className="co-filters" role="group" aria-label="Filters">
           <div className="period-bar">
             <div className="month-picker" role="group" aria-label="Range">
@@ -257,6 +267,21 @@ export default function CompanyHistory({ onOpenReport }) {
                 Allow source change
               </button>
             </div>
+            {sub === "compare" && (
+              <div className="month-picker" role="group" aria-label="Years in the month-by-month chart">
+                {YEARS.map(([v, label]) => (
+                  <button
+                    key={v}
+                    type="button"
+                    className={`month-btn ${String(years) === v ? "active" : ""}`}
+                    aria-pressed={String(years) === v}
+                    onClick={() => setYrs(v)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           <div className="co-chips" role="group" aria-label="Categories">
             {basket.map((c) => (
@@ -290,6 +315,22 @@ export default function CompanyHistory({ onOpenReport }) {
               lfl={shown.lfl}
               allowSourceChange={shown.allowSourceChange}
               today={today}
+              phone={phone}
+            />
+          </div>
+        ) : sub === "compare" ? (
+          <div className={pending ? "co-pending" : undefined}>
+            <Compare
+              cov={cov}
+              months={shown.months}
+              label={shown.label}
+              cmpMonths={shown.cmpMonths}
+              cats={shown.cats}
+              measure={shown.measure}
+              lfl={shown.lfl}
+              allowSourceChange={shown.allowSourceChange}
+              today={today}
+              years={shown.years}
               phone={phone}
             />
           </div>

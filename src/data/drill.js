@@ -7,10 +7,13 @@
 // one resolves to the value it drew.
 //
 // Spec kinds:
-//   blend      { months, categoryIds, driverId?, roleGroup?, fault?, unattributed? }
+//   blend      { months, categoryIds, driverId?, roleGroup?, fault?, unattributed?, cells? }
 //              month grain, the blend (each category of each month live or history);
 //              `unattributed` adds history records that carry no driver (a company
-//              total, as the Reports analytics counts it)
+//              total, as the Reports analytics counts it); `cells` ({ category: [months] })
+//              counts each category over its own months only — a like-for-like total,
+//              where each category was compared on different months (Company History).
+//              A category it doesn't list counts nothing
 //   window     { start, end, categoryIds, driverId?, roleGroup?, fault? } day grain, same rule
 //   incidents  { ids, months?, categoryIds?, driverId?, who? }           an explicit live list;
 //              `who` heads one driver's list
@@ -88,20 +91,29 @@ export function resolveDrill(spec, ctx = {}) {
       inGroup,
       unattributed: !!spec.unattributed && !spec.driverId,
     };
+    const cells = kind === "blend" && spec.cells ? cellSets(spec.cells) : null;
     const detail =
       kind === "blend"
-        ? buildCategoryDetail({ ...common, scopeMonths: spec.months || [] })
+        ? buildCategoryDetail({
+            ...common,
+            scopeMonths: spec.months || [],
+            inCell: cells ? (ym, c) => !!cells.get(c)?.has(ym) : null,
+          })
         : buildWindowDetail({ ...common, start: spec.start, end: spec.end });
     const months = kind === "blend" ? [...new Set(spec.months || [])].sort() : monthsOfWindow(spec.start, spec.end);
     // Where a month's number comes from is decided per category (blend.js), so it is
-    // asked over this spec's categories: a month can be part live, part history.
-    const cats = spec.categoryIds || [];
+    // asked over this spec's categories — those it counts that month, when it has cells:
+    // a month can be part live, part history. A month it counts nothing in is
+    // "left_out" (not compared), whatever is on file for it.
+    const all = spec.categoryIds || [];
+    const cats = cells ? (ym) => all.filter((c) => cells.get(c)?.has(ym)) : () => all;
     return {
       ...detail,
       orders: [],
       months,
-      sourceOf: (ym) => blend.monthSource(ym, cats),
-      cellsOf: (ym) => blend.monthCells(ym, cats),
+      sourceOf: (ym) => (cells && !cats(ym).length ? "left_out" : blend.monthSource(ym, cats(ym))),
+      cellsOf: (ym) => blend.monthCells(ym, cats(ym)),
+      countsCell: (ym, c) => !cells || !!cells.get(c)?.has(ym),
       liveOnly: false,
     };
   }
@@ -159,6 +171,9 @@ export function resolveDrill(spec, ctx = {}) {
 
   throw new Error(`Unknown drill kind: ${kind}`);
 }
+
+// A blend spec's `cells` as Map(category -> Set(months)).
+const cellSets = (cells) => new Map(Object.entries(cells || {}).map(([c, ms]) => [c, new Set(ms || [])]));
 
 const daysInMonth = (ym) => new Date(Date.UTC(Number(ym.slice(0, 4)), Number(ym.slice(5, 7)), 0)).getUTCDate();
 const lastDay = (ym) => `${ym}-${String(daysInMonth(ym)).padStart(2, "0")}`;
@@ -226,13 +241,20 @@ export function drillLevels(state) {
 // A driver's drawer: the driver's whole record over a scope, optionally opened narrowed
 // to one category (the row that was clicked) so the breadcrumb can pop back out to
 // every category.
-//   base  { categoryIds, scopes, scope, fault }
+//   base  { categoryIds, scopes, scope, fault, cells? } — `cells` keeps a like-for-like
+//         drawer's own months per category for the driver too
 //   then  { category, x } — the category row clicked and the number(s) it showed: one
 //         per scope, or a single number for the scope it was clicked under
 export function driverDrill(driverId, base = {}, then = null) {
   const scope = base.scope || 0;
   const state = {
-    spec: { kind: "blend", driverId, categoryIds: base.categoryIds || [], fault: base.fault || null },
+    spec: {
+      kind: "blend",
+      driverId,
+      categoryIds: base.categoryIds || [],
+      fault: base.fault || null,
+      ...(base.cells ? { cells: base.cells } : {}),
+    },
     scopes: base.scopes || [],
     scope,
   };
@@ -285,6 +307,9 @@ export function driverFromDrawer(state, driverId, x) {
     scopes: scopes.map(({ expected, ...s }) => s), // eslint-disable-line no-unused-vars
     scope,
     fault: root.fault || null,
+    // A like-for-like drawer counts each category over its own months: so does the
+    // driver opened from it.
+    cells: root.cells || null,
   };
   // A one-category drawer whose vocabulary is that category opens the driver on it
   // already: a step to the same category would only repeat it in the breadcrumb.
@@ -432,6 +457,7 @@ export function encodeDrill(state) {
   if (!state || !state.spec) return "";
   const spec = { ...state.spec };
   if (spec.months) spec.months = packMonths(spec.months);
+  if (spec.cells) spec.cells = Object.fromEntries(Object.entries(spec.cells).map(([c, ms]) => [c, packMonths(ms)]));
   const out = { spec };
   if (state.scopes?.length) {
     out.scopes = state.scopes.map((s) => ({ ...s, months: packMonths(s.months) }));
@@ -461,6 +487,16 @@ export function decodeDrill(str) {
   if (spec.months !== undefined) {
     spec.months = unpackMonths(spec.months);
     if (!spec.months) return null;
+  }
+  if (spec.cells !== undefined) {
+    if (!spec.cells || typeof spec.cells !== "object") return null;
+    const cells = {};
+    for (const [c, packed] of Object.entries(spec.cells)) {
+      const months = unpackMonths(packed);
+      if (!months) return null;
+      cells[c] = months;
+    }
+    spec.cells = cells;
   }
   const state = { spec };
   if (Array.isArray(raw.scopes) && raw.scopes.length) {

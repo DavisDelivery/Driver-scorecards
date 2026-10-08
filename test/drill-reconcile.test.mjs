@@ -886,3 +886,117 @@ test("Company History: a week of attempted orders drills to the orders its colum
     assert.equal(resolveDrill(state.spec, ctx).total, state.expected);
   }
 });
+
+// ── Company History › Compare and What changed (v0.24.0) ─────────────────────
+// On a store shaped like production's 2024–2026 (compare-fixture.mjs): every dumbbell
+// dot, every point of the years chart, every segment of the quarterly mix, every count a
+// What-changed sentence states — and every driver opened from inside any of those
+// drawers, which keeps the like-for-like cells it was counted over.
+import * as cfx from "./compare-fixture.mjs";
+import { monthsText } from "../src/data/coverage.js";
+import { compareByCategory, comparedTotalsDrill, yearLines, quarterMix } from "../src/data/companyMetrics.js";
+import { whatChanged } from "../src/data/narrative.js";
+
+test("Company History › Compare: every dot, point, segment and sentence drills to what it shows", () => {
+  const blend = buildBlend({ incidents: cfx.incidents, history: cfx.history });
+  const cov = buildCoverage({
+    blend,
+    historyMonthIds: cfx.monthIds,
+    uline: ulineCoverage(cfx.reports, cfx.incidents),
+    today: cfx.TODAY,
+    incidents: cfx.incidents,
+  });
+  const ctx = { blend: () => blend, history: cfx.history, incidents: cfx.incidents, roleOf: () => "driver" };
+  const cats = basketCategories();
+  let marks = 0;
+  let drivers = 0;
+  // A driver opened from the drawer's By-driver list shows the count on the row.
+  const fromDrawer = (state, what) => {
+    assertReconciles(state, ctx, what);
+    const level = drillLevels(state).at(-1);
+    for (const [id, e] of resolveDrill(level.spec, ctx).byDriver) {
+      if (!id) continue;
+      const next = driverFromDrawer(state, id, e.count);
+      assertReconciles(next, ctx, `${what} › ${id}`);
+      assert.equal(resolveDrill(drillLevels(next).at(-1).spec, ctx).total, e.count, `${what} › ${id}`);
+      drivers++;
+    }
+  };
+  for (const [range, opts] of [["12", {}], ["24", {}], ["ytd", {}], ["ly", {}], ["all", {}], ["custom", { from: "2026-06", to: "2026-09" }]]) {
+    const w = companyWindow(range, { through: "2026-09", ...opts });
+    for (const cmp of ["yoy", "prior"]) {
+      const C = comparisonMonths(w.months, cmp);
+      for (const flags of [{}, { allowSourceChange: true }, { lfl: false }]) {
+        const r = compareWindows(cov, w.months, C, cats, { today: cfx.TODAY, ...flags });
+        // The drawers the screen opens, as the builders hand them over: each dot (and a
+        // row held on one side only), and the two totals.
+        for (const row of compareByCategory(cov, r, cats, { today: cfx.TODAY })) {
+          if (row.oneSided) {
+            assert.equal(drillLevels(row.drill).at(-1).expected, row.n);
+            fromDrawer(row.drill, `${range} ${cmp} ${row.cat} ${row.oneSided} only`);
+            marks++;
+          }
+          if (!row.compared) continue;
+          assert.equal(drillLevels(row.drill).at(-1).expected, row.X);
+          assert.equal(drillLevels(row.cmpDrill).at(-1).expected, row.Cmp);
+          fromDrawer(row.drill, `${range} ${cmp} ${row.cat}`);
+          fromDrawer(row.cmpDrill, `${range} ${cmp} ${row.cat} cmp`);
+          marks += 2;
+        }
+        if (r.pairs.length) {
+          const t = comparedTotalsDrill(r, cats);
+          assert.equal(drillLevels(t.cur).at(-1).expected, r.X);
+          assert.equal(drillLevels(t.cmp).at(-1).expected, r.Cmp);
+          fromDrawer(t.cur, `${range} ${cmp} ${JSON.stringify(flags)} total`);
+          fromDrawer(t.cmp, `${range} ${cmp} ${JSON.stringify(flags)} total cmp`);
+          marks += 2;
+        }
+        const out = whatChanged({
+          cov,
+          blend,
+          months: w.months,
+          cmpMonths: C,
+          cats,
+          today: cfx.TODAY,
+          label: w.label,
+          cmpLabel: monthsText(C),
+          ...flags,
+        });
+        for (const s of out.sentences) {
+          for (const seg of s.segments.filter((g) => g.drill)) {
+            fromDrawer(seg.drill, `${range} ${cmp} ${JSON.stringify(flags)}: ${s.text}`);
+            marks++;
+          }
+          // The sentence's own "Open →".
+          if (s.drill) {
+            fromDrawer(s.drill, `${range} ${cmp} ${JSON.stringify(flags)}: open ${s.id}`);
+            marks++;
+          }
+        }
+      }
+      // Every point of the years chart, on its line or off it.
+      for (const flags of [{}, { allowSourceChange: true }, { lfl: false }]) {
+        const yl = yearLines(cov, { through: w.months.at(-1), years: 3, cats, today: cfx.TODAY, ...flags });
+        for (const row of yl.rows) {
+          for (const y of yl.years) {
+            if (row.count[y] === null || row.count[y] === undefined) continue;
+            assert.equal(drillLevels(row.drill[y]).at(-1).expected, row.count[y]);
+            fromDrawer(row.drill[y], `${range} ${row.label} ${y}`);
+            marks++;
+          }
+        }
+      }
+    }
+    const qm = quarterMix(cov, w.months, cats);
+    for (const q of qm.quarters.filter((x) => x.drawn)) {
+      for (const c of qm.cats) {
+        fromDrawer(q.drills[c], `${range} ${q.label} ${c}`);
+        marks++;
+      }
+      fromDrawer(q.drill, `${range} ${q.label}`);
+      marks++;
+    }
+  }
+  assert.ok(marks > 300, `${marks} marks checked`);
+  assert.ok(drivers > 1000, `${drivers} drivers opened`);
+});

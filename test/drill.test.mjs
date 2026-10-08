@@ -83,6 +83,27 @@ test("the hash round-trips, with month runs packed", () => {
   assert.deepEqual(decodeDrill(s), state);
 });
 
+test("a like-for-like drawer's cells round-trip, packed per category", () => {
+  const state = {
+    spec: {
+      kind: "blend",
+      categoryIds: ["damage", "forgotten_freight"],
+      unattributed: true,
+      cells: { damage: ["2026-01", "2026-02", "2026-03"], forgotten_freight: ["2026-02", "2026-03"] },
+    },
+    scopes: [{ label: "YTD", months: ["2026-01", "2026-02", "2026-03"], expected: 7 }],
+    scope: 0,
+  };
+  const s = encodeDrill(state);
+  assert.match(s, /"damage":"2026-01~2026-03"/);
+  assert.deepEqual(decodeDrill(s), state);
+  // Narrowing keeps the cells; a driver opened from it keeps them too.
+  assert.deepEqual(narrowSpec(state.spec, { category: "damage" }).cells, state.spec.cells);
+  assert.deepEqual(drillLevels(driverDrill("d1", { categoryIds: ["damage"], scopes: state.scopes, cells: state.spec.cells }))[0].spec.cells, state.spec.cells);
+  assert.equal(decodeDrill('{"spec":{"kind":"blend","cells":{"damage":"Jan"}}}'), null);
+  assert.equal(decodeDrill('{"spec":{"kind":"blend","cells":"2026-01"}}'), null);
+});
+
 test("a malformed or hand-edited link opens nothing rather than breaking", () => {
   for (const bad of ["", "{", "null", "{}", '{"spec":{"kind":"nope"}}', '{"spec":{"kind":"blend","months":"2026-13~2026-01"}}']) {
     assert.equal(decodeDrill(bad), null, bad);
