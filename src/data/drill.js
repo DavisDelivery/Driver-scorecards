@@ -8,8 +8,9 @@
 //
 // Spec kinds:
 //   blend      { months, categoryIds, driverId?, roleGroup?, fault?, unattributed? }
-//              month grain, the blend; `unattributed` adds history records that carry no
-//              driver (a company total, as the Reports analytics counts it)
+//              month grain, the blend (each category of each month live or history);
+//              `unattributed` adds history records that carry no driver (a company
+//              total, as the Reports analytics counts it)
 //   window     { start, end, categoryIds, driverId?, roleGroup?, fault? } day grain, same rule
 //   incidents  { ids, months?, categoryIds?, driverId? }                 an explicit live list
 //   attempts   { start, end, driverId?, driverKey?, filter?, label? }      attempt orders
@@ -89,7 +90,17 @@ export function resolveDrill(spec, ctx = {}) {
         ? buildCategoryDetail({ ...common, scopeMonths: spec.months || [] })
         : buildWindowDetail({ ...common, start: spec.start, end: spec.end });
     const months = kind === "blend" ? [...new Set(spec.months || [])].sort() : monthsOfWindow(spec.start, spec.end);
-    return { ...detail, orders: [], months, sourceOf: blend.monthSource, liveOnly: false };
+    // Where a month's number comes from is decided per category (blend.js), so it is
+    // asked over this spec's categories: a month can be part live, part history.
+    const cats = spec.categoryIds || [];
+    return {
+      ...detail,
+      orders: [],
+      months,
+      sourceOf: (ym) => blend.monthSource(ym, cats),
+      cellsOf: (ym) => blend.monthCells(ym, cats),
+      liveOnly: false,
+    };
   }
 
   if (kind === "incidents") {

@@ -6,8 +6,8 @@
 // card totals, Trends leaderboards and per-driver months, Reports month cells, the
 // roster card, the manual-entry tabs' tiles and driver card — and checks that the
 // drill-down of each resolves to the value drawn.
-// It covers the Jan 2026 conflict month, a period and a window crossing Jan 1, and both
-// driver-fault rules.
+// It covers the Jan 2026 month (forgotten freight live, the rest from history), a period
+// and a window crossing Jan 1, and both driver-fault rules.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildBlend, tally, tallyTotal, driverBuckets, blendCube } from "../src/data/blend.js";
@@ -75,7 +75,7 @@ const inGroup = (role, group) => (group === "loader" ? role === "loader" : role 
 
 for (const [fault, legacy] of [[null, true], ["driver", true], ["driver", false]]) {
   test(`Scorecard leaderboards reconcile — fault ${fault || "all"}${legacy ? "" : ", newer rule"}`, () => {
-    const ctx = ctxFor({ legacyQualifyWithFault: legacy });
+    const ctx = ctxFor({ legacyDriverScope: legacy });
     const blend = ctx.blend(fault);
     for (const [selectedMonth, periodMonths] of [
       ["2026-04", ["2026-04"]],
@@ -138,7 +138,7 @@ for (const [fault, legacy] of [[null, true], ["driver", true], ["driver", false]
 
 test("a driver opened inside a chart's drawer reconciles at every crumb, the root included", () => {
   for (const [fault, legacy] of [[null, true], ["driver", true], ["driver", false]]) {
-    const ctx = ctxFor({ legacyQualifyWithFault: legacy });
+    const ctx = ctxFor({ legacyDriverScope: legacy });
     const blend = ctx.blend(fault);
     const periodMonths = ["2025-11", "2025-12", "2026-01"];
     const ytdMonths = monthsOfYear(2026);
@@ -209,7 +209,7 @@ test("a driver opened from a window or a list drawer narrows it, with the count 
 });
 
 test("the inactive driver's counts stay in the card total the drawer shows", () => {
-  const ctx = ctxFor({ legacyQualifyWithFault: true });
+  const ctx = ctxFor({ legacyDriverScope: true });
   const d = resolveDrill(
     { kind: "blend", months: monthsOfYear(2026), categoryIds: ["forgotten_freight"], roleGroup: "driver" },
     ctx,
@@ -264,15 +264,29 @@ test("Trends leaderboards and per-driver months reconcile", () => {
   }
 });
 
-test("the Jan 2026 conflict month drills to the live number it shows, not history's", () => {
+test("the Jan 2026 month drills to what it shows: live forgotten freight, history's damage", () => {
   const ctx = ctxFor();
   const cube = blendCube(ctx.blend(null), CHARTED6);
-  const shown = [...cube.cells["2026-01"]].filter(([k]) => k.endsWith("|forgotten_freight")).reduce((a, [, n]) => a + n, 0);
-  const d = resolveDrill({ kind: "blend", months: ["2026-01"], categoryIds: ["forgotten_freight"] }, ctx);
-  assert.equal(shown, 3);
-  assert.equal(d.total, 3);
-  assert.equal(d.historyRows.length, 0);
-  assert.equal(d.sourceOf("2026-01"), "live");
+  const shown = (cat) =>
+    [...cube.cells["2026-01"]].filter(([k]) => k.endsWith(`|${cat}`)).reduce((a, [, n]) => a + n, 0);
+  // Forgotten freight is live: the 3 entries, not history's 5.
+  const ff = resolveDrill({ kind: "blend", months: ["2026-01"], categoryIds: ["forgotten_freight"] }, ctx);
+  assert.equal(shown("forgotten_freight"), 3);
+  assert.equal(ff.total, 3);
+  assert.equal(ff.historyRows.length, 0);
+  assert.equal(ff.sourceOf("2026-01"), "live");
+  // Nobody logged damage in January: Di Dean's 2 come from history.
+  const damage = resolveDrill({ kind: "blend", months: ["2026-01"], categoryIds: ["damage"] }, ctx);
+  assert.equal(shown("damage"), 2);
+  assert.equal(damage.total, 2);
+  assert.deepEqual(damage.historyRows.map((r) => [r.driver_id, r.count]), [["d4", 2]]);
+  assert.equal(damage.sourceOf("2026-01"), "history");
+  // The whole month, part live and part history, says which is which.
+  const all = resolveDrill({ kind: "blend", months: ["2026-01"], categoryIds: CHARTED6 }, ctx);
+  assert.equal(all.total, 5);
+  assert.equal(all.incidents.length, 3);
+  assert.equal(all.sourceOf("2026-01"), "mixed");
+  assert.deepEqual(all.cellsOf("2026-01"), { live: ["forgotten_freight"], history: ["damage"], not_tracked: [] });
 });
 
 // ── Reports ──────────────────────────────────────────────────────────────────
@@ -317,12 +331,13 @@ test("roster card numbers reconcile with the driver's drawer", () => {
 
 // ── Windows ──────────────────────────────────────────────────────────────────
 
-test("a window crossing Jan 1 resolves to the live rows dated inside it", () => {
+test("a window crossing Jan 1 resolves to the live rows dated inside it and the history months it holds whole", () => {
   const ctx = ctxFor();
   const blend = ctx.blend(null);
   const start = "2025-11-20";
   const end = "2026-01-10";
-  // The builder: each live row counted on its own day.
+  // The builder: each live row counted on its own day, and the history cells of a month
+  // wholly inside the window added whole.
   let drawn = 0;
   for (const list of Object.values(blend.liveByYm)) {
     for (const inc of list) {
@@ -330,11 +345,14 @@ test("a window crossing Jan 1 resolves to the live rows dated inside it", () => 
       if (day >= start && day <= end && COUNTED8.includes(inc.category)) drawn++;
     }
   }
-  const d = resolveDrill({ kind: "window", start, end, categoryIds: COUNTED8 }, ctx);
   assert.equal(drawn, 3); // Dec 30 late, Jan 5 and Jan 9 FF
+  for (const cat of COUNTED8) if (!blend.isLive("2025-12", cat)) drawn += blend.companyCell("2025-12", cat);
+  const d = resolveDrill({ kind: "window", start, end, categoryIds: COUNTED8 }, ctx);
+  assert.equal(drawn, 8); // + December's damage (5), which nobody logged: history's
   assert.equal(d.total, drawn);
-  // November is history and only part of it is in the window: named, never prorated.
-  assert.deepEqual(d.unsplittable, [{ ym: "2025-11", count: 9 }]);
+  // November is history and only part of it is in the window, and so is January's
+  // damage: named, never prorated.
+  assert.deepEqual(d.unsplittable, [{ ym: "2025-11", count: 9 }, { ym: "2026-01", count: 2 }]);
   assert.deepEqual(d.months, ["2025-11", "2025-12", "2026-01"]);
 });
 
@@ -439,9 +457,17 @@ test("the driver card's months are the Scorecard's own cells", () => {
       }
     }
   }
-  // Jan 2026 is live: Ann's FF is the 2 live entries, not history's 5.
-  const jan = monthSpark({ endYm: "2026-01", months: 1, cellOf: (ym) => blend.cell(ym, "d1", "forgotten_freight"), sourceOf: blend.monthSource });
-  assert.deepEqual([jan[0].n, jan[0].source], [2, "live"]);
+  // Jan 2026's forgotten freight is live: Ann's is the 2 live entries, not history's 5.
+  // Its damage is history's: Di Dean's 2, though the month holds live entries.
+  const jan = (driverId, category) =>
+    monthSpark({
+      endYm: "2026-01",
+      months: 1,
+      cellOf: (ym) => blend.cell(ym, driverId, category),
+      sourceOf: (ym) => sparkSource(blend, ym, category),
+    })[0];
+  assert.deepEqual([jan("d1", "forgotten_freight").n, jan("d1", "forgotten_freight").source], [2, "live"]);
+  assert.deepEqual([jan("d4", "damage").n, jan("d4", "damage").source], [2, "history"]);
 });
 
 // ── Inside an attempts drawer ────────────────────────────────────────────────

@@ -47,22 +47,25 @@ const history = [
   { year: 2024, month: 2, driver_id: "", category: "attempts", count: 1 },
 ];
 
-// v0.19.2's output, verbatim (months with no data left out).
+// v0.19.2's output, verbatim (months with no data left out), but for the two months
+// marked: the deliberate changes since, each with its reason.
 const SNAPSHOT = {
   2024: [{ month: 2, source: "history", total: 7, byCat: { misdelivery: 6, attempts: 1 } }],
   2025: [
     { month: 11, source: "history", total: 3, byCat: { forgotten_freight: 3 } },
-    { month: 12, source: "live", total: 1, byCat: { late: 1 } },
+    // v0.21.1: the blend decides live or history per category of a month (blend.js).
+    // December's one live late no longer hides the month's imported damage (5), which
+    // nobody logged: v0.19.2 read { late: 1 }, total 1, "live".
+    { month: 12, source: "mixed", total: 6, byCat: { damage: 5, late: 1 } },
   ],
   2026: [
     { month: 1, source: "live", total: 1, byCat: { forgotten_freight: 1 } },
     { month: 4, source: "live", total: 5, byCat: { damage: 1, missing: 1, forgotten_freight: 1, late: 1, attempts: 1 } },
-    // v0.20.1: months qualify on the Scorecard's eight categories everywhere (blend.js).
-    // May 2026 holds only a live compliment and complaint, so it is live now — reading 0
-    // of the six, as the Scorecard always read it — where v0.19.2 fell back to history
-    // (damage 2, missing 1). The one deliberate change; no production month has this
-    // shape (2026-10-07 pull: the six- and eight-category rules pick the same months).
-    { month: 5, source: "live", total: 0, byCat: {} },
+    // May 2026 holds only a live compliment and complaint. v0.20.1 qualified months on
+    // the Scorecard's eight categories, which made May live and read 0 of the six; per
+    // category, the compliment hides only compliments, so May reads v0.19.2's history
+    // (damage 2, missing 1) again.
+    { month: 5, source: "history", total: 3, byCat: { damage: 2, missing: 1 } },
   ],
 };
 
@@ -83,8 +86,8 @@ test("yearly totals are v0.19.2's", () => {
     buildYearlyTotals(availableYears(incidents, history), buildBlend({ incidents, history })).map((y) => ({ year: y.year, total: y.total, source: y.source })),
     [
       { year: 2024, total: 7, source: "history" },
-      { year: 2025, total: 4, source: "blended" },
-      { year: 2026, total: 6, source: "blended" }, // 9 in v0.19.2: see May 2026 above
+      { year: 2025, total: 9, source: "blended" }, // 4 in v0.19.2: see December above
+      { year: 2026, total: 9, source: "blended" },
     ],
   );
 });

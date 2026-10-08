@@ -59,8 +59,8 @@ export const CREDIT = ids("credit");
 export const EXCLUDED = ids("excluded");
 
 // The eight categories the history rollup tracks (firebase.js builds TRACKED from this)
-// and the Scorecard charts. Used for month qualification, so every view decides which
-// months are live the same way.
+// and the Scorecard charts. Used to qualify the blend's cells, so every view decides
+// which categories of which months are live the same way.
 export const COUNTED8 = CATEGORIES.filter((c) => c.polarity !== "excluded").map((c) => c.id);
 
 // The six Trends and Reports stack: the failures that come from Uline reports and the

@@ -3,7 +3,8 @@
 // The rule that matters: a drill-down shows the SAME number as the card you clicked.
 // The driver popup broke it — the Scorecard never passed it the rolled-up history, so
 // a driver at "0 / 7" whose seven came from history opened to "No detailed incidents
-// on file". These tests pin the drill-down to the cards' own month-by-month rule.
+// on file". These tests pin the drill-down to the cards' own rule: each category of
+// each month is live or history (blend.js).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildCategoryDetail, buildWindowDetail, monthsOfYear } from "../src/data/scorecardDetail.js";
@@ -161,7 +162,7 @@ test("display dates are parsed from the string, never shifted", () => {
 });
 
 // ---------------------------------------------------------------------------
-// The blend's own month rule, and day windows that still obey it.
+// The blend's own cell rule, and day windows that still obey it.
 // ---------------------------------------------------------------------------
 
 test("byMonthCategory splits each month by category and adds up to byMonth", () => {
@@ -173,10 +174,10 @@ test("byMonthCategory splits each month by category and adds up to byMonth", () 
   }
 });
 
-test("isLive with an empty driver-fault live month returns 0, not history", () => {
-  // Under Driver-fault scope a month can be live (it holds counted rows) with none of
+test("isLive with an empty driver-fault live cell returns 0, not history", () => {
+  // Under Driver-fault scope a cell can be live (it holds counted rows) with none of
   // them the driver's fault. Its history is all-fault, so it must not stand in.
-  const isLive = (ym) => ym === "2026-07" || ym === "2026-09";
+  const isLive = (ym, cat) => (ym === "2026-07" || ym === "2026-09") && CATS.includes(cat);
   const d = buildCategoryDetail({
     scopeMonths: ["2026-07"],
     liveByYm: { "2026-07": [] },
@@ -191,6 +192,22 @@ test("isLive with an empty driver-fault live month returns 0, not history", () =
     buildCategoryDetail({ scopeMonths: ["2026-07"], liveByYm: { "2026-07": [] }, history, categoryId: "misdelivery" }).total,
     7,
   );
+});
+
+test("a month's live categories count their entries, and its other categories history", () => {
+  // September's misdeliveries are live, so its history for them (99) is not added.
+  // Nobody logged a late in September, so the late history counts beside them.
+  const hist = [...history, { year: 2026, month: 9, driver_id: "dj", driver_name: "DJ", category: "late", count: 4 }];
+  const d = buildCategoryDetail({ scopeMonths: ["2026-09"], liveByYm, history: hist, categoryIds: CATS });
+  assert.equal(d.total, 8);
+  assert.deepEqual(Object.fromEntries(d.byMonthCategory.get("2026-09")), { misdelivery: 3, damage: 1, late: 4 });
+  assert.deepEqual(d.historyRows.map((r) => [r.category, r.count]), [["late", 4]]);
+  assert.equal(d.incidents.length, 4);
+  // A window over part of September names the late history rather than prorate it; the
+  // live rows inside the window still count.
+  const w = buildWindowDetail({ start: "2026-09-01", end: "2026-09-15", liveByYm, history: hist, categoryIds: CATS });
+  assert.equal(w.total, 2);
+  assert.deepEqual(w.unsplittable, [{ ym: "2026-09", count: 4 }]);
 });
 
 test("a window's live total is the sum of its days", () => {

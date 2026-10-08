@@ -334,6 +334,15 @@ body {
   font-weight: 400;
   color: var(--text-2);
 }
+/* The Scorecard's month and source badge each stay on one line; on a phone the badge
+   drops below rather than squeezing the heading into narrow wrapped columns. */
+.page-heading.sc-heading {
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+.page-heading.sc-heading > span {
+  white-space: nowrap;
+}
 .card {
   background: var(--bg-1);
   border: 1px solid var(--border);
@@ -1475,6 +1484,12 @@ table.data tr.kb-active > td {
 .src-badge.history {
   background: var(--bg-2);
   color: var(--text-2);
+}
+/* Part live, part history (blend.js): the history fill with the live badge's edge. */
+.src-badge.mixed {
+  background: var(--bg-2);
+  color: #15803d;
+  border-color: #bbf7d0;
 }
 .src-badge.none {
   background: transparent;
@@ -2902,6 +2917,9 @@ table.data.analytics-subtable th {
   .dr-strip { grid-template-columns: repeat(var(--n, 12), minmax(22px, 1fr)); }
   .dr-row-tools { width: 100%; }
   .dr-row-tools .cd-search { flex: 1; max-width: none; }
+  /* The hovered or focused month's readout gets its own line, two lines tall, below the
+     key and the view toggle, so showing it never pushes the drawer down. */
+  .dr-peek { flex: 1 0 100%; order: 1; min-height: 2.7em; line-height: 1.35; text-align: left; }
 }
 
 /* A read that failed: said in place of the numbers it would have produced. */

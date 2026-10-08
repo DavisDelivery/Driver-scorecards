@@ -678,19 +678,37 @@ export function monthSpark({ endYm, months = 12, cellOf, sourceOf = () => "live"
 // live, which is not the same as none happening (Chad, 2026-10-07).
 export const MANUAL_SINCE = "2026-06";
 
-// Where a driver-card month's number comes from, for one category: the blend's month
-// source, except that a month which never captured the category isn't a zero —
-//   a history month whose records hold none of it            not_tracked
-//   a live month before MANUAL_SINCE with none of it logged  not_tracked
-// (A live month before then that does hold some — Jan 2026's back-dated forgotten
-// freight — is counted, as the Scorecard counts it.)
+// Where a driver-card month's number comes from, for one category: the blend's source
+// for that cell (blend.js cellSource), except that a month which never captured the
+// category isn't a zero —
+//   a cell history serves, whose records hold none of it         not_tracked
+//   a live zero before MANUAL_SINCE                               not_tracked
+// (Before then a live cell — Jan 2026's back-dated forgotten freight — is counted, as
+// the Scorecard counts it, and so is what the month's history holds beside it: Jan
+// 2026's imported misdeliveries.)
 export function sparkSource(blend, ym, category, { since = MANUAL_SINCE } = {}) {
-  const src = blend.monthSource(ym);
-  if (src === "history") {
-    return blend.historyCategories(ym, { attributedOnly: false }).has(category) ? "history" : "not_tracked";
-  }
-  if (src === "live" && ym < since && !blend.companyCell(ym, category)) return "not_tracked";
+  const cell = blend.cellSource(ym, category);
+  if (cell !== "none") return cell;
+  // Nothing on record for it either way: the blend says how an empty cell reads
+  // (monthSource) — history's, as the cells around it are, or a live zero.
+  const src = blend.monthSource(ym, [category]);
+  if (src === "history" || src === "not_tracked") return "not_tracked";
+  if (src === "live") return ym < since ? "not_tracked" : "live";
   return src;
+}
+
+// The months of a window whose count for this category exists only as a monthly total
+// in imported history — the blend serves the cell from history, so this tab has no
+// entries to list for it: [{ ym, n }]. Per cell, so a month whose forgotten freight is
+// live can still hold history's misdeliveries (Jan 2026).
+export function historyOnlyMonths(blend, category, win) {
+  const out = [];
+  if (!blend || !win?.start || !win?.end) return out;
+  for (let ym = win.start.slice(0, 7); ym <= win.end.slice(0, 7); ym = shiftYm(ym, 1)) {
+    const n = blend.isLive(ym, category) ? 0 : blend.companyCell(ym, category);
+    if (n > 0) out.push({ ym, n });
+  }
+  return out;
 }
 
 // A live-only monthly count of rows, for what the blend doesn't hold (Unable to Track,
