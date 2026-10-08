@@ -6,8 +6,9 @@
 // on file". These tests pin the drill-down to the cards' own month-by-month rule.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildCategoryDetail, monthsOfYear } from "../src/data/scorecardDetail.js";
+import { buildCategoryDetail, buildWindowDetail, monthsOfYear } from "../src/data/scorecardDetail.js";
 import { incidentYm, incidentDateStr, fmtIncidentDate } from "../src/data/incidentDate.js";
+import { reportDateBounds } from "../src/reports/reportNaming.js";
 
 const CATS = ["damage", "late", "misdelivery", "forgotten_freight"];
 
@@ -142,7 +143,111 @@ test("an undated incident has no month rather than a junk one", () => {
   assert.equal(incidentDateStr(null), "");
 });
 
+test("a report's date bounds use the same date the incident is filed under", () => {
+  // It read a private copy of the precedence in analytics.js; now incidentDateStr.
+  const b = reportDateBounds([
+    { ship_date: "2026-07-28", return_date: "2026-08-03" },
+    { delivered_date: "2026-08-05", ship_date: "2026-07-01" },
+    { ingested_at: "2026-07-30T23:59:00Z" },
+    { week_ending: "soon" },
+  ]);
+  assert.deepEqual(b, { starts_at: "2026-07-30", ends_at: "2026-08-05" });
+  assert.deepEqual(reportDateBounds([]), { starts_at: null, ends_at: null });
+});
+
 test("display dates are parsed from the string, never shifted", () => {
   assert.equal(fmtIncidentDate({ delivered_date: "2026-09-16" }), "09/16/2026");
   assert.equal(fmtIncidentDate({}), "—");
+});
+
+// ---------------------------------------------------------------------------
+// The blend's own month rule, and day windows that still obey it.
+// ---------------------------------------------------------------------------
+
+test("byMonthCategory splits each month by category and adds up to byMonth", () => {
+  const d = buildCategoryDetail({ scopeMonths: monthsOfYear(2026), liveByYm, history, categoryIds: CATS });
+  assert.deepEqual(Object.fromEntries(d.byMonthCategory.get("2026-07")), { misdelivery: 7, damage: 2 });
+  assert.deepEqual(Object.fromEntries(d.byMonthCategory.get("2026-09")), { misdelivery: 3, damage: 1 });
+  for (const [ym, cats] of d.byMonthCategory) {
+    assert.equal([...cats.values()].reduce((a, n) => a + n, 0), d.byMonth.get(ym), ym);
+  }
+});
+
+test("isLive with an empty driver-fault live month returns 0, not history", () => {
+  // Under Driver-fault scope a month can be live (it holds counted rows) with none of
+  // them the driver's fault. Its history is all-fault, so it must not stand in.
+  const isLive = (ym) => ym === "2026-07" || ym === "2026-09";
+  const d = buildCategoryDetail({
+    scopeMonths: ["2026-07"],
+    liveByYm: { "2026-07": [] },
+    isLive,
+    history,
+    categoryId: "misdelivery",
+  });
+  assert.equal(d.total, 0);
+  assert.equal(d.historyRows.length, 0);
+  // Without isLive, the old length test falls back to July's history.
+  assert.equal(
+    buildCategoryDetail({ scopeMonths: ["2026-07"], liveByYm: { "2026-07": [] }, history, categoryId: "misdelivery" }).total,
+    7,
+  );
+});
+
+test("a window's live total is the sum of its days", () => {
+  const d = buildWindowDetail({
+    start: "2026-09-01",
+    end: "2026-09-15",
+    liveByYm,
+    history,
+    categoryIds: CATS,
+  });
+  // Steve's two on the 16th fall outside the window.
+  assert.equal(d.total, 2);
+  assert.equal([...d.byDay.values()].reduce((a, n) => a + n, 0), d.total);
+  assert.deepEqual(Object.fromEntries(d.byDay), { "2026-09-02": 1, "2026-09-03": 1 });
+  assert.deepEqual(d.unsplittable, []);
+});
+
+test("a history month only partly inside a window is unsplittable, never prorated", () => {
+  const d = buildWindowDetail({
+    start: "2026-07-15",
+    end: "2026-09-30",
+    liveByYm,
+    history,
+    categoryIds: CATS,
+  });
+  // July is history and only half inside: listed, not counted. September is live.
+  assert.deepEqual(d.unsplittable, [{ ym: "2026-07", count: 9 }]);
+  assert.equal(d.byMonth.has("2026-07"), false);
+  assert.equal(d.total, 4);
+  assert.equal([...d.byDay.values()].reduce((a, n) => a + n, 0), 4);
+});
+
+test("a history month wholly inside a window is added whole", () => {
+  const d = buildWindowDetail({
+    start: "2026-07-01",
+    end: "2026-07-31",
+    liveByYm,
+    history,
+    categoryId: "misdelivery",
+  });
+  assert.equal(d.total, 7);
+  assert.equal(d.historyRows.length, 1);
+  assert.equal(d.byDay.size, 0);
+  assert.deepEqual(d.unsplittable, []);
+});
+
+test("a window crossing Jan 1 walks both years", () => {
+  const live = {
+    "2025-12": [inc("x", "steve", "damage", "2025-12-30")],
+    "2026-01": [inc("y", "steve", "damage", "2026-01-02")],
+  };
+  const d = buildWindowDetail({ start: "2025-12-29", end: "2026-01-04", liveByYm: live, categoryId: "damage" });
+  assert.equal(d.total, 2);
+  assert.deepEqual([...d.byMonth.keys()].sort(), ["2025-12", "2026-01"]);
+});
+
+test("a malformed window is empty, not an error", () => {
+  assert.equal(buildWindowDetail({ start: "2026-09-30", end: "2026-09-01", liveByYm, history, categoryIds: CATS }).total, 0);
+  assert.equal(buildWindowDetail({ start: "", end: "2026-09-01", liveByYm, history, categoryIds: CATS }).total, 0);
 });

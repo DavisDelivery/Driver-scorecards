@@ -12,7 +12,8 @@
 // replaced that month's whole history with nothing, and the month rendered as zero.
 //
 // The rule lived inline in both Trends and the Scorecard and had already drifted
-// between them, so it lives here now and both import it.
+// between them, so it lives here now, and blend.js — the one blend every screen counts
+// from — imports it.
 
 // Does this incident contribute to a driver/category count?
 //

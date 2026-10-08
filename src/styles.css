@@ -1642,7 +1642,7 @@ table.data.analytics-subtable th {
 .dd-photo-flag { margin-left: auto; font-size: 11px; color: #64748b; }
 /* Imported-history aggregate rows (no per-incident detail to expand). */
 .dd-incident-agg .dd-incident-head:hover { background: transparent; }
-.dd-agg-count { font-family: var(--mono); font-size: 12px; color: #475569; }
+.dd-agg-count { font-family: var(--mono); font-size: 12px; color: #475569; white-space: nowrap; }
 .dd-agg-note {
   margin-left: auto;
   font-family: var(--mono);
@@ -2727,3 +2727,212 @@ table.data.analytics-subtable th {
 }
 .th-swatch { display: inline-flex; align-items: center; gap: 5px; justify-content: flex-end; }
 .th-swatch i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+
+/* --- Drill drawer (v0.20.1) -------------------------------------------------
+   The one drill-down behind every clickable number: breadcrumb, the totals per
+   scope, coverage chips, a month strip over the whole scope, by-category and
+   by-driver lists, and the entries. Text stays ink; colour is on the marks. */
+.modal.drill:focus { outline: none; }
+.dr-head { min-width: 0; }
+.dr-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  margin-bottom: 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.dr-crumb {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: var(--davis-blue);
+  cursor: pointer;
+}
+.dr-crumb:hover { text-decoration: underline; text-underline-offset: 2px; }
+.dr-crumb.current { color: var(--text-1); cursor: default; }
+.dr-sep { color: #cbd5e1; }
+.dr-disagree {
+  margin-bottom: 14px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: #fef2f2;
+  border: 1px solid #fca5a5;
+  color: #991b1b;
+  font-size: 13px;
+}
+/* The number moved because the data did (a link, a Back, a refresh): said plainly. */
+.dr-moved {
+  margin-bottom: 14px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--text-1);
+  font-size: 12.5px;
+}
+.dm-stat.active { border-color: #234294; box-shadow: inset 0 0 0 1px #234294; }
+.dr-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: -2px 0 12px; }
+.dr-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-2);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--text-1);
+}
+.dr-chip.warn { background: #fff7ed; border-color: #fed7aa; color: #9a3412; }
+.dr-strip-wrap { margin: 2px 0 0; overflow-x: auto; border-radius: 8px; }
+.dr-strip {
+  grid-template-columns: repeat(var(--n, 12), minmax(26px, 1fr));
+  margin: 0;
+  min-width: min-content;
+}
+.dr-strip .cd-month-lbl i { display: block; font-style: normal; color: #94a3b8; font-size: 8px; }
+/* A short strip (one or two months) keeps month-sized bars rather than slabs. */
+.dr-strip .cd-month-bar { max-width: 44px; }
+.dr-src { font-size: 9px; line-height: 1; color: #64748b; min-height: 9px; }
+.dr-src.src-none { color: #cbd5e1; }
+.dr-strip-key {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 14px;
+  margin: 6px 0 16px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--text-2);
+}
+/* The hovered or focused month, read out in ink; the view toggle sits at the end. */
+.dr-peek { flex: 1 1 auto; min-height: 1em; color: var(--text-0); text-align: right; }
+.modal.drill .cc-table { max-height: 260px; margin: 2px 0 6px; border: 1px solid var(--border); border-radius: 8px; }
+.dr-cats { display: flex; flex-direction: column; gap: 2px; }
+.dr-cat {
+  display: grid;
+  grid-template-columns: minmax(0, 118px) minmax(0, 1fr) 30px;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 5px 4px;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.dr-cat:hover { background: #f4f7fb; }
+.dr-cat:hover .dr-cat-name { color: #234294; }
+.dr-cat-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text-0);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dr-cat-name i { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 2px; }
+.dr-cat-track { height: 8px; background: #eef2f7; border-radius: 0 4px 4px 0; overflow: hidden; }
+.dr-cat-track span { display: block; height: 100%; border-radius: 0 4px 4px 0; }
+.dr-driver { cursor: default; }
+.dr-driver:hover { background: transparent; }
+.dr-driver .dd-driver-link { font-weight: 500; font-size: 13px; color: #1f2937; text-align: left; }
+.dr-driver .dd-driver-link:hover { color: #234294; }
+.dr-count {
+  min-width: 34px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  padding: 2px 6px;
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 700;
+  text-align: right;
+  color: var(--text-0);
+  cursor: pointer;
+}
+.dr-count:hover { border-color: var(--border); background: var(--bg-1); color: #234294; }
+.dr-row-tools { display: inline-flex; align-items: center; gap: 6px; }
+.dd-driver-text { font-size: 12.5px; font-weight: 600; color: var(--text-1); }
+.el-month .section-divider { margin: 14px 0 6px; }
+.dr-cat:focus-visible,
+.dr-count:focus-visible,
+.dr-crumb:focus-visible {
+  outline: 2px solid #234294;
+  outline-offset: 2px;
+}
+@media (max-width: 640px) {
+  /* A history row's note takes its own line rather than squeezing into a column. */
+  .modal.drill .dd-incident-agg .dd-incident-head { flex-wrap: wrap; row-gap: 2px; }
+  .modal.drill .dd-agg-note { flex-basis: 100%; margin-left: 22px; }
+  .modal-backdrop:has(> .modal.drill) { padding: 8px; }
+  .modal.drill { margin: 8px auto; }
+  .modal.drill .modal-body { padding: 14px 12px; max-height: none; }
+  .modal.drill .modal-header { padding: 12px 14px; }
+  .dr-strip { grid-template-columns: repeat(var(--n, 12), minmax(22px, 1fr)); }
+  .dr-row-tools { width: 100%; }
+  .dr-row-tools .cd-search { flex: 1; max-width: none; }
+}
+
+/* A read that failed: said in place of the numbers it would have produced. */
+.load-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: #fef2f2;
+  border: 1px solid #fca5a5;
+  color: #991b1b;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.load-stale {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-bottom: 14px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  color: #9a3412;
+  font-size: 12.5px;
+}
+.load-banner .btn { margin-left: 4px; }
+/* "History as of 10:42 · Refresh" at the end of a toolbar. */
+.hist-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.cd-grid.dr-one { grid-template-columns: minmax(0, 1fr); }
+/* Long entry rows must not widen the grid past the drawer on a phone. */
+.modal.drill .cd-grid > * { min-width: 0; }
+@media (max-width: 760px) {
+  .modal.drill .cd-grid { grid-template-columns: minmax(0, 1fr); }
+}

@@ -1,7 +1,12 @@
 import React from "react";
-import { getHistory, updateRoster, saveIncidentsBatch } from "../data/firebase.js";
+import { updateRoster, saveIncidentsBatch } from "../data/firebase.js";
 import { ROLES, newDriverId } from "../data/drivers.js";
-import DriverModal, { ymKey } from "./DriverModal.jsx";
+import { useAnalytics } from "../data/AnalyticsProvider.jsx";
+import { tally, tallyTotal } from "../data/blend.js";
+import { monthsOfYear } from "../data/scorecardDetail.js";
+import { currentYmET } from "../data/period.js";
+import { LoadError } from "./kit/LoadState.jsx";
+import { openDrill } from "./kit/drillNav.js";
 
 // Categories that count against a driver (negative events). Compliments are
 // tracked but never counted "against" a driver.
@@ -13,10 +18,14 @@ const CAT_LABEL = {
 const STRIP = ["damage", "late", "missing", "misdelivery", "forgotten_freight"];
 
 export default function Drivers({ drivers, incidents, onUpdate }) {
-  const [selected, setSelected] = React.useState(null);
+  const data = useAnalytics();
+  const history = data.history;
+  // The card counts need history. Until it is in (or if it failed) they read "—", and
+  // anything that decides from "has no records" waits: offering Remove on a driver
+  // whose history simply hasn't loaded would orphan it.
+  const countsReady = !data.historyLoading && !data.blocking;
   const [search, setSearch] = React.useState("");
   const [roleFilter, setRoleFilter] = React.useState("all");
-  const [history, setHistory] = React.useState([]);
   const [showInactive, setShowInactive] = React.useState(false);
   // Roster editor: "add" | the driver object being edited | null.
   const [formOpen, setFormOpen] = React.useState(null);
@@ -25,55 +34,27 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
   const [formError, setFormError] = React.useState("");
   const [savingRoster, setSavingRoster] = React.useState(false);
 
-  React.useEffect(() => {
-    let alive = true;
-    getHistory()
-      .then((recs) => alive && setHistory(Array.isArray(recs) ? recs : []))
-      .catch(() => {});
-    return () => { alive = false; };
-  }, [incidents]);
+  // The cards count from the shared blend (blend.js), the same month-by-month rule as
+  // the Scorecard, so a card and the drawer it opens can't disagree. Each card used to
+  // run its own per-driver version of the rule: a month counted live for a driver as
+  // soon as they had ANY live row in it — a compliment, a no-fault row — and that
+  // driver's history for the month vanished.
+  const blend = data.blend(null);
+  const curMonth = currentYmET();
+  const curYear = curMonth.slice(0, 4);
+  const counts = React.useMemo(
+    () => ({
+      mo: tally(blend, [curMonth], NEG_CATS),
+      ytd: tally(blend, monthsOfYear(Number(curYear)), NEG_CATS),
+      all: tally(blend, blend.months, NEG_CATS),
+    }),
+    [blend, curMonth, curYear],
+  );
 
   const enriched = React.useMemo(() => {
-    const curMonth = new Date().toISOString().slice(0, 7);
-    const curYear = curMonth.slice(0, 4);
-
-    const liveCells = new Map();
-    const liveYms = new Map();
-    for (const inc of incidents) {
-      if (!inc.driver_id) continue;
-      const ym = ymKey(inc) || "unknown";
-      if (!liveYms.has(inc.driver_id)) liveYms.set(inc.driver_id, new Set());
-      liveYms.get(inc.driver_id).add(ym);
-      if (inc.no_fault) continue;
-      const k = `${inc.driver_id}|${ym}|${inc.category}`;
-      liveCells.set(k, (liveCells.get(k) || 0) + 1);
-    }
-
     return drivers.map((driver) => {
-      const ymsWithLive = liveYms.get(driver.id) || new Set();
-      const catTotals = {};
-      const addCat = (cat, n, year, month) => {
-        catTotals[cat] = catTotals[cat] || { all: 0, ytd: 0, mo: 0 };
-        catTotals[cat].all += n;
-        if (String(year) === curYear) catTotals[cat].ytd += n;
-        if (`${year}-${String(month).padStart(2, "0")}` === curMonth) catTotals[cat].mo += n;
-      };
-      for (const r of history) {
-        if (r.driver_id !== driver.id) continue;
-        const ym = `${r.year}-${String(r.month).padStart(2, "0")}`;
-        if (ymsWithLive.has(ym)) continue;
-        addCat(r.category, r.count, r.year, r.month);
-      }
-      for (const [k, n] of liveCells) {
-        const [did, ym, cat] = k.split("|");
-        if (did !== driver.id || ym === "unknown") continue;
-        const [y, m] = ym.split("-");
-        addCat(cat, n, Number(y), Number(m));
-      }
-      const sum = (sel) => NEG_CATS.reduce((a, c) => a + (catTotals[c]?.[sel] || 0), 0);
-      const againstTotal = sum("all");
-      const ytdAgainst = sum("ytd");
-      const monthAgainst = sum("mo");
+      const sum = (t) => tallyTotal(t, { driverId: driver.id });
+      const monthAgainst = sum(counts.mo);
 
       const srcVol = { traces: 0, returns: 0, laters: 0 };
       for (const inc of incidents) {
@@ -84,13 +65,27 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
 
       return {
         ...driver,
-        againstTotal, ytdAgainst, monthAgainst,
-        strip: STRIP.map((c) => ({ cat: c, label: CAT_LABEL[c], n: catTotals[c]?.all || 0 })),
+        againstTotal: sum(counts.all),
+        ytdAgainst: sum(counts.ytd),
+        monthAgainst,
+        strip: STRIP.map((c) => ({ cat: c, label: CAT_LABEL[c], n: counts.all.get(driver.id)?.get(c) || 0 })),
         srcVol,
         heat: monthAgainst >= 3 ? "hot" : monthAgainst >= 1 ? "warm" : "cool",
       };
     });
-  }, [drivers, incidents, history]);
+  }, [drivers, incidents, counts]);
+
+  // A card opens the driver's drawer over all time, this year and this month — the
+  // card's three numbers, each checked against what the drawer counts.
+  const openCard = (driver) =>
+    openDrill({
+      spec: { kind: "blend", driverId: driver.id, categoryIds: NEG_CATS },
+      scopes: [
+        { label: "All time", months: blend.months, expected: driver.againstTotal },
+        { label: `YTD ${curYear}`, months: monthsOfYear(Number(curYear)), expected: driver.ytdAgainst },
+        { label: "This month", months: [curMonth], expected: driver.monthAgainst },
+      ],
+    });
 
   const filtered = React.useMemo(() => {
     let list = enriched;
@@ -109,6 +104,7 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
   }, [enriched, search, roleFilter, showInactive]);
 
   const hasRecords = (driverId) =>
+    !countsReady ||
     incidents.some((i) => i.driver_id === driverId) ||
     history.some((r) => r.driver_id === driverId);
 
@@ -365,7 +361,7 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
           Show inactive
         </label>
         <div className="toolbar-spacer" />
-        {stubRows.length > 0 && (
+        {countsReady && stubRows.length > 0 && (
           <button
             className="btn ghost"
             onClick={cleanUpStubRows}
@@ -379,12 +375,24 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
           + Add Driver/Loader
         </button>
       </div>
+      {data.blocking && (
+        <LoadError what={data.blocking.what} message={data.blocking.message} retry={data.blocking.retry} />
+      )}
+      {/* The cards are the roster: with no copy of it there is nothing to list, and an
+          empty page would read as "no drivers". */}
+      {data.rosterBlocking && (
+        <LoadError
+          what={data.rosterBlocking.what}
+          message={data.rosterBlocking.message}
+          retry={data.rosterBlocking.retry}
+        />
+      )}
       <div className="driver-list">
         {filtered.map((driver) => (
           <div
             key={driver.id}
-            className={`driver-card ${driver.heat}`}
-            onClick={() => setSelected(driver)}
+            className={`driver-card ${countsReady ? driver.heat : "cool"}`}
+            onClick={() => countsReady && openCard(driver)}
             style={driver.active === false ? { opacity: 0.55 } : undefined}
           >
             <div className="driver-name">
@@ -398,26 +406,26 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
             <div className="driver-role">{driver.role}</div>
             <div className="driver-stats">
               <div className="driver-stat">
-                <div className={`driver-stat-value ${driver.monthAgainst > 0 ? "red" : ""}`}>
-                  {driver.monthAgainst}
+                <div className={`driver-stat-value ${countsReady && driver.monthAgainst > 0 ? "red" : ""}`}>
+                  {countsReady ? driver.monthAgainst : "—"}
                 </div>
                 <div className="driver-stat-label">Faulted Mo</div>
               </div>
               <div className="driver-stat">
-                <div className={`driver-stat-value ${driver.ytdAgainst > 3 ? "amber" : ""}`}>
-                  {driver.ytdAgainst}
+                <div className={`driver-stat-value ${countsReady && driver.ytdAgainst > 3 ? "amber" : ""}`}>
+                  {countsReady ? driver.ytdAgainst : "—"}
                 </div>
                 <div className="driver-stat-label">YTD</div>
               </div>
               <div className="driver-stat">
-                <div className="driver-stat-value">{driver.againstTotal}</div>
+                <div className="driver-stat-value">{countsReady ? driver.againstTotal : "—"}</div>
                 <div className="driver-stat-label">All Time</div>
               </div>
             </div>
             <div className="driver-catstrip">
               {driver.strip.map((s) => (
-                <div key={s.cat} className={`dcs ${s.n > 0 ? "on" : ""}`}>
-                  <span className="dcs-n">{s.n}</span>
+                <div key={s.cat} className={`dcs ${countsReady && s.n > 0 ? "on" : ""}`}>
+                  <span className="dcs-n">{countsReady ? s.n : "—"}</span>
                   <span className="dcs-l">{s.label}</span>
                 </div>
               ))}
@@ -467,14 +475,6 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
           </div>
         ))}
       </div>
-      {selected && (
-        <DriverModal
-          driver={selected}
-          incidents={incidents.filter((inc) => inc.driver_id === selected.id)}
-          history={history.filter((r) => r.driver_id === selected.id)}
-          onClose={() => setSelected(null)}
-        />
-      )}
       {formOpen && (
         <div className="modal-backdrop" onClick={closeForm}>
           <div

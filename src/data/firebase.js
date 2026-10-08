@@ -36,6 +36,7 @@ import { db } from "./firebaseApp.js";
 import { reportDateBounds, reportSpanLabel } from "../reports/reportNaming.js";
 import { slimPhotoMeta, approxDocBytes } from "./photoDocs.js";
 import { COUNTED8 } from "./categories.js";
+import { readResult, SERVER_UNREACHABLE } from "./loadState.js";
 
 // All collections are dds_-prefixed: davismarginiq is a shared Davis Firebase
 // project, and the prefix guarantees this app can never collide with another
@@ -307,14 +308,41 @@ export async function saveIncidentsBatch(incidents, onProgress = null) {
   return saved;
 }
 
-export async function getIncidents() {
+// Checked reads return { data, error }: a failed read is an error the screens show,
+// never an empty list that reads as "no incidents". The app's analytics and its startup
+// use these; the plain getX() wrappers below keep their old contract for the callers
+// that can live with an empty answer.
+//
+// With the offline cache on, a read the server can't answer doesn't throw: Firestore
+// answers it from this browser's cache, which on a new device is empty. So an answer
+// from the cache is a failed read too (readResult in loadState.js) — it carries the
+// cached rows as `data`, flagged `offline`, for App to show as an old copy or not at all.
+const failure = (what, err) => {
+  const error = err?.message || String(err);
+  console.warn(`${what} failed:`, error);
+  return { data: null, error };
+};
+const checked = (what, rows, fromCache) => {
+  const result = readResult(rows, fromCache);
+  if (result.error) console.warn(`${what}: ${result.error}`);
+  return result;
+};
+
+export async function loadIncidentsChecked() {
   try {
     const snap = await getDocs(collection(db, INCIDENTS));
-    return snap.docs.map((d) => ({ ...d.data(), id: d.id }));
+    return checked(
+      "loading incidents",
+      snap.docs.map((d) => ({ ...d.data(), id: d.id })),
+      snap.metadata.fromCache,
+    );
   } catch (err) {
-    console.warn("getIncidents failed:", err.message);
-    return [];
+    return failure("loading incidents", err);
   }
+}
+
+export async function getIncidents() {
+  return (await loadIncidentsChecked()).data || [];
 }
 
 export async function getIncidentPhotos(id) {
@@ -614,14 +642,21 @@ export async function saveDrivers(drivers) {
   }
 }
 
-export async function getDrivers() {
+// { data, error }. A roster document that doesn't exist is data: [] — an empty roster,
+// which startup seeds. A failed read is an error, and startup must NOT seed on it:
+// seeding writes the whole roster document, so a seed after a failed read overwrote the
+// real roster with the built-in list.
+export async function loadDriversChecked() {
   try {
     const s = await getDoc(doc(db, META, "drivers"));
-    return s.exists() ? s.data().drivers || [] : [];
+    return checked("loading the driver roster", s.exists() ? s.data().drivers || [] : [], s.metadata.fromCache);
   } catch (err) {
-    console.warn("getDrivers failed:", err.message);
-    return [];
+    return failure("loading the driver roster", err);
   }
+}
+
+export async function getDrivers() {
+  return (await loadDriversChecked()).data || [];
 }
 
 // ---- reports -------------------------------------------------------------
@@ -681,14 +716,21 @@ export async function saveReport(report) {
   return meta;
 }
 
-export async function getReports() {
+export async function loadReportsChecked() {
   try {
     const snap = await getDocs(collection(db, REPORTS));
-    return snap.docs.map((d) => ({ ...d.data(), id: d.id }));
+    return checked(
+      "loading reports",
+      snap.docs.map((d) => ({ ...d.data(), id: d.id })),
+      snap.metadata.fromCache,
+    );
   } catch (err) {
-    console.warn("getReports failed:", err.message);
-    return [];
+    return failure("loading reports", err);
   }
+}
+
+export async function getReports() {
+  return (await loadReportsChecked()).data || [];
 }
 
 export async function getReportWithPdf(id) {
@@ -876,8 +918,12 @@ async function loadMonth(ym) {
 }
 
 async function monthIds() {
+  return (await monthIdsChecked()).ids;
+}
+// The month list, and whether the server answered it (see readResult).
+async function monthIdsChecked() {
   const snap = await getDocs(collection(db, HISTORY));
-  return snap.docs.map((d) => d.id);
+  return { ids: snap.docs.map((d) => d.id), fromCache: snap.metadata.fromCache };
 }
 
 // Pre-shard data lived in dds_app_meta/history. Read it so a store that has not
@@ -908,29 +954,65 @@ function contribByMonth(contrib) {
   return out;
 }
 
-export async function getHistory({ driverId, year, month } = {}) {
+// Every history record, read once for the whole app (AnalyticsProvider). It used to be
+// read in full by four screens on every visit, and each turned a failed read into an
+// empty list — which charts as zero. This returns the failure instead:
+//   { records, monthIds, newestUpdatedAt, error }
+//
+// The month list answered from this browser's cache means the server wasn't reached:
+// that comes back as an error with the cached records, flagged `offline`
+// (historyLoadState shows them as an old copy, never as a fresh one).
+export async function loadHistoryChecked() {
   try {
-    let list = [];
-    const ids = await monthIds();
+    const { ids, fromCache } = await monthIdsChecked();
+    const answer = (records, monthIds) => {
+      const { error, offline } = readResult(records, fromCache);
+      if (error) console.warn(`loading history: ${error}`);
+      return { records, monthIds, newestUpdatedAt: newest(records), error, ...(offline ? { offline } : {}) };
+    };
     if (ids.length === 0) {
       // Not sharded yet — fall back to the single legacy document.
-      list = Object.values((await loadLegacyHistory()).records);
-    } else if (year && month) {
-      // Targeted read: one document instead of the whole history.
-      const ym = `${year}-${String(month).padStart(2, "0")}`;
-      list = Object.values((await loadMonth(ym)).records);
-    } else {
-      const wanted = year ? ids.filter((id) => id.startsWith(`${year}-`)) : ids;
-      const months = await Promise.all(wanted.map((id) => loadMonth(id)));
-      list = months.flatMap((m) => Object.values(m.records));
+      const legacy = await loadLegacyHistory();
+      return answer(Object.values(legacy.records), []);
     }
-    if (driverId) list = list.filter((r) => r.driver_id === driverId);
-    if (year) list = list.filter((r) => r.year === Number(year));
-    if (month) list = list.filter((r) => r.month === Number(month));
-    return list;
+    const months = await Promise.all(ids.map((id) => loadMonth(id)));
+    return answer(
+      months.flatMap((m) => Object.values(m.records)),
+      ids,
+    );
   } catch (err) {
-    console.warn("getHistory failed:", err.message);
-    return [];
+    const error = err?.message || String(err);
+    console.warn("loading history failed:", error);
+    return { records: [], monthIds: [], newestUpdatedAt: null, error };
+  }
+}
+
+const newest = (records) =>
+  records.reduce((max, r) => (r && r.updated_at && r.updated_at > max ? r.updated_at : max), "") || null;
+
+// History written from THIS browser — a report rollup, a re-sync, an import, a delete —
+// tells the screens to re-read it. History is read once per session, so without this a
+// report saved here wouldn't reach the Scorecard until the next reload. Writes made in
+// another browser are picked up on focus once the copy is 30 minutes old.
+//
+// Every write bumps a sequence number, so a re-read can tell whether it already covers
+// the latest write (AnalyticsProvider): the listener and the screen that wrote both ask
+// for a refresh, and one read answers both.
+const historyListeners = new Set();
+let historyWrites = 0;
+export const historyWriteSeq = () => historyWrites;
+export function onHistoryWritten(fn) {
+  historyListeners.add(fn);
+  return () => historyListeners.delete(fn);
+}
+function historyWritten() {
+  historyWrites += 1;
+  for (const fn of historyListeners) {
+    try {
+      fn();
+    } catch (err) {
+      console.warn("history listener failed:", err?.message || err);
+    }
   }
 }
 
@@ -969,17 +1051,22 @@ export async function saveHistoryBatch(records, { replace = false, onProgress } 
   // deliberate wholesale replace), but source_records are re-read FRESH inside
   // the transaction so a rollup landing mid-import isn't erased by our stale
   // snapshot of it.
-  for (const [ym, data] of Object.entries(touched)) {
-    await runTransaction(db, async (tx) => {
-      const snap = await tx.get(doc(db, HISTORY, ym));
-      const fresh = snap.exists() ? snap.data() : {};
-      txSaveMonth(tx, ym, {
-        records: data.records,
-        source_records: replace
-          ? fresh.source_records || {}
-          : data.source_records || fresh.source_records || {},
+  try {
+    for (const [ym, data] of Object.entries(touched)) {
+      await runTransaction(db, async (tx) => {
+        const snap = await tx.get(doc(db, HISTORY, ym));
+        const fresh = snap.exists() ? snap.data() : {};
+        txSaveMonth(tx, ym, {
+          records: data.records,
+          source_records: replace
+            ? fresh.source_records || {}
+            : data.source_records || fresh.source_records || {},
+        });
       });
-    });
+    }
+  } finally {
+    // A failure part-way still leaves the months before it written.
+    historyWritten();
   }
   onProgress?.({ done: records.length, total: records.length });
   return saved;
@@ -1082,6 +1169,7 @@ export async function rollupReportToHistory(incidents, reportId) {
       months: months.length,
     };
   });
+  historyWritten();
   return result;
 }
 
@@ -1138,24 +1226,45 @@ export function scheduleReportResync(reportId, delay = 1500) {
   );
 }
 
+// { deleted, error? }. A month whose delete fails is named in `error` and its records
+// are not counted as deleted; the rest still go. A month list the server didn't answer
+// (this browser's cache) could miss months, so nothing is deleted from it.
 export async function deleteAllHistory() {
   try {
     let deleted = 0;
-    for (const ym of await monthIds()) {
+    const failed = [];
+    const { ids, fromCache } = await monthIdsChecked();
+    if (fromCache) return { deleted: 0, error: SERVER_UNREACHABLE };
+    for (const ym of ids) {
       const { records } = await loadMonth(ym);
-      deleted += Object.keys(records).length;
-      await deleteDoc(doc(db, HISTORY, ym)).catch(() => {});
+      try {
+        await deleteDoc(doc(db, HISTORY, ym));
+        deleted += Object.keys(records).length;
+      } catch (err) {
+        console.warn(`deleting history ${ym} failed:`, err.message);
+        failed.push(ym);
+      }
     }
     // Clear the legacy document too so it can't resurface as a fallback.
     const legacy = await getDoc(doc(db, META, "history"));
     if (legacy.exists()) {
-      deleted += Object.keys(legacy.data().records || {}).length;
+      const n = Object.keys(legacy.data().records || {}).length;
       await setDoc(doc(db, META, "history"), { records: {}, updated_at: nowISO() });
+      deleted += n;
+    }
+    if (failed.length) {
+      return {
+        deleted,
+        error: `${failed.length} month${failed.length === 1 ? "" : "s"} could not be deleted (${failed.join(", ")})`,
+      };
     }
     return { deleted };
   } catch (err) {
     console.warn("deleteAllHistory failed:", err.message);
     return { deleted: 0, error: err.message };
+  } finally {
+    // Some months may be gone even when it failed part-way.
+    historyWritten();
   }
 }
 

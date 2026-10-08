@@ -14,6 +14,7 @@ import { parseExcelFiles, buildIncidents, dedupeIncidents, resolveDriverId } fro
 import { fetchPhotosForProsBatch } from "../parsers/nuvizzClient.js";
 import { reportDateBounds, suggestReportName, reportSpanLabel } from "../reports/reportNaming.js";
 import { catChipStyle } from "../data/categories.js";
+import { useAnalytics } from "../data/AnalyticsProvider.jsx";
 
 /** Return the coming Friday (or today if today is Friday) in YYYY-MM-DD. */
 function nextFriday() {
@@ -37,6 +38,7 @@ function formatWeekLabel(dateStr) {
 }
 
 export default function Ingest({ drivers, onReportCreated, onNavigateToReport }) {
+  const { refreshHistory } = useAnalytics();
   const [weekEnding, setWeekEnding] = useState(nextFriday());
   const [reportName, setReportName] = useState("");
   const [parsedFiles, setParsedFiles] = useState(null);   // array of file metadata
@@ -263,6 +265,9 @@ export default function Ingest({ drivers, onReportCreated, onNavigateToReport })
       let rollupWarning = "";
       try {
         await rollupReportToHistory(tagged, report.id);
+        // History is read once per session: re-read it so the new report's counts are
+        // on the Scorecard and Trends when they're opened next.
+        await refreshHistory();
       } catch (err) {
         // Deliberate: the report and its incidents ARE saved at this point, so a
         // failed history rollup must not abort the save — but per the no-swallow

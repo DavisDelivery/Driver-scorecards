@@ -46,9 +46,13 @@ import {
   ATTRIBUTED_BY_TEXT,
 } from "../data/attemptRecords.js";
 import { reassignAttempt, overridesFor as savedOverridesFor } from "../data/attemptReassign.js";
-import { catColor } from "../data/categories.js";
+import { catColor, COUNTED8 } from "../data/categories.js";
 import { csvName } from "../data/csv.js";
-import DriverModal from "./DriverModal.jsx";
+import { useAnalytics } from "../data/AnalyticsProvider.jsx";
+import { driverDrill } from "../data/drill.js";
+import { monthsOfYear } from "../data/scorecardDetail.js";
+import { openDrill } from "./kit/drillNav.js";
+import { AnalyticsGate } from "./kit/LoadState.jsx";
 import StopDetailModal from "./StopDetailModal.jsx";
 import ManualEntryAnalytics, { useTabPeriod } from "./ManualEntryAnalytics.jsx";
 import ChartCard from "./kit/ChartCard.jsx";
@@ -243,7 +247,8 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   const [saving, setSaving] = React.useState(false);
   const [savedMsg, setSavedMsg] = React.useState("");
   const [savedWarn, setSavedWarn] = React.useState(false);
-  const [focus, setFocus] = React.useState(null);
+  const analytics = useAnalytics();
+  const incidentsFailed = analytics.blocking?.what === "incidents";
   const [logSearch, setLogSearch] = React.useState("");
   // The window + label the analytics panel is showing; the detail log scopes itself
   // to this so the log matches the charts (non-feed tabs). Both read the same period
@@ -1116,14 +1121,42 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     </span>
   );
 
-  const openDriver = (inc) =>
-    setFocus(
-      drivers.find((d) => d.id === inc.driver_id) || {
-        id: inc.driver_id,
-        name: inc.driver_name || "(unknown)",
-        role: "driver",
-      },
+  // A row opens its driver's record: every counted category over all time and this
+  // year, from the same blend as the Scorecard (it used to be a popup of live rows only,
+  // with none of the driver's imported history), opened on this tab's category. An entry
+  // with no driver has no record to open.
+  //
+  // Unable to Track counts toward nothing, so the blend has none of it: that tab opens
+  // the driver's own Unable to Track entries as a plain list instead, the row clicked
+  // among them, with nothing framed as a failure.
+  const openDriver = (inc) => {
+    if (!inc.driver_id) return;
+    if (!COUNTED8.includes(config.category)) {
+      openDrill({
+        spec: {
+          kind: "incidents",
+          driverId: inc.driver_id,
+          categoryIds: [config.category],
+          ids: incidents.filter((i) => i.driver_id === inc.driver_id && i.category === config.category).map((i) => i.id),
+        },
+      });
+      return;
+    }
+    const year = todayET().slice(0, 4);
+    openDrill(
+      driverDrill(
+        inc.driver_id,
+        {
+          categoryIds: COUNTED8,
+          scopes: [
+            { label: "All time", months: analytics.blend(null).months },
+            { label: `YTD ${year}`, months: monthsOfYear(Number(year)) },
+          ],
+        },
+        { category: config.category },
+      ),
     );
+  };
 
   // Aligned, column-headed row for the non-feed log (Forgotten Freight, etc.).
   const gridClass = `ff-log-grid ${classifyField ? "has-item" : ""}`;
@@ -1162,12 +1195,15 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       <div className="page-title">Manual Entry</div>
       <h1 className="page-heading">
         {config.heading}
+        {/* Counts from incidents: none while their read has failed (the gate below says so). */}
         <span className="meta">
-          {!feedEnabled
-            ? ` · ${manualForView.length} in ${logPeriod.label} · ${allTimeManual} all-time`
-            : feedDayMissing
-              ? ` · no feed data on ${fmtMDY(feedDate)} (${manualCounted} manual) · ${allTimeManual} logged all-time`
-              : ` · ${totalOnRecord} on ${fmtMDY(feedDate)} (${feedRows.length} auto, ${manualCounted} manual${handOnFeed.size ? `, ${handOnFeed.size} also on the feed` : ""}) · ${allTimeManual} logged all-time`}
+          {incidentsFailed
+            ? ""
+            : !feedEnabled
+              ? ` · ${manualForView.length} in ${logPeriod.label} · ${allTimeManual} all-time`
+              : feedDayMissing
+                ? ` · no feed data on ${fmtMDY(feedDate)} (${manualCounted} manual) · ${allTimeManual} logged all-time`
+                : ` · ${totalOnRecord} on ${fmtMDY(feedDate)} (${feedRows.length} auto, ${manualCounted} manual${handOnFeed.size ? `, ${handOnFeed.size} also on the feed` : ""}) · ${allTimeManual} logged all-time`}
         </span>
       </h1>
 
@@ -1368,510 +1404,507 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         </div>
       </div>
 
-      <ManualEntryAnalytics
-        title={config.heading}
-        color={color}
-        records={analyticsRecords}
-        drivers={drivers}
-        ns={config.ns}
-        sourceLabel={feedEnabled ? "dispatch feed + hand-logged" : "logged entries"}
-        leaderLabel={config.leaderLabel}
-        feedGap={feedGap}
-        statusLine={
-          feedEnabled ? (
-            <FeedCoverage
-              periodFeed={periodFeed}
-              coverage={coverage}
-              onRetry={() => setPeriodNonce((n) => n + 1)}
-            />
-          ) : null
-        }
-      />
-
-      {byDriver.length > 0 && (
-        <div className="card ff-bydriver-card">
-          <div className="card-body">
-            <div
-              className="ff-bydriver-head"
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 12,
-                flexWrap: "wrap",
-              }}
-            >
-              <span>
-                Drivers · {logPeriod.label}
-                <span className="meta">
-                  {" "}· {byDriver.length} driver{byDriver.length === 1 ? "" : "s"},{" "}
-                  {periodRows.length} entr{periodRows.length === 1 ? "y" : "ies"}
-                </span>
-              </span>
-              {/* Always-visible way to print one driver's report. Bound to the
-                  same driverFilter the chart sets, so clicking a bar and picking
-                  from here are the same selection. */}
-              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <select
-                  value={driverFilter || ""}
-                  onChange={(e) => setDriverFilter(e.target.value || null)}
-                  style={{ maxWidth: 230 }}
-                  aria-label="Driver to print a report for"
-                >
-                  <option value="">— Select a driver —</option>
-                  {byDriver.map((d) => (
-                    <option key={d.key} value={d.key}>
-                      {d.name} ({d.count})
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  className="btn primary sm"
-                  onClick={printDriverReport}
-                  disabled={!driverFilter || printing}
-                  title={
-                    driverFilter
-                      ? "Build a PDF of this driver's entries for the selected period"
-                      : "Pick a driver first"
-                  }
-                >
-                  {printing === "one"
-                    ? printProgress.total
-                      ? `Building PDF… ${printProgress.done}/${printProgress.total}`
-                      : "Building PDF…"
-                    : "📄 Print driver report"}
-                </button>
-                <button
-                  type="button"
-                  className="btn ghost sm"
-                  onClick={printAllDriverReports}
-                  disabled={!byDriver.length || !!printing}
-                  title={`One PDF with every driver's report for ${logPeriod.label} — each driver starts on a new page`}
-                >
-                  {printing === "all"
-                    ? `Building PDF… driver ${printProgress.done}/${printProgress.total}`
-                    : `📄 Print all (${byDriver.length})`}
-                </button>
-              </span>
-            </div>
-            <ChartCard
-              inset
-              title="Entries by driver"
-              table={chartTable({
-                rows: byDriver,
-                x: { key: "name", label: "Driver" },
-                series: [{ id: "count", label: config.heading }],
-                source: feedEnabled ? "dispatch feed + hand-logged" : "logged entries",
-              })}
-              csv={csvName(config.heading, "by driver", logPeriod.label)}
-              height={Math.max(120, byDriver.length * 30 + 16)}
-            >
-              <EmphasisBars
-                layout="bars"
-                data={byDriver}
-                xKey="name"
-                valueName="Entries"
-                color={color}
-                highlightKey={driverFilter}
-                onMark={(d) => setDriverFilter(driverFilter === d.key ? null : d.key)}
-                labelAll
+      {/* Everything below counts from incidents: with no copy of them it would read as
+          zero, so it waits for them. The form above still logs new entries. */}
+      <AnalyticsGate history={false}>
+        <ManualEntryAnalytics
+          title={config.heading}
+          color={color}
+          records={analyticsRecords}
+          drivers={drivers}
+          ns={config.ns}
+          sourceLabel={feedEnabled ? "dispatch feed + hand-logged" : "logged entries"}
+          leaderLabel={config.leaderLabel}
+          feedGap={feedGap}
+          statusLine={
+            feedEnabled ? (
+              <FeedCoverage
+                periodFeed={periodFeed}
+                coverage={coverage}
+                onRetry={() => setPeriodNonce((n) => n + 1)}
               />
-            </ChartCard>
-            <div className="ff-bydriver-hint">
-              {driverFilter ? (
+            ) : null
+          }
+        />
+
+        {byDriver.length > 0 && (
+          <div className="card ff-bydriver-card">
+            <div className="card-body">
+              <div
+                className="ff-bydriver-head"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 12,
+                  flexWrap: "wrap",
+                }}
+              >
+                <span>
+                  Drivers · {logPeriod.label}
+                  <span className="meta">
+                    {" "}· {byDriver.length} driver{byDriver.length === 1 ? "" : "s"},{" "}
+                    {periodRows.length} entr{periodRows.length === 1 ? "y" : "ies"}
+                  </span>
+                </span>
+                {/* Always-visible way to print one driver's report. Bound to the
+                    same driverFilter the chart sets, so clicking a bar and picking
+                    from here are the same selection. */}
+                <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <select
+                    value={driverFilter || ""}
+                    onChange={(e) => setDriverFilter(e.target.value || null)}
+                    style={{ maxWidth: 230 }}
+                    aria-label="Driver to print a report for"
+                  >
+                    <option value="">— Select a driver —</option>
+                    {byDriver.map((d) => (
+                      <option key={d.key} value={d.key}>
+                        {d.name} ({d.count})
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="btn primary sm"
+                    onClick={printDriverReport}
+                    disabled={!driverFilter || printing}
+                    title={
+                      driverFilter
+                        ? "Build a PDF of this driver's entries for the selected period"
+                        : "Pick a driver first"
+                    }
+                  >
+                    {printing === "one"
+                      ? printProgress.total
+                        ? `Building PDF… ${printProgress.done}/${printProgress.total}`
+                        : "Building PDF…"
+                      : "📄 Print driver report"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn ghost sm"
+                    onClick={printAllDriverReports}
+                    disabled={!byDriver.length || !!printing}
+                    title={`One PDF with every driver's report for ${logPeriod.label} — each driver starts on a new page`}
+                  >
+                    {printing === "all"
+                      ? `Building PDF… driver ${printProgress.done}/${printProgress.total}`
+                      : `📄 Print all (${byDriver.length})`}
+                  </button>
+                </span>
+              </div>
+              <ChartCard
+                inset
+                title="Entries by driver"
+                table={chartTable({
+                  rows: byDriver,
+                  x: { key: "name", label: "Driver" },
+                  series: [{ id: "count", label: config.heading }],
+                  source: feedEnabled ? "dispatch feed + hand-logged" : "logged entries",
+                })}
+                csv={csvName(config.heading, "by driver", logPeriod.label)}
+                height={Math.max(120, byDriver.length * 30 + 16)}
+              >
+                <EmphasisBars
+                  layout="bars"
+                  data={byDriver}
+                  xKey="name"
+                  valueName="Entries"
+                  color={color}
+                  highlightKey={driverFilter}
+                  onMark={(d) => setDriverFilter(driverFilter === d.key ? null : d.key)}
+                  labelAll
+                />
+              </ChartCard>
+              <div className="ff-bydriver-hint">
+                {driverFilter ? (
+                  <button
+                    type="button"
+                    className="btn ghost sm"
+                    onClick={() => setDriverFilter(null)}
+                  >
+                    ✕ Clear filter · {byDriver.find((d) => d.key === driverFilter)?.name || "driver"}
+                  </button>
+                ) : (
+                  "Click a bar to filter the log to that driver, or pick one above to print their report."
+                )}
+              </div>
+              {feedEnabled && periodFeed.status === "ready" && unassignedFeed.copies > 0 && (
+                <div className="ff-bydriver-hint">
+                  {unassignedFeed.copies} duplicate order
+                  {unassignedFeed.copies === 1 ? "" : "s"} (-1/-2) counted once with the original
+                  stop — not another attempt, and never charged to the original&apos;s driver.
+                  Dispatch&apos;s own total counts {unassignedFeed.copies === 1 ? "it" : "them"}{" "}
+                  separately.
+                </div>
+              )}
+              {feedEnabled && fillFlagsInPeriod.length > 0 && (
+                <div className="ff-fill-flag" role="alert">
+                  <strong>⚠ The nightly driver lookup couldn&apos;t finish</strong>
+                  {fillFlagsInPeriod.map((f) => (
+                    <div key={f.date} className="ff-fill-flag-day">
+                      {fmtMDY(f.date)} — {f.left} attempt{f.left === 1 ? "" : "s"} still need a
+                      driver:{" "}
+                      {Object.entries(
+                        f.stops.reduce((m, x) => ((m[x.reason] = (m[x.reason] || 0) + 1), m), {}),
+                      )
+                        .map(([why, n]) => `${n} ${FILL_LEFT_REASON[why] || why}`)
+                        .join(", ")}
+                      . It reads at most {f.maxCalls} a night by design; assign these below, or ask
+                      for them to be looked up.
+                    </div>
+                  ))}
+                </div>
+              )}
+              {feedEnabled && unassignedFeed.rows.length > 0 && (
+                <UnassignedAttempts
+                  data={unassignedFeed}
+                  periodLabel={logPeriod.label}
+                  driverOptions={driverOptions}
+                  onOpen={openAttempt}
+                  onAssign={(r, driverId) => reassignAuto(r.order, driverId, r.delivered_date)}
+                />
+              )}
+            </div>
+          </div>
+        )}
+
+        <div className="section-head">
+          {config.logTitle}
+          {!feedEnabled && (
+            <span className="meta">
+              {" "}· {logPeriod.label} ·{" "}
+              {driverFilter || logSearch.trim()
+                ? `${filteredLog.length} of ${manualForView.length}`
+                : manualForView.length}
+            </span>
+          )}
+        </div>
+        <div className="card">
+          <div className="card-body" style={{ padding: "4px 14px" }}>
+            <div className="ff-log-search-wrap">
+              {feedEnabled && (
+                <div className="ff-feed-date">
+                  <span className="dd-k">Attempts for</span>
+                  <input
+                    type="date"
+                    value={feedDate}
+                    max={todayET()}
+                    onChange={(e) => {
+                      // A new day starts from the settled list again; only the button
+                      // below opts into the heavy live-detection pass.
+                      setFeedScan(false);
+                      setFeedDate(e.target.value || todayET());
+                    }}
+                    style={{ fontFamily: "var(--mono)" }}
+                    title="Show the attempts log (auto + manual) for this day"
+                  />
+                  {/* Yesterday is the day worth jumping to: its 8 PM scan has run, so
+                      every attempt is already attributed to the driver who had it. */}
+                  <button
+                    type="button"
+                    className={`btn ghost sm ${feedDate === yesterdayET() ? "active" : ""}`}
+                    onClick={() => {
+                      setFeedScan(false);
+                      setFeedDate(yesterdayET());
+                    }}
+                    disabled={feedDate === yesterdayET()}
+                    title="Jump to yesterday, whose attempts the evening scan has already attributed"
+                  >
+                    Yesterday
+                  </button>
+                  <button
+                    type="button"
+                    className="btn ghost sm"
+                    onClick={() => {
+                      setFeedScan(true);
+                      setFeedNonce((n) => n + 1);
+                    }}
+                    disabled={feed.status === "loading"}
+                    title="Detect this day's attempts from the live dispatch board now, without waiting for the 8 PM scan"
+                    style={{ marginLeft: 8 }}
+                  >
+                    {feed.status === "loading" ? "Scanning…" : "↻ Run scan"}
+                  </button>
+                </div>
+              )}
+              <input
+                type="text"
+                className="ff-log-search"
+                placeholder="Search PRO, driver, customer…"
+                value={logSearch}
+                onChange={(e) => setLogSearch(e.target.value)}
+              />
+              {!feedEnabled && (
+                <button
+                  type="button"
+                  className={`btn ghost sm ${groupByDriver ? "active" : ""}`}
+                  onClick={() => setGroupByDriver((g) => !g)}
+                  title="Group the log under each driver"
+                >
+                  {groupByDriver ? "☑ Grouped by driver" : "Group by driver"}
+                </button>
+              )}
+              {driverFilter && (
                 <button
                   type="button"
                   className="btn ghost sm"
                   onClick={() => setDriverFilter(null)}
+                  title="Clear the driver filter"
                 >
-                  ✕ Clear filter · {byDriver.find((d) => d.key === driverFilter)?.name || "driver"}
+                  ✕ {byDriver.find((d) => d.key === driverFilter)?.name || "driver"}
                 </button>
-              ) : (
-                "Click a bar to filter the log to that driver, or pick one above to print their report."
               )}
             </div>
-            {feedEnabled && periodFeed.status === "ready" && unassignedFeed.copies > 0 && (
-              <div className="ff-bydriver-hint">
-                {unassignedFeed.copies} duplicate order
-                {unassignedFeed.copies === 1 ? "" : "s"} (-1/-2) counted once with the original
-                stop — not another attempt, and never charged to the original&apos;s driver.
-                Dispatch&apos;s own total counts {unassignedFeed.copies === 1 ? "it" : "them"}{" "}
-                separately.
+            {feedEnabled && feed.status === "loading" && (
+              <div className="empty-state">Loading attempts for {fmtMDY(feedDate)}…</div>
+            )}
+            {feedEnabled && feed.status === "error" && (
+              <div className="empty-state" style={{ color: "var(--accent-red)" }}>
+                Couldn't load auto attempts for {fmtMDY(feedDate)} ({feed.error}).
               </div>
             )}
-            {feedEnabled && fillFlagsInPeriod.length > 0 && (
-              <div className="ff-fill-flag" role="alert">
-                <strong>⚠ The nightly driver lookup couldn&apos;t finish</strong>
-                {fillFlagsInPeriod.map((f) => (
-                  <div key={f.date} className="ff-fill-flag-day">
-                    {fmtMDY(f.date)} — {f.left} attempt{f.left === 1 ? "" : "s"} still need a
-                    driver:{" "}
-                    {Object.entries(
-                      f.stops.reduce((m, x) => ((m[x.reason] = (m[x.reason] || 0) + 1), m), {}),
-                    )
-                      .map(([why, n]) => `${n} ${FILL_LEFT_REASON[why] || why}`)
-                      .join(", ")}
-                    . It reads at most {f.maxCalls} a night by design; assign these below, or ask
-                    for them to be looked up.
-                  </div>
-                ))}
+            {/* A night the evening scan never ran (or couldn't read NuVizz) is not a
+                night with no attempts — say which it is. */}
+            {feedEnabled && feed.status === "ready" && NO_DATA_STATUSES.has(feed.dayStatus) && (
+              <div className="empty-state" style={{ color: "#b45309" }}>
+                No data from the dispatch feed for {fmtMDY(feedDate)}:{" "}
+                {DAY_STATUS_TEXT[feed.dayStatus]}. That isn&apos;t the same as no attempts —
+                only hand-logged ones can show here.
               </div>
             )}
-            {feedEnabled && unassignedFeed.rows.length > 0 && (
-              <UnassignedAttempts
-                data={unassignedFeed}
-                periodLabel={logPeriod.label}
-                driverOptions={driverOptions}
-                onOpen={openAttempt}
-                onAssign={(r, driverId) => reassignAuto(r.order, driverId, r.delivered_date)}
-              />
-            )}
-          </div>
-        </div>
-      )}
-
-      <div className="section-head">
-        {config.logTitle}
-        {!feedEnabled && (
-          <span className="meta">
-            {" "}· {logPeriod.label} ·{" "}
-            {driverFilter || logSearch.trim()
-              ? `${filteredLog.length} of ${manualForView.length}`
-              : manualForView.length}
-          </span>
-        )}
-      </div>
-      <div className="card">
-        <div className="card-body" style={{ padding: "4px 14px" }}>
-          <div className="ff-log-search-wrap">
-            {feedEnabled && (
-              <div className="ff-feed-date">
-                <span className="dd-k">Attempts for</span>
-                <input
-                  type="date"
-                  value={feedDate}
-                  max={todayET()}
-                  onChange={(e) => {
-                    // A new day starts from the settled list again; only the button
-                    // below opts into the heavy live-detection pass.
-                    setFeedScan(false);
-                    setFeedDate(e.target.value || todayET());
-                  }}
-                  style={{ fontFamily: "var(--mono)" }}
-                  title="Show the attempts log (auto + manual) for this day"
-                />
-                {/* Yesterday is the day worth jumping to: its 8 PM scan has run, so
-                    every attempt is already attributed to the driver who had it. */}
-                <button
-                  type="button"
-                  className={`btn ghost sm ${feedDate === yesterdayET() ? "active" : ""}`}
-                  onClick={() => {
-                    setFeedScan(false);
-                    setFeedDate(yesterdayET());
-                  }}
-                  disabled={feedDate === yesterdayET()}
-                  title="Jump to yesterday, whose attempts the evening scan has already attributed"
-                >
-                  Yesterday
-                </button>
-                <button
-                  type="button"
-                  className="btn ghost sm"
-                  onClick={() => {
-                    setFeedScan(true);
-                    setFeedNonce((n) => n + 1);
-                  }}
-                  disabled={feed.status === "loading"}
-                  title="Detect this day's attempts from the live dispatch board now, without waiting for the 8 PM scan"
-                  style={{ marginLeft: 8 }}
-                >
-                  {feed.status === "loading" ? "Scanning…" : "↻ Run scan"}
-                </button>
-              </div>
-            )}
-            <input
-              type="text"
-              className="ff-log-search"
-              placeholder="Search PRO, driver, customer…"
-              value={logSearch}
-              onChange={(e) => setLogSearch(e.target.value)}
-            />
-            {!feedEnabled && (
-              <button
-                type="button"
-                className={`btn ghost sm ${groupByDriver ? "active" : ""}`}
-                onClick={() => setGroupByDriver((g) => !g)}
-                title="Group the log under each driver"
-              >
-                {groupByDriver ? "☑ Grouped by driver" : "Group by driver"}
-              </button>
-            )}
-            {driverFilter && (
-              <button
-                type="button"
-                className="btn ghost sm"
-                onClick={() => setDriverFilter(null)}
-                title="Clear the driver filter"
-              >
-                ✕ {byDriver.find((d) => d.key === driverFilter)?.name || "driver"}
-              </button>
-            )}
-          </div>
-          {feedEnabled && feed.status === "loading" && (
-            <div className="empty-state">Loading attempts for {fmtMDY(feedDate)}…</div>
-          )}
-          {feedEnabled && feed.status === "error" && (
-            <div className="empty-state" style={{ color: "var(--accent-red)" }}>
-              Couldn't load auto attempts for {fmtMDY(feedDate)} ({feed.error}).
-            </div>
-          )}
-          {/* A night the evening scan never ran (or couldn't read NuVizz) is not a
-              night with no attempts — say which it is. */}
-          {feedEnabled && feed.status === "ready" && NO_DATA_STATUSES.has(feed.dayStatus) && (
-            <div className="empty-state" style={{ color: "#b45309" }}>
-              No data from the dispatch feed for {fmtMDY(feedDate)}:{" "}
-              {DAY_STATUS_TEXT[feed.dayStatus]}. That isn&apos;t the same as no attempts —
-              only hand-logged ones can show here.
-            </div>
-          )}
-          {feedEnabled && feed.status === "ready" && feed.dayStatus === "before_feed" && (
-            <div className="empty-state">
-              {fmtMDY(feedDate)} is before the dispatch feed started ({fmtMDY(FEED_EPOCH)}) —
-              only hand-logged attempts can show here.
-            </div>
-          )}
-          {feedEnabled && feed.status === "ready" && feed.deriveError && (
-            <div className="empty-state" style={{ color: "var(--accent-amber, #b45309)" }}>
-              Showing the settled list only — couldn't reach the live dispatch board
-              ({feed.deriveError}).
-            </div>
-          )}
-          {feedEnabled && feed.status === "ready" && feed.carriedOver > 0 && (
-            <div className="empty-state">
-              {feed.carriedOver} earlier failure{feed.carriedOver === 1 ? " is" : "s are"} still
-              on the board awaiting redelivery, marked ATT but due before {fmtMDY(feedDate)}.
-              They belong to the day they were attempted and aren't counted here.
-            </div>
-          )}
-          {feedEnabled && feed.status === "ready" && feed.provisionalCount > 0 && (
-            <div className="empty-state">
-              {feed.provisionalCount} attempt{feed.provisionalCount === 1 ? "" : "s"} detected
-              live on the dispatch board and marked <strong>LIVE</strong>. Once a stop is
-              re-routed, dispatch no longer shows who attempted it — the 8 PM scan recovers
-              that from the morning plan. Attribute one now with its driver dropdown, or
-              leave it for the scan.
-            </div>
-          )}
-          {totalOnRecord === 0 &&
-            !(
-              feedEnabled &&
-              (feed.status === "loading" || feedDayMissing)
-            ) && (
+            {feedEnabled && feed.status === "ready" && feed.dayStatus === "before_feed" && (
               <div className="empty-state">
-                {feedEnabled
-                  ? `No attempts (auto or manual) for ${fmtMDY(feedDate)}.`
-                  : `Nothing logged in ${logPeriod.label}.`}
+                {fmtMDY(feedDate)} is before the dispatch feed started ({fmtMDY(FEED_EPOCH)}) —
+                only hand-logged attempts can show here.
               </div>
             )}
-          {totalOnRecord > 0 &&
-            totalShown === 0 &&
-            (logSearch.trim() || driverFilter) && (
+            {feedEnabled && feed.status === "ready" && feed.deriveError && (
+              <div className="empty-state" style={{ color: "var(--accent-amber, #b45309)" }}>
+                Showing the settled list only — couldn't reach the live dispatch board
+                ({feed.deriveError}).
+              </div>
+            )}
+            {feedEnabled && feed.status === "ready" && feed.carriedOver > 0 && (
               <div className="empty-state">
-                No entries match{logSearch.trim() ? ` “${logSearch.trim()}”` : ""}
-                {driverFilter
-                  ? ` for ${byDriver.find((d) => d.key === driverFilter)?.name || "that driver"}`
-                  : ""}
-                .
+                {feed.carriedOver} earlier failure{feed.carriedOver === 1 ? " is" : "s are"} still
+                on the board awaiting redelivery, marked ATT but due before {fmtMDY(feedDate)}.
+                They belong to the day they were attempted and aren't counted here.
               </div>
             )}
+            {feedEnabled && feed.status === "ready" && feed.provisionalCount > 0 && (
+              <div className="empty-state">
+                {feed.provisionalCount} attempt{feed.provisionalCount === 1 ? "" : "s"} detected
+                live on the dispatch board and marked <strong>LIVE</strong>. Once a stop is
+                re-routed, dispatch no longer shows who attempted it — the 8 PM scan recovers
+                that from the morning plan. Attribute one now with its driver dropdown, or
+                leave it for the scan.
+              </div>
+            )}
+            {totalOnRecord === 0 &&
+              !(
+                feedEnabled &&
+                (feed.status === "loading" || feedDayMissing)
+              ) && (
+                <div className="empty-state">
+                  {feedEnabled
+                    ? `No attempts (auto or manual) for ${fmtMDY(feedDate)}.`
+                    : `Nothing logged in ${logPeriod.label}.`}
+                </div>
+              )}
+            {totalOnRecord > 0 &&
+              totalShown === 0 &&
+              (logSearch.trim() || driverFilter) && (
+                <div className="empty-state">
+                  No entries match{logSearch.trim() ? ` “${logSearch.trim()}”` : ""}
+                  {driverFilter
+                    ? ` for ${byDriver.find((d) => d.key === driverFilter)?.name || "that driver"}`
+                    : ""}
+                  .
+                </div>
+              )}
 
-          {/* Auto-detected attempts from the dispatch feed (selected date). */}
-          {filteredFeed.map((a) => {
-            const ov = overrideFor(a);
-            const why = ov ? null : unassignedReason(a);
-            const leadName = why ? closedOutBy(a) : null;
-            const lead = leadName ? matchDriver(leadName, drivers) : null;
-            return (
-            <div key={`auto-${a.shipmentNbr || a.stopNbr}`} className="ff-log-entry">
-              <div className="dd-incident-head" style={{ cursor: "default" }}>
-                <span
-                  className="ff-src-chip auto"
-                  title={
-                    a.provisional
-                      ? "Detected from the live dispatch board — the 8 PM scan hasn't attributed it to a driver yet"
-                      : "Attributed by the dispatch app's evening scan"
-                  }
-                >
-                  {a.provisional ? "LIVE" : "AUTO"}
-                </span>
-                {/* Every stop on this order goes with it, so a split can be inspected
-                    leg by leg — the driver events usually sit on the ORIGINAL stop
-                    while the "-1" copy has none. */}
-                <button
-                  type="button"
-                  className="pro-num pro-num-link"
-                  onClick={() => openAttempt(a)}
-                  title="Open this order — details and, if you want it, the activity history showing who had it"
-                >
-                  {a.shipmentNbr || "—"}
-                </button>
-                {a.legs > 1 && (
+            {/* Auto-detected attempts from the dispatch feed (selected date). */}
+            {filteredFeed.map((a) => {
+              const ov = overrideFor(a);
+              const why = ov ? null : unassignedReason(a);
+              const leadName = why ? closedOutBy(a) : null;
+              const lead = leadName ? matchDriver(leadName, drivers) : null;
+              return (
+              <div key={`auto-${a.shipmentNbr || a.stopNbr}`} className="ff-log-entry">
+                <div className="dd-incident-head" style={{ cursor: "default" }}>
                   <span
-                    className="ff-item-chip"
-                    title={`This order has ${a.legs - 1} duplicate order${a.legs === 2 ? "" : "s"} on the list (${a.legRows.map((l) => l.stopNbr).join(", ")}). A -1/-2 is a duplicate: it's counted once with the original here and never charged to the original's driver. Dispatch's own totals count each stop.`}
-                  >
-                    {a.legs} stops · 1 attempt
-                  </span>
-                )}
-                <span
-                  className="ff-auto-driver"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <select
-                    value={ov?.driver_id || ""}
-                    onChange={(e) => reassignAuto(a, e.target.value)}
+                    className="ff-src-chip auto"
                     title={
                       a.provisional
-                        ? "Attribute this attempt now, or leave it for the 8 PM scan"
-                        : "Attribute this attempt to a driver"
+                        ? "Detected from the live dispatch board — the 8 PM scan hasn't attributed it to a driver yet"
+                        : "Attributed by the dispatch app's evening scan"
                     }
                   >
-                    <option value="">
-                      {a.originalDriverName
-                        ? `${a.originalDriverName} · ${ATTRIBUTED_BY_TEXT[feedAttribution(a)]}`
-                        : a.provisional
-                          ? `Not yet attributed${a.currentDriverName ? ` · now on ${a.currentDriverName}` : ""}`
-                          : "Unassigned — pick a driver"}
-                    </option>
-                    {driverOptions}
-                  </select>
-                  {lead && (
-                    <button
-                      type="button"
-                      className="btn ghost sm ff-lead-btn"
-                      onClick={() => reassignAuto(a, lead.id)}
-                      title={`${leadName} closed this stop out. On attempts that did have a morning driver, the driver who closed the stop was that driver 24 times in 26 — a strong lead, but check it.`}
+                    {a.provisional ? "LIVE" : "AUTO"}
+                  </span>
+                  {/* Every stop on this order goes with it, so a split can be inspected
+                      leg by leg — the driver events usually sit on the ORIGINAL stop
+                      while the "-1" copy has none. */}
+                  <button
+                    type="button"
+                    className="pro-num pro-num-link"
+                    onClick={() => openAttempt(a)}
+                    title="Open this order — details and, if you want it, the activity history showing who had it"
+                  >
+                    {a.shipmentNbr || "—"}
+                  </button>
+                  {a.legs > 1 && (
+                    <span
+                      className="ff-item-chip"
+                      title={`This order has ${a.legs - 1} duplicate order${a.legs === 2 ? "" : "s"} on the list (${a.legRows.map((l) => l.stopNbr).join(", ")}). A -1/-2 is a duplicate: it's counted once with the original here and never charged to the original's driver. Dispatch's own totals count each stop.`}
                     >
-                      → {lead.name}
-                    </button>
-                  )}
-                  {ov && (
-                    <span className="ff-reassigned" title={`Feed said ${a.originalDriverName || "Unknown"}`}>
-                      reassigned
+                      {a.legs} stops · 1 attempt
                     </span>
                   )}
-                </span>
-                <span className="meta">
-                  {a.businessName || "—"}
-                  {a.city || a.state
-                    ? ` · ${[a.city, a.state].filter(Boolean).join(", ")}`
-                    : ""}
-                </span>
-                <span className="meta">
-                  Stop {(a.legRows || [a]).map((l) => l.stopNbr).join(" + ") || "—"}
-                  {a.routeName ? ` · ${a.routeName}` : ""}
-                </span>
-                <span style={{ marginLeft: "auto" }}>
-                  <AttemptStatusBadge a={a} />
-                </span>
-                {/* Delete removes a row from the dispatch app's stored attempts list.
-                    A LIVE row isn't in that list yet, so "deleting" it would report
-                    success and change nothing — it would reappear on the next scan.
-                    Withheld until the evening scan has actually recorded it. */}
-                {config.feedDeletable && !a.provisional && (
-                  <span className="ff-row-actions">
-                    <button
-                      className="btn ghost sm"
-                      onClick={() => deleteAuto(a)}
-                      disabled={feedDeletingId === a.stopNbr}
-                      title="Remove this auto-detected attempt from the feed"
-                      style={{ color: "var(--accent-red)" }}
+                  <span
+                    className="ff-auto-driver"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <select
+                      value={ov?.driver_id || ""}
+                      onChange={(e) => reassignAuto(a, e.target.value)}
+                      title={
+                        a.provisional
+                          ? "Attribute this attempt now, or leave it for the 8 PM scan"
+                          : "Attribute this attempt to a driver"
+                      }
                     >
-                      {feedDeletingId === a.stopNbr ? "…" : "Delete"}
-                    </button>
-                  </span>
-                )}
-              </div>
-              {why && why !== "provisional" && (
-                <div className="ff-att-why">
-                  No driver: {UNASSIGNED_REASON_TEXT[why]}.
-                  {leadName ? ` Closed out by ${leadName}.` : ""}
-                </div>
-              )}
-              {a.note && <div className="ff-att-note">{a.note}</div>}
-            </div>
-            );
-          })}
-
-          {/* Manually-logged entries. Feed tab keeps the compact flat rows;
-              elsewhere they render as a column-headed, optionally grouped table. */}
-          {feedEnabled
-            ? filteredLog.map((inc) => {
-                const onFeed = handOnFeed.get(inc.id);
-                return (
-                <div key={inc.id} className="ff-log-entry">
-                  <div className="dd-incident-head" onClick={() => openDriver(inc)}>
-                    <span className="ff-src-chip manual">MANUAL</span>
-                    <span className="pro-num">{inc.pro_number}</span>
-                    {onFeed && (
-                      <span
-                        className="ff-item-chip"
-                        title={`The dispatch feed has this order on the same day, so it is counted once, as the feed's order — under ${overrideFor(onFeed)?.driver_name || onFeed.originalDriverName || "nobody yet"}. To charge someone else, reassign the feed's row above.`}
+                      <option value="">
+                        {a.originalDriverName
+                          ? `${a.originalDriverName} · ${ATTRIBUTED_BY_TEXT[feedAttribution(a)]}`
+                          : a.provisional
+                            ? `Not yet attributed${a.currentDriverName ? ` · now on ${a.currentDriverName}` : ""}`
+                            : "Unassigned — pick a driver"}
+                      </option>
+                      {driverOptions}
+                    </select>
+                    {lead && (
+                      <button
+                        type="button"
+                        className="btn ghost sm ff-lead-btn"
+                        onClick={() => reassignAuto(a, lead.id)}
+                        title={`${leadName} closed this stop out. On attempts that did have a morning driver, the driver who closed the stop was that driver 24 times in 26 — a strong lead, but check it.`}
                       >
-                        counted with feed order {onFeed.shipmentNbr || onFeed.stopNbr}
+                        → {lead.name}
+                      </button>
+                    )}
+                    {ov && (
+                      <span className="ff-reassigned" title={`Feed said ${a.originalDriverName || "Unknown"}`}>
+                        reassigned
                       </span>
                     )}
-                    <span className="lb-name" style={{ width: "auto" }}>{inc.driver_name}</span>
-                    <span className="meta">{inc.customer || ""}</span>
-                    {classifyField && inc[classifyField] && (
-                      <span className="ff-item-chip">{inc[classifyField]}</span>
-                    )}
-                    <span className="meta" style={{ marginLeft: "auto" }}>
-                      {fmtMDY(inc.delivered_date || inc.created_at)}
-                      {inc.has_photos ? " · 📸" : ""}
+                  </span>
+                  <span className="meta">
+                    {a.businessName || "—"}
+                    {a.city || a.state
+                      ? ` · ${[a.city, a.state].filter(Boolean).join(", ")}`
+                      : ""}
+                  </span>
+                  <span className="meta">
+                    Stop {(a.legRows || [a]).map((l) => l.stopNbr).join(" + ") || "—"}
+                    {a.routeName ? ` · ${a.routeName}` : ""}
+                  </span>
+                  <span style={{ marginLeft: "auto" }}>
+                    <AttemptStatusBadge a={a} />
+                  </span>
+                  {/* Delete removes a row from the dispatch app's stored attempts list.
+                      A LIVE row isn't in that list yet, so "deleting" it would report
+                      success and change nothing — it would reappear on the next scan.
+                      Withheld until the evening scan has actually recorded it. */}
+                  {config.feedDeletable && !a.provisional && (
+                    <span className="ff-row-actions">
+                      <button
+                        className="btn ghost sm"
+                        onClick={() => deleteAuto(a)}
+                        disabled={feedDeletingId === a.stopNbr}
+                        title="Remove this auto-detected attempt from the feed"
+                        style={{ color: "var(--accent-red)" }}
+                      >
+                        {feedDeletingId === a.stopNbr ? "…" : "Delete"}
+                      </button>
                     </span>
-                    {renderRowActions(inc)}
-                  </div>
-                  {renderEditRow(inc)}
+                  )}
                 </div>
-                );
-              })
-            : filteredLog.length > 0 && (
-                <>
-                  <div className={`${gridClass} ff-log-head`}>
-                    <span>PRO#</span>
-                    <span>Driver</span>
-                    <span>Customer</span>
-                    {classifyField && <span>{config.classify?.label || "Item"}</span>}
-                    <span>Incident</span>
-                    <span>Entered</span>
-                    <span />
-                    <span />
+                {why && why !== "provisional" && (
+                  <div className="ff-att-why">
+                    No driver: {UNASSIGNED_REASON_TEXT[why]}.
+                    {leadName ? ` Closed out by ${leadName}.` : ""}
                   </div>
-                  {groupByDriver
-                    ? logGroups.map((g) => (
-                        <React.Fragment key={g.name}>
-                          <div className="ff-log-group">
-                            {g.name}
-                            <span className="meta"> · {g.rows.length}</span>
-                          </div>
-                          {g.rows.map(renderManualRow)}
-                        </React.Fragment>
-                      ))
-                    : filteredLog.map(renderManualRow)}
-                </>
-              )}
-        </div>
-      </div>
+                )}
+                {a.note && <div className="ff-att-note">{a.note}</div>}
+              </div>
+              );
+            })}
 
-      {focus && (
-        <DriverModal
-          driver={focus}
-          incidents={incidents.filter((i) => i.driver_id === focus.id)}
-          onClose={() => setFocus(null)}
-        />
-      )}
+            {/* Manually-logged entries. Feed tab keeps the compact flat rows;
+                elsewhere they render as a column-headed, optionally grouped table. */}
+            {feedEnabled
+              ? filteredLog.map((inc) => {
+                  const onFeed = handOnFeed.get(inc.id);
+                  return (
+                  <div key={inc.id} className="ff-log-entry">
+                    <div className="dd-incident-head" onClick={() => openDriver(inc)}>
+                      <span className="ff-src-chip manual">MANUAL</span>
+                      <span className="pro-num">{inc.pro_number}</span>
+                      {onFeed && (
+                        <span
+                          className="ff-item-chip"
+                          title={`The dispatch feed has this order on the same day, so it is counted once, as the feed's order — under ${overrideFor(onFeed)?.driver_name || onFeed.originalDriverName || "nobody yet"}. To charge someone else, reassign the feed's row above.`}
+                        >
+                          counted with feed order {onFeed.shipmentNbr || onFeed.stopNbr}
+                        </span>
+                      )}
+                      <span className="lb-name" style={{ width: "auto" }}>{inc.driver_name}</span>
+                      <span className="meta">{inc.customer || ""}</span>
+                      {classifyField && inc[classifyField] && (
+                        <span className="ff-item-chip">{inc[classifyField]}</span>
+                      )}
+                      <span className="meta" style={{ marginLeft: "auto" }}>
+                        {fmtMDY(inc.delivered_date || inc.created_at)}
+                        {inc.has_photos ? " · 📸" : ""}
+                      </span>
+                      {renderRowActions(inc)}
+                    </div>
+                    {renderEditRow(inc)}
+                  </div>
+                  );
+                })
+              : filteredLog.length > 0 && (
+                  <>
+                    <div className={`${gridClass} ff-log-head`}>
+                      <span>PRO#</span>
+                      <span>Driver</span>
+                      <span>Customer</span>
+                      {classifyField && <span>{config.classify?.label || "Item"}</span>}
+                      <span>Incident</span>
+                      <span>Entered</span>
+                      <span />
+                      <span />
+                    </div>
+                    {groupByDriver
+                      ? logGroups.map((g) => (
+                          <React.Fragment key={g.name}>
+                            <div className="ff-log-group">
+                              {g.name}
+                              <span className="meta"> · {g.rows.length}</span>
+                            </div>
+                            {g.rows.map(renderManualRow)}
+                          </React.Fragment>
+                        ))
+                      : filteredLog.map(renderManualRow)}
+                  </>
+                )}
+          </div>
+        </div>
+      </AnalyticsGate>
+
       {stopDetail && (
         <StopDetailModal
           row={stopDetail.row}
