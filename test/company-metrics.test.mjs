@@ -36,6 +36,8 @@ import {
   quarterMix,
   quarterKey,
   roundShares,
+  yearCapture,
+  yearCompared,
 } from "../src/data/companyMetrics.js";
 import { resolveDrill, drillLevels } from "../src/data/drill.js";
 import { TODAY, incidents, history, monthIds, reports } from "./coverage-fixture.mjs";
@@ -639,4 +641,26 @@ test("shares to one decimal always add up to 100", () => {
     const s = roundShares(counts, n);
     assert.equal(Math.round(Object.values(s).reduce((x, y) => x + y, 0) * 10), 1000);
   }
+});
+
+test("a year's capture: what it never tracked and what only part of it", () => {
+  const c2023 = yearCapture(cov, 2023, CATS);
+  assert.ok(c2023.none.includes("damage") && c2023.none.includes("late"));
+  assert.ok(!c2023.none.includes("missing"), "2023 held lost/missing");
+  const c2024 = yearCapture(cov, 2024, CATS);
+  assert.ok(c2024.none.includes("missing"));
+  assert.ok(!c2024.none.includes("damage") && !c2024.part.includes("damage"), "damage all of 2024");
+});
+
+test("a year's change compares like with like, or says it doesn't", () => {
+  // 2023 held lost/missing only; 2024 tracked damage and the rest but not lost/missing.
+  const y24 = yearCompared(cov, 2024, CATS);
+  assert.equal(y24.compared, false);
+  assert.ok(y24.left.some((e) => e.cat === "damage"), "damage wasn't tracked in 2023");
+  // Two years captured the same way compare, and a category neither tracked doesn't stop it.
+  const same = { cell: (ym, c) => (c === "late" ? { state: "not_tracked", value: null, instrument: null } : { state: "history", value: 3, instrument: "backfill" }) };
+  assert.deepEqual(yearCompared(same, 2025, ["damage", "late"]), { compared: true, left: [] });
+  // A change of source between the years is not like-for-like.
+  const change = { cell: (ym) => ({ state: ym < "2025-01" ? "history" : "live", value: 3, instrument: ym < "2025-01" ? "backfill" : "app" }) };
+  assert.equal(yearCompared(change, 2025, ["damage"]).compared, false);
 });

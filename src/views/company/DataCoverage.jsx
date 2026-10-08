@@ -26,6 +26,7 @@ import {
   offRosterCounts,
 } from "../../data/coverage.js";
 import { companyWindow, basketCategories, companyDrill, incidentsDrill, FIRST_YM } from "../../data/companyMetrics.js";
+import { reportWeekName } from "../../reports/reportNaming.js";
 import ChartCard from "../kit/ChartCard.jsx";
 import CoverageMatrix from "../kit/charts/CoverageMatrix.jsx";
 import { RosterGate } from "../kit/LoadState.jsx";
@@ -194,10 +195,10 @@ export default function DataCoverage({ cov, uline, hasComplaints, today, onOpenR
       <div className="card co-card">
         <div className="card-header">
           <div className="card-title">Capture windows</div>
-          <span className="card-hint">reviewed 10/07 · what each month could have held</span>
+          <span className="card-hint">reviewed Oct 7 · what each month could have held</span>
         </div>
         <div className="table-wrap">
-          <table className="data analytics-table co-table">
+          <table className="data analytics-table co-table cards-on-phone co-windows">
             <thead>
               <tr>
                 <th>Category</th>
@@ -212,17 +213,17 @@ export default function DataCoverage({ cov, uline, hasComplaints, today, onOpenR
                 const ev = evidence[cat];
                 return (
                   <tr key={cat}>
-                    <td>
+                    <td className="card-primary">
                       <span className="cat-swatch" style={{ background: catColor(cat) }} />
                       {rowLabel(cat)}
                     </td>
-                    <td className="co-months">
+                    <td className="co-months" data-label="Spreadsheets">
                       {w.backfill.length ? w.backfill.map(([x, y]) => `${fmtYm(x)} – ${fmtYm(y)}`).join(", ") : "never"}
                     </td>
-                    <td className="co-months">
+                    <td className="co-months" data-label="In the app">
                       {w.app.map((s) => `${SOURCE_TEXT[s]} from ${fmtYm(SOURCE_FROM[s])}`).join(" · ")}
                     </td>
-                    <td className="co-months">
+                    <td className="co-months" data-label="On file">
                       {ev.hist.length ? `history ${spanOf(ev.hist)}` : ""}
                       {ev.hist.length && ev.live.length ? " · " : ""}
                       {ev.live.length ? `live ${spanOf(ev.live)}` : ""}
@@ -243,7 +244,7 @@ export default function DataCoverage({ cov, uline, hasComplaints, today, onOpenR
         </div>
         {conflicts.length ? (
           <div className="table-wrap">
-            <table className="data analytics-table co-table">
+            <table className="data analytics-table co-table cards-on-phone co-conflicts">
               <thead>
                 <tr>
                   <th>Month</th>
@@ -257,12 +258,12 @@ export default function DataCoverage({ cov, uline, hasComplaints, today, onOpenR
               <tbody>
                 {conflicts.map((c) => (
                   <tr key={`${c.ym}|${c.category}`}>
-                    <td>{fmtYm(c.ym)}</td>
-                    <td>
+                    <td data-label="Month">{fmtYm(c.ym)}</td>
+                    <td className="card-primary co-conf-cat">
                       <span className="cat-swatch" style={{ background: catColor(c.category) }} />
                       {catLabel(c.category)}
                     </td>
-                    <td className="num">
+                    <td className="num" data-label="Live">
                       <button
                         type="button"
                         className="kpi-note-n"
@@ -272,12 +273,12 @@ export default function DataCoverage({ cov, uline, hasComplaints, today, onOpenR
                         {c.live}
                       </button>
                     </td>
-                    <td className="num">{c.history}</td>
-                    <td className="num">
+                    <td className="num" data-label="History">{c.history}</td>
+                    <td className="num" data-label="Difference">
                       {c.delta > 0 ? "+" : ""}
                       {c.delta}
                     </td>
-                    <td className="co-cause">
+                    <td className="co-cause" data-label="Likely cause">
                       {c.causes.map(causeText).join("; ")}
                       <span className="co-actions">
                         {c.causes
@@ -521,7 +522,9 @@ const SHORT_LABEL = { forgotten_freight: "FF", [ATTEMPTS]: "Attempts", complaint
 const rowLabel = (cat) =>
   cat === ATTEMPTS ? "Attempts (logged)" : cat === "complaint" ? "Other (complaints)" : categoriesFor([cat])[0].label;
 const spanOf = (ms) => (ms.length === 1 ? fmtYm(ms[0]) : `${fmtYm(ms[0])} – ${fmtYm(ms[ms.length - 1])}`);
-const reportName = (r) => r?.name || (r?.week_ending ? `week ending ${r.week_ending}` : "report");
+// A report as the Reports list names it ("Week of Sep 14, 2026"), never its raw Uline
+// label ("9/14/2026 THRU 9/18/2026").
+const reportName = (r) => (r?.name ? reportWeekName(r) : r?.week_ending ? `week ending ${fmtDay(String(r.week_ending).slice(0, 10))}` : "report");
 
 function ReportLine({ r, onOpenReport, children }) {
   return (

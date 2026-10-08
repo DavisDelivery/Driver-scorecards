@@ -23,7 +23,7 @@ import {
 import { dayCache, fetchAttemptsRange } from "../data/attemptsFeed.js";
 import { useHashState, writeHash } from "../data/hashState.js";
 import PeriodBar, { usePeriodState } from "./kit/PeriodBar.jsx";
-import StatTile from "./kit/StatTile.jsx";
+import StatTile, { TileStrip } from "./kit/StatTile.jsx";
 import { AnalyticsGate, RosterGate, HistoryRefresh } from "./kit/LoadState.jsx";
 import { openDrill } from "./kit/drillNav.js";
 
@@ -37,15 +37,15 @@ const MONTH_NAMES = [
 // order and colours (categories.js), with the plural chart titles. Attempts are the
 // ones somebody logged or reassigned, said so in the title: the dispatch feed sees far
 // more (the Attempts tile below shows both).
-const CHART_CATEGORIES = categoriesFor(COUNTED8).map(({ id, title, color }) => ({
+const CHART_CATEGORIES = categoriesFor(COUNTED8).map(({ id, label, color }) => ({
   id,
-  title: id === ATTEMPTS ? "Attempts (logged)" : title,
+  label: id === ATTEMPTS ? "Attempts (logged)" : label,
   color,
 }));
 
 const CHART_CAT_IDS = CHART_CATEGORIES.map((c) => c.id);
 
-const PERIOD_LABELS = { this: "MO", last: "LMO", 3: "3M", 6: "6M", 12: "12M", custom: "SEL" };
+const PERIOD_LABELS = { this: "This month", last: "Last month", 3: "3 months", 6: "6 months", 12: "12 months", custom: "Period" };
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
@@ -230,7 +230,8 @@ export default function Dashboard() {
     if (fault) return faultSub(periodSpan, hist);
     if (hist.count) {
       const live = kpis.failures.period - hist.count;
-      return live > 0 ? `${periodSpan} · ${live} live · ${hist.count} history` : `${periodSpan} · imported history`;
+      // The period is in the heading above; the line keeps to what fits a tile's two lines.
+      return live > 0 ? `${live} live · ${hist.count} from history` : `${periodSpan} · imported history`;
     }
     // Nothing from history: live entries, or nothing on record at all (a month before
     // the history import and with no live failure, Dec 2025).
@@ -303,17 +304,7 @@ export default function Dashboard() {
           ? "historical rollup"
           : "live + history";
   const dataBadge = badgeText && (
-    <span
-      style={{
-        fontSize: 10,
-        fontFamily: "var(--mono)",
-        color: badgeText === "historical rollup" ? "var(--text-2)" : "var(--accent-green)",
-        letterSpacing: "0.08em",
-        textTransform: "uppercase",
-      }}
-    >
-      · {badgeText}
-    </span>
+    <span className="meta"><span className="meta-sep">· </span>{badgeText}</span>
   );
 
   const monthLabel = MONTH_NAMES[parseInt(selectedMonth.slice(5, 7), 10) - 1] + " " + selectedMonth.slice(0, 4);
@@ -323,10 +314,10 @@ export default function Dashboard() {
 
   return (
     <div>
-      <div className="page-title">Performance Dashboard</div>
+      <div className="page-title">Performance dashboard</div>
       <h1 className="page-heading sc-heading">
         Driver Scorecard{" "}
-        <span className="meta">· {periodSpan}</span>{" "}
+        <span className="meta"><span className="meta-sep">· </span>{periodSpan}</span>{" "}
         {dataBadge}
       </h1>
 
@@ -371,7 +362,7 @@ export default function Dashboard() {
       <AnalyticsGate>
         {/* Plain tiles: none of these numbers is a status, so none wears a status
             colour — the old amber and red rules sat beside Late's and Damage's hues. */}
-        <div className="kpi-grid">
+        <TileStrip className="card-strip">
           <StatTile
             label="Counted failures"
             value={notTracked("period") ? "—" : kpis.failures.period}
@@ -405,8 +396,8 @@ export default function Dashboard() {
           <StatTile
             label="Not driver's fault"
             value={noFaultData && historyMonths ? "—" : split.groups.not_driver.n}
-            sub={noFaultData && historyMonths ? "Not tracked in history" : NOT_DRIVER_FAULTS.join(" · ")}
-            title="Live failures set to exonerated, preload, warehouse, customer or vendor — the same set the weekly PDF counts"
+            sub={noFaultData ? (historyMonths ? "Not tracked in history" : "No counted live failures") : `of ${split.total} counted live`}
+            title={`Live failures set to ${NOT_DRIVER_FAULTS.join(", ")} — the same set the weekly PDF counts`}
             onClick={noFaultData ? null : () => openGroup("not_driver")}
           />
           <StatTile
@@ -443,7 +434,7 @@ export default function Dashboard() {
             title="Compliments are a credit: never added to or netted against failures"
             onClick={fault ? null : () => openDrill(drills.compliments)}
           />
-        </div>
+        </TileStrip>
 
         {/* The rest of the fault split — what neither fault tile counts — what history
             can't split at all, and the entries marked "do not fault driver", which count
@@ -474,7 +465,9 @@ export default function Dashboard() {
                 <button type="button" className="kpi-note-n" onClick={() => openDrill(drills.noFault)}>
                   {kpis.noFault.n}
                 </button>{" "}
-                marked &ldquo;do not fault driver&rdquo; count against nobody.{" "}
+                {/* Apart from the counted failures above, never part of them: "more". */}
+                {restOfSplit.length > 0 ? "more, " : ""}marked &ldquo;do not fault driver&rdquo;
+                {restOfSplit.length > 0 ? "," : ""} count against nobody.{" "}
               </>
             )}
             {historyMonths > 0 && split.total > 0 && (
@@ -489,29 +482,68 @@ export default function Dashboard() {
         </div>
         {/* The Drivers / Loaders split and the hidden inactive rows need the roster. */}
         <RosterGate>
-          <div className="chart-grid">
-            {CHART_CATEGORIES.map((cat) => (
-              <CategoryLeaderboard
-                key={cat.id}
-                title={cat.title}
-                color={cat.color}
-                data={chartDataFor(cat.id, "driver")}
-                totals={chartTotalsFor(cat.id, "driver")}
-                onSelect={(id) => openRow(id, cat.id)}
-                onOpen={() => openChart(cat, "driver")}
-                periodLabel={PERIOD_LABELS[periodSel] || "SEL"}
-                nested={win.nested}
-                note={notTrackedNote(cat.id)}
-                emptyText={
-                  fault && cat.id === "compliment"
-                    ? "Not split by fault"
-                    : notTrackedNote(cat.id)
-                      ? "Nothing tracked by fault"
-                      : "No incidents"
-                }
-              />
-            ))}
-          </div>
+          {(() => {
+            // A category with nothing in the period or the year to date — no rows, both
+            // totals 0, nothing "not tracked" to explain — is one line under the grid
+            // rather than a full-height "No incidents" card leaving the last row ragged.
+            // Its name still opens the same drawer the card's Details did.
+            const quiet = CHART_CATEGORIES.filter((cat) => {
+              const t = chartTotalsFor(cat.id, "driver");
+              return (
+                chartDataFor(cat.id, "driver").length === 0 &&
+                !t.period &&
+                !t.ytd &&
+                !notTrackedNote(cat.id) &&
+                !(fault && cat.id === "compliment")
+              );
+            });
+            const periodName = PERIOD_LABELS[periodSel] || "Period";
+            return (
+              <>
+                <div className="chart-grid">
+                  {CHART_CATEGORIES.filter((cat) => !quiet.includes(cat)).map((cat) => (
+                    <CategoryLeaderboard
+                      key={cat.id}
+                      title={cat.label}
+                      color={cat.color}
+                      data={chartDataFor(cat.id, "driver")}
+                      totals={chartTotalsFor(cat.id, "driver")}
+                      onSelect={(id) => openRow(id, cat.id)}
+                      onOpen={() => openChart(cat, "driver")}
+                      periodLabel={periodName}
+                      nested={win.nested}
+                      note={notTrackedNote(cat.id)}
+                      emptyText={
+                        fault && cat.id === "compliment"
+                          ? "Not split by fault"
+                          : notTrackedNote(cat.id)
+                            ? "Nothing tracked by fault"
+                            : "No incidents"
+                      }
+                    />
+                  ))}
+                </div>
+                {quiet.length > 0 && (
+                  <p className="lb-quiet">
+                    {quiet.map((cat, i) => (
+                      <React.Fragment key={cat.id}>
+                        {i ? ", " : ""}
+                        <button
+                          type="button"
+                          className="kpi-note-n"
+                          onClick={() => openChart(cat, "driver")}
+                          title={`Open every ${cat.label.toLowerCase()} incident (none)`}
+                        >
+                          {cat.label}
+                        </button>
+                      </React.Fragment>
+                    ))}
+                    : none · {periodName} 0 · YTD 0
+                  </p>
+                )}
+              </>
+            );
+          })()}
         </RosterGate>
 
         <AttemptsScorecardCard day={attemptsDay} monthLabel={monthLabel} />
@@ -525,13 +557,13 @@ export default function Dashboard() {
               ).map((cat) => (
                 <CategoryLeaderboard
                   key={cat.id}
-                  title={cat.title}
+                  title={cat.label}
                   color={cat.color}
                   data={chartDataFor(cat.id, "loader")}
                   totals={chartTotalsFor(cat.id, "loader")}
                   onSelect={(id) => openRow(id, cat.id)}
                   onOpen={() => openChart(cat, "loader")}
-                  periodLabel={PERIOD_LABELS[periodSel] || "SEL"}
+                  periodLabel={PERIOD_LABELS[periodSel] || "Period"}
                   nested={win.nested}
                   note={notTrackedNote(cat.id)}
                 />

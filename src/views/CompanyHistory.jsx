@@ -3,7 +3,8 @@ import { useAnalytics } from "../data/AnalyticsProvider.jsx";
 import { useHashState, writeHash } from "../data/hashState.js";
 import { nowET, toYMD, shiftYm, currentYmET } from "../data/period.js";
 import { catLabel, catColor } from "../data/categories.js";
-import { buildCoverage, ulineCoverage, fmtYm } from "../data/coverage.js";
+import { fmtYm } from "../data/coverage.js";
+import useCoverage from "./company/useCoverage.js";
 import {
   RANGES,
   FIRST_YM,
@@ -89,15 +90,9 @@ export default function CompanyHistory({ onOpenReport }) {
   const years = yrsParam === "3" ? 3 : 2;
   const filtered = sub === "overview" || sub === "compare";
 
-  // The coverage of every cell, from the all-fault blend: the Uline reports' days, the
-  // history documents that exist, today's month as the one still in progress, and the
-  // live rows (a hand-logged entry never rolls up, so it is no disagreement).
+  // The coverage of every cell (useCoverage): the one Trends and Reports read too.
   const blend = a.blend(null);
-  const uline = React.useMemo(() => ulineCoverage(a.reports, a.incidents), [a.reports, a.incidents]);
-  const cov = React.useMemo(
-    () => buildCoverage({ blend, historyMonthIds: a.historyState.monthIds, uline, today, incidents: a.incidents }),
-    [blend, a.historyState.monthIds, uline, today, a.incidents],
-  );
+  const { cov, uline } = useCoverage(today);
 
   // The basket: the failures, complaints only when there are any. A chip list from a
   // link keeps the ones the basket knows, in the registry's order; none left reads as all.
@@ -144,11 +139,99 @@ export default function CompanyHistory({ onOpenReport }) {
   // as uncovered, so their failed read is shown rather than worked around.
   const reportsBlocked = a.readErrors.reports && !a.readErrors.reports.stale ? a.readErrors.reports : null;
 
+  // On a phone the period stays in view; everything else that scopes the page sits in a
+  // bottom sheet behind one "Filters · N" button (N: the settings off their default).
+  const [sheet, setSheet] = React.useState(false);
+  const activeFilters =
+    (cmp !== "yoy") + (measure !== "count") + !lfl + allowSourceChange + (sub === "compare" && years !== 2) + (cats.length !== basket.length);
+  const moreFilters = (
+    <>
+      <div className="period-bar">
+        <div className="month-picker" role="group" aria-label="Compare with">
+          {CMP.map(([v, label]) => (
+            <button
+              key={v}
+              type="button"
+              className={`month-btn ${cmp === v ? "active" : ""}`}
+              aria-pressed={cmp === v}
+              onClick={() => setCmp(v)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="month-picker" role="group" aria-label="Measure">
+          {MEASURES.map(([v, label]) => (
+            <button
+              key={v}
+              type="button"
+              className={`month-btn ${measure === v ? "active" : ""}`}
+              aria-pressed={measure === v}
+              onClick={() => setMeasure(v)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="month-picker" role="group" aria-label="Comparison rules">
+          <button
+            type="button"
+            className={`month-btn ${lfl ? "active" : ""}`}
+            aria-pressed={lfl}
+            onClick={() => setLfl(lfl ? "0" : "1")}
+            title="Compare only the months and categories captured the same way on both sides"
+          >
+            Like-for-like
+          </button>
+          <button
+            type="button"
+            className={`month-btn ${allowSourceChange ? "active" : ""}`}
+            aria-pressed={allowSourceChange}
+            disabled={!lfl}
+            onClick={() => setSrc(allowSourceChange ? "0" : "1")}
+            title="Also compare app months with spreadsheet months. The change is labelled 'different source' and gets no verdict."
+          >
+            Allow source change
+          </button>
+        </div>
+        {sub === "compare" && (
+          <div className="month-picker" role="group" aria-label="Years in the month-by-month chart">
+            {YEARS.map(([v, label]) => (
+              <button
+                key={v}
+                type="button"
+                className={`month-btn ${String(years) === v ? "active" : ""}`}
+                aria-pressed={String(years) === v}
+                onClick={() => setYrs(v)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="co-chips" role="group" aria-label="Categories">
+        {basket.map((c) => (
+          <button
+            key={c}
+            type="button"
+            className={`co-chip ${cats.includes(c) ? "on" : ""}`}
+            aria-pressed={cats.includes(c)}
+            onClick={() => toggleCat(c)}
+          >
+            <i style={{ background: catColor(c) }} aria-hidden="true" />
+            {c === "complaint" ? "Other (complaints)" : catLabel(c)}
+          </button>
+        ))}
+      </div>
+    </>
+  );
+
   return (
     <div className="co-page">
       <div className="page-title">Company History</div>
       <h1 className="page-heading sc-heading">
-        Company History <span className="meta">· {filtered ? win.label : "every month on file"}</span>
+        Company History <span className="meta"><span className="meta-sep">· </span>{filtered ? win.label : "every month on file"}</span>
       </h1>
 
       <div className="toolbar">
@@ -219,84 +302,34 @@ export default function CompanyHistory({ onOpenReport }) {
               </label>
             )}
           </div>
-          <div className="period-bar">
-            <div className="month-picker" role="group" aria-label="Compare with">
-              {CMP.map(([v, label]) => (
-                <button
-                  key={v}
-                  type="button"
-                  className={`month-btn ${cmp === v ? "active" : ""}`}
-                  aria-pressed={cmp === v}
-                  onClick={() => setCmp(v)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            <div className="month-picker" role="group" aria-label="Measure">
-              {MEASURES.map(([v, label]) => (
-                <button
-                  key={v}
-                  type="button"
-                  className={`month-btn ${measure === v ? "active" : ""}`}
-                  aria-pressed={measure === v}
-                  onClick={() => setMeasure(v)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            <div className="month-picker" role="group" aria-label="Comparison rules">
+          {phone ? (
+            <>
               <button
                 type="button"
-                className={`month-btn ${lfl ? "active" : ""}`}
-                aria-pressed={lfl}
-                onClick={() => setLfl(lfl ? "0" : "1")}
-                title="Compare only the months and categories captured the same way on both sides"
+                className="btn ghost sm co-filter-btn"
+                aria-haspopup="dialog"
+                aria-expanded={sheet}
+                onClick={() => setSheet(true)}
               >
-                Like-for-like
+                Filters{activeFilters ? ` · ${activeFilters}` : ""}
               </button>
-              <button
-                type="button"
-                className={`month-btn ${allowSourceChange ? "active" : ""}`}
-                aria-pressed={allowSourceChange}
-                disabled={!lfl}
-                onClick={() => setSrc(allowSourceChange ? "0" : "1")}
-                title="Also compare app months with spreadsheet months. The change is labelled 'different source' and gets no verdict."
-              >
-                Allow source change
-              </button>
-            </div>
-            {sub === "compare" && (
-              <div className="month-picker" role="group" aria-label="Years in the month-by-month chart">
-                {YEARS.map(([v, label]) => (
-                  <button
-                    key={v}
-                    type="button"
-                    className={`month-btn ${String(years) === v ? "active" : ""}`}
-                    aria-pressed={String(years) === v}
-                    onClick={() => setYrs(v)}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-          <div className="co-chips" role="group" aria-label="Categories">
-            {basket.map((c) => (
-              <button
-                key={c}
-                type="button"
-                className={`co-chip ${cats.includes(c) ? "on" : ""}`}
-                aria-pressed={cats.includes(c)}
-                onClick={() => toggleCat(c)}
-              >
-                <i style={{ background: catColor(c) }} aria-hidden="true" />
-                {c === "complaint" ? "Other (complaints)" : catLabel(c)}
-              </button>
-            ))}
-          </div>
+              {sheet && (
+                <div className="sheet-backdrop" onClick={() => setSheet(false)}>
+                  <div className="sheet" role="dialog" aria-label="Filters" onClick={(e) => e.stopPropagation()}>
+                    <div className="sheet-head">
+                      <span>Filters</span>
+                      <button type="button" className="btn sm" onClick={() => setSheet(false)}>
+                        Done
+                      </button>
+                    </div>
+                    {moreFilters}
+                  </div>
+                </div>
+              )}
+            </>
+          ) : (
+            moreFilters
+          )}
         </div>
       )}
 

@@ -7,12 +7,14 @@
 //   - bucket      : "day" | "week" | "month" — how a trend should be bucketed
 //   - months      : YYYY-MM keys, only for the "month" bucket
 
+// Sentence case: the label heads the log, the charts' subtitles and the printout
+// ("Last 30 days · 3"); the buttons say it shorter (PeriodBar PRESET_TEXT).
 export const PERIODS = [
-  ["thisWeek", "This Week"],
-  ["lastWeek", "Last Week"],
-  ["30d", "Last 30 Days"],
-  ["this", "This Mo"],
-  ["last", "Last Mo"],
+  ["thisWeek", "This week"],
+  ["lastWeek", "Last week"],
+  ["30d", "Last 30 days"],
+  ["this", "This month"],
+  ["last", "Last month"],
   ["3", "3M"],
   ["6", "6M"],
   ["12", "12M"],
@@ -195,13 +197,13 @@ export function periodWindow(sel, rangeFrom, rangeTo) {
   };
 }
 
-// Human label for the current selection, for headers like "Log · Last Week".
+// Human label for the current selection, for headers like "Log · Last week".
 export function periodLabel(sel, rangeFrom, rangeTo) {
   if (sel === "range") {
-    if (!rangeFrom || !rangeTo) return "Last 30 Days";
+    if (!rangeFrom || !rangeTo) return "Last 30 days";
     const a = rangeFrom <= rangeTo ? rangeFrom : rangeTo;
     const b = rangeFrom <= rangeTo ? rangeTo : rangeFrom;
-    return `${fmtMDY(a)} – ${fmtMDY(b)}`;
+    return fmtDateRange(a, b);
   }
   const found = PERIODS.find(([v]) => v === sel);
   return found ? found[1] : "";
@@ -356,4 +358,36 @@ export function comparisonWindow(win, mode = "prior") {
   }
   // A part-month range keeps its days; its months are whichever those days touch.
   return { ...win, start, end, months: ms.length ? monthsBetween(start, end) : [] };
+}
+
+// ── Dates as people read them ───────────────────────────────────────────────────
+// Every date a screen shows goes through these: "Oct 8", with the year when it isn't
+// this year (ET) — "Dec 30, 2025" — so no date is ambiguous and none is MM/DD. Read from
+// the string's parts, never through new Date(ymd), so a day can't shift by timezone.
+// (CSV exports, the log's search and the printouts keep their own formats.)
+const WEEKDAY_ABBR = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+//   year     "auto" (only when not this year), true, or false
+//   weekday  lead with the weekday: "Wed, Oct 7"
+export function fmtDate(s, { year = "auto", weekday = false, today = null } = {}) {
+  const p = ymdParts(String(s || "").slice(0, 10));
+  if (!p) return String(s || "");
+  const thisYear = Number((today || toYMD(nowET())).slice(0, 4));
+  const showYear = year === true || (year === "auto" && p[0] !== thisYear);
+  const wd = weekday ? `${WEEKDAY_ABBR[weekdayOfYmd(String(s).slice(0, 10))]}, ` : "";
+  return `${wd}${MONTH_ABBR[p[1] - 1]} ${p[2]}${showYear ? `, ${p[0]}` : ""}`;
+}
+
+// A span of days: "Sep 9 – Oct 8", "Sep 14–18", "Dec 29, 2025 – Jan 2, 2026"; one day
+// reads as fmtDate. The year shows when the span isn't all this year.
+export function fmtDateRange(a, b, { year = "auto", today = null } = {}) {
+  const pa = ymdParts(String(a || "").slice(0, 10));
+  const pb = ymdParts(String(b || "").slice(0, 10));
+  if (!pa || !pb) return [a, b].filter(Boolean).map((x) => fmtDate(x, { year, today })).join(" – ");
+  if (String(a).slice(0, 10) === String(b).slice(0, 10)) return fmtDate(a, { year, today });
+  const thisYear = Number((today || toYMD(nowET())).slice(0, 4));
+  const showYear = year === true || (year === "auto" && (pa[0] !== thisYear || pb[0] !== thisYear));
+  if (pa[0] !== pb[0]) return `${fmtDate(a, { year: true })} – ${fmtDate(b, { year: true })}`;
+  const tail = showYear ? `, ${pb[0]}` : "";
+  if (pa[1] === pb[1]) return `${MONTH_ABBR[pa[1] - 1]} ${pa[2]}–${pb[2]}${tail}`;
+  return `${MONTH_ABBR[pa[1] - 1]} ${pa[2]} – ${MONTH_ABBR[pb[1] - 1]} ${pb[2]}${tail}`;
 }

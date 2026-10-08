@@ -1,3 +1,4 @@
+import { catLabel, catColor } from "../data/categories.js";
 import React from "react";
 import { updateRoster, saveIncidentsBatch } from "../data/firebase.js";
 import { ROLES, newDriverId } from "../data/drivers.js";
@@ -7,15 +8,16 @@ import { monthsOfYear } from "../data/scorecardDetail.js";
 import { currentYmET } from "../data/period.js";
 import { LoadError } from "./kit/LoadState.jsx";
 import { openDrill } from "./kit/drillNav.js";
+import CardMenu from "./kit/CardMenu.jsx";
+import Icon from "./kit/Icon.jsx";
 
 // Categories that count against a driver (negative events). Compliments are
 // tracked but never counted "against" a driver.
 const NEG_CATS = ["damage","late","missing","misdelivery","forgotten_freight","attempts","complaint"];
-const CAT_LABEL = {
-  damage: "Damage", late: "Late", missing: "Missing", misdelivery: "Misdeliv",
-  forgotten_freight: "Forgot Frt", attempts: "Attempts", complaint: "Complaint",
-};
-const STRIP = ["damage", "late", "missing", "misdelivery", "forgotten_freight"];
+// Spelled out in full, as everywhere else (categories.js).
+const CAT_LABEL = Object.fromEntries(NEG_CATS.map((c) => [c, catLabel(c)]));
+// The Mix bar's categories, in the registry's stack order (categories.js).
+const STRIP = ["damage", "forgotten_freight", "misdelivery", "late", "missing"];
 
 export default function Drivers({ drivers, incidents, onUpdate }) {
   const data = useAnalytics();
@@ -27,6 +29,8 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
   const [search, setSearch] = React.useState("");
   const [roleFilter, setRoleFilter] = React.useState("all");
   const [showInactive, setShowInactive] = React.useState(false);
+  // The table's sort: a column and a direction; the default puts this month's most first.
+  const [sort, setSort] = React.useState({ col: "month", dir: "desc" });
   // Roster editor: "add" | the driver object being edited | null.
   const [formOpen, setFormOpen] = React.useState(null);
   const [formName, setFormName] = React.useState("");
@@ -70,7 +74,6 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
         monthAgainst,
         strip: STRIP.map((c) => ({ cat: c, label: CAT_LABEL[c], n: counts.all.get(driver.id)?.get(c) || 0 })),
         srcVol,
-        heat: monthAgainst >= 3 ? "hot" : monthAgainst >= 1 ? "warm" : "cool",
       };
     });
   }, [drivers, incidents, counts]);
@@ -95,13 +98,20 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
       const q = search.toLowerCase();
       list = list.filter((d) => d.name.toLowerCase().includes(q));
     }
-    return list.sort(
-      (a, b) =>
-        b.monthAgainst - a.monthAgainst ||
-        b.againstTotal - a.againstTotal ||
-        a.name.localeCompare(b.name),
-    );
-  }, [enriched, search, roleFilter, showInactive]);
+    const dir = sort.dir === "asc" ? 1 : -1;
+    const byName = (a, b) => a.name.localeCompare(b.name);
+    const cmp = {
+      name: (a, b) => byName(a, b) * dir,
+      role: (a, b) => String(a.role || "").localeCompare(String(b.role || "")) * dir || byName(a, b),
+      status: (a, b) => ((a.active === false ? 1 : 0) - (b.active === false ? 1 : 0)) * dir || byName(a, b),
+      month: (a, b) => (a.monthAgainst - b.monthAgainst) * dir || (a.againstTotal - b.againstTotal) * dir || byName(a, b),
+      ytd: (a, b) => (a.ytdAgainst - b.ytdAgainst) * dir || byName(a, b),
+      all: (a, b) => (a.againstTotal - b.againstTotal) * dir || byName(a, b),
+    }[sort.col];
+    return list.sort(cmp);
+  }, [enriched, search, roleFilter, showInactive, sort]);
+  // The Mix bars share one scale: the largest all-time strip on the page.
+  const mixMax = React.useMemo(() => Math.max(1, ...filtered.map((d) => d.strip.reduce((a, x) => a + x.n, 0))), [filtered]);
 
   const hasRecords = (driverId) =>
     !countsReady ||
@@ -319,9 +329,9 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
 
   return (
     <div>
-      <div className="page-title">Driver Roster</div>
+      <div className="page-title">Driver roster</div>
       <h1 className="page-heading">
-        Drivers <span className="meta">· {filtered.length} / {drivers.length}</span>
+        Drivers <span className="meta"><span className="meta-sep">· </span>{filtered.length} / {drivers.length}</span>
       </h1>
       <div className="toolbar">
         <input
@@ -342,17 +352,7 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
             </button>
           ))}
         </div>
-        <label
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            fontFamily: "var(--mono)",
-            fontSize: 11,
-            color: "var(--text-2)",
-            cursor: "pointer",
-          }}
-        >
+        <label className="toolbar-check">
           <input
             type="checkbox"
             checked={showInactive}
@@ -368,11 +368,13 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
             disabled={savingRoster}
             title="Remove every roster row that is only a first name — they duplicate drivers already listed with their full names"
           >
-            ⚠ Remove {stubRows.length} single-name row{stubRows.length === 1 ? "" : "s"}
+            <Icon name="alert-triangle" />
+            Remove {stubRows.length} single-name row{stubRows.length === 1 ? "" : "s"}
           </button>
         )}
         <button className="btn" onClick={openAdd}>
-          + Add Driver/Loader
+          <Icon name="plus" />
+          Add driver or loader
         </button>
       </div>
       {data.blocking && (
@@ -387,93 +389,113 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
           retry={data.rosterBlocking.retry}
         />
       )}
-      <div className="driver-list">
-        {filtered.map((driver) => (
-          <div
-            key={driver.id}
-            className={`driver-card ${countsReady ? driver.heat : "cool"}`}
-            onClick={() => countsReady && openCard(driver)}
-            style={driver.active === false ? { opacity: 0.55 } : undefined}
-          >
-            <div className="driver-name">
-              {driver.name}
-              {driver.active === false && (
-                <span className="meta" style={{ marginLeft: 6 }}>
-                  · inactive
-                </span>
-              )}
-            </div>
-            <div className="driver-role">{driver.role}</div>
-            <div className="driver-stats">
-              <div className="driver-stat">
-                <div className={`driver-stat-value ${countsReady && driver.monthAgainst > 0 ? "red" : ""}`}>
-                  {countsReady ? driver.monthAgainst : "—"}
-                </div>
-                <div className="driver-stat-label">Faulted Mo</div>
-              </div>
-              <div className="driver-stat">
-                <div className={`driver-stat-value ${countsReady && driver.ytdAgainst > 3 ? "amber" : ""}`}>
-                  {countsReady ? driver.ytdAgainst : "—"}
-                </div>
-                <div className="driver-stat-label">YTD</div>
-              </div>
-              <div className="driver-stat">
-                <div className="driver-stat-value">{countsReady ? driver.againstTotal : "—"}</div>
-                <div className="driver-stat-label">All Time</div>
-              </div>
-            </div>
-            <div className="driver-catstrip">
-              {driver.strip.map((s) => (
-                <div key={s.cat} className={`dcs ${countsReady && s.n > 0 ? "on" : ""}`}>
-                  <span className="dcs-n">{countsReady ? s.n : "—"}</span>
-                  <span className="dcs-l">{s.label}</span>
-                </div>
-              ))}
-            </div>
-            <div className="driver-srcvol">
-              <span className="src-badge src-traces">T {driver.srcVol.traces}</span>
-              <span className="src-badge src-returns">R {driver.srcVol.returns}</span>
-              <span className="src-badge src-laters">L {driver.srcVol.laters}</span>
-            </div>
-            <div
-              style={{ display: "flex", gap: 6, marginTop: 8 }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <button className="btn ghost sm" onClick={() => openEdit(driver)}>
-                ✎ Edit
-              </button>
-              {driver.active === false ? (
-                <button
-                  className="btn ghost sm"
-                  onClick={() => reactivateDriver(driver)}
-                  disabled={savingRoster}
-                >
-                  Reactivate
-                </button>
-              ) : (
-                <button
-                  className="btn ghost sm"
-                  onClick={() => deactivateDriver(driver)}
-                  disabled={savingRoster}
-                  style={{ color: "var(--accent-amber)" }}
-                >
-                  Deactivate
-                </button>
-              )}
-              {!hasRecords(driver.id) && (
-                <button
-                  className="btn ghost sm"
-                  onClick={() => removeDriver(driver)}
-                  disabled={savingRoster}
-                  style={{ color: "var(--accent-red)" }}
-                  title="No history on record — permanently delete this entry"
-                >
-                  Remove
-                </button>
-              )}
-            </div>
+      {/* The roster as one sortable table: who, their role and status, the three counts
+          the drawer checks (this month, the year to date, all time), and a small Mix bar
+          of what the all-time count is made of. A row opens that driver's drawer; Edit
+          and Deactivate sit behind its ⋯. */}
+      <div className="card">
+        <div className="card-body tight">
+          <div className="table-wrap">
+            <table className="data analytics-table drv-table">
+              <thead>
+                <tr>
+                  <SortTh col="name" sort={sort} setSort={setSort}>Name</SortTh>
+                  <SortTh col="role" sort={sort} setSort={setSort} className="drv-wide">Role</SortTh>
+                  <SortTh col="status" sort={sort} setSort={setSort} className="drv-wide">Status</SortTh>
+                  <SortTh col="month" sort={sort} setSort={setSort} num>This month</SortTh>
+                  <SortTh col="ytd" sort={sort} setSort={setSort} num>YTD</SortTh>
+                  <SortTh col="all" sort={sort} setSort={setSort} num>All time</SortTh>
+                  <th className="drv-wide">Mix, all time</th>
+                  <th aria-label="Actions" />
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((driver) => {
+                  const inactive = driver.active === false;
+                  const mixTotal = driver.strip.reduce((a, x) => a + x.n, 0);
+                  const mixTitle = countsReady
+                    ? [
+                        ...driver.strip.map((x) => `${x.label} ${x.n}`),
+                        `Uline volumes: ${driver.srcVol.traces} traces, ${driver.srcVol.returns} returns, ${driver.srcVol.laters} lates`,
+                      ].join("\n")
+                    : "Counts loading";
+                  const role = (driver.role || "driver").replace(/^./, (c) => c.toUpperCase());
+                  // What the all-time count is made of: one bar, in the registry's colours, its
+                  // counts and the Uline report volumes in its hover — every row one line tall.
+                  const mixBar =
+                    countsReady && mixTotal > 0 ? (
+                      <span className="drv-mix-bar" style={{ width: `${Math.max(4, (mixTotal / mixMax) * 100)}%` }}>
+                        {driver.strip
+                          .filter((x) => x.n > 0)
+                          .map((x) => (
+                            <i key={x.cat} style={{ flexGrow: x.n, background: catColor(x.cat) }} />
+                          ))}
+                      </span>
+                    ) : null;
+                  return (
+                    <tr
+                      key={driver.id}
+                      className={`clickable ${inactive ? "drv-inactive" : ""}`.trim()}
+                      onClick={() => countsReady && openCard(driver)}
+                      title={countsReady ? `Open ${driver.name}'s failures` : undefined}
+                    >
+                      <td className="drv-name">
+                        <span className="drv-name-text">{driver.name}</span>
+                        <span className="drv-sub">
+                          {role}
+                          {inactive ? " · inactive" : ""}
+                        </span>
+                        {/* On a phone the Mix column is hidden: its bar sits here. */}
+                        {mixBar && (
+                          <span className="drv-mix drv-sub-mix" title={mixTitle} aria-hidden="true">
+                            {mixBar}
+                          </span>
+                        )}
+                      </td>
+                      <td className="drv-wide">{role}</td>
+                      <td className="drv-wide drv-status">{inactive ? "Inactive" : "Active"}</td>
+                      <td className="num">{countsReady ? driver.monthAgainst : "—"}</td>
+                      <td className="num">{countsReady ? driver.ytdAgainst : "—"}</td>
+                      <td className="num">{countsReady ? driver.againstTotal : "—"}</td>
+                      <td className="drv-wide">
+                        <span className="drv-mix" title={mixTitle} aria-label={mixTitle.replace(/\n/g, ", ")}>
+                          {mixBar}
+                        </span>
+                      </td>
+                      <td className="row-menu-cell" onClick={(e) => e.stopPropagation()}>
+                        <CardMenu
+                          label={`Actions for ${driver.name}`}
+                          className="row-menu"
+                          fixed
+                          items={[
+                            { id: "edit", label: "Edit", icon: "pencil", onSelect: () => openEdit(driver) },
+                            inactive
+                              ? { id: "reactivate", label: "Reactivate", icon: "rotate-ccw", disabled: savingRoster, onSelect: () => reactivateDriver(driver) }
+                              : { id: "deactivate", label: "Deactivate", icon: "user-x", disabled: savingRoster, onSelect: () => deactivateDriver(driver) },
+                            ...(!hasRecords(driver.id)
+                              ? [
+                                  {
+                                    id: "remove",
+                                    label: "Remove for good",
+                                    icon: "trash-2",
+                                    danger: true,
+                                    disabled: savingRoster,
+                                    title: "No history on record — permanently delete this entry",
+                                    onSelect: () => removeDriver(driver),
+                                  },
+                                ]
+                              : []),
+                          ]}
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
-        ))}
+          {filtered.length === 0 && <div className="empty-state">No one on the roster matches.</div>}
+        </div>
       </div>
       {formOpen && (
         <div className="modal-backdrop" onClick={closeForm}>
@@ -545,5 +567,20 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
         </div>
       )}
     </div>
+  );
+}
+
+// A sortable column head: click to sort by it, again to flip the direction.
+function SortTh({ col, sort, setSort, num = false, className = "", children }) {
+  const on = sort.col === col;
+  return (
+    <th
+      className={`sortable ${num ? "num" : ""} ${className}`.trim()}
+      aria-sort={on ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}
+      onClick={() => setSort((s) => (s.col === col ? { col, dir: s.dir === "asc" ? "desc" : "asc" } : { col, dir: num ? "desc" : "asc" }))}
+    >
+      {children}
+      {on ? (sort.dir === "asc" ? " ↑" : " ↓") : ""}
+    </th>
   );
 }

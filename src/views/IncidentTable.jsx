@@ -15,6 +15,21 @@ import {
 } from "../data/firebase.js";
 import IncidentEditor from "./IncidentEditor.jsx";
 import { catChipStyle } from "../data/categories.js";
+import CardMenu from "./kit/CardMenu.jsx";
+import Icon from "./kit/Icon.jsx";
+import { displayName } from "./kit/shape.js";
+import { useMedia } from "./kit/useSize.js";
+
+// On a phone each incident is a card, listed this many at a time per group.
+const PHONE_PAGE = 20;
+
+const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+// "2026-09-14" → "Sep 14, 2026", read from the string (never new Date(ymd), which can
+// land a day early west of UTC); anything else is shown as it came.
+const fmtDate = (s) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s || ""));
+  return m ? `${MONTH_ABBR[Number(m[2]) - 1]} ${Number(m[3])}, ${m[1]}` : s;
+};
 
 // Category group ordering for the grouped view.
 const CATEGORY_ORDER = [
@@ -301,10 +316,8 @@ export default function IncidentTable({
     }
     const out = Array.from(map.entries()).map(([key, items]) => {
       let label = key;
-      if (grouping === "category")
-        label = (CATEGORY_LABELS[key] || key).toUpperCase();
-      else if (grouping === "fault")
-        label = (FAULT_CODES.find((f) => f.id === key)?.label || key).toUpperCase();
+      if (grouping === "category") label = CATEGORY_LABELS[key] || key;
+      else if (grouping === "fault") label = FAULT_CODES.find((f) => f.id === key)?.label || key;
       return { key, label: `${label} · ${items.length}`, items };
     });
     if (grouping === "category")
@@ -539,6 +552,13 @@ export default function IncidentTable({
 
   const colCount = showBulkActions ? 10 : 9;
   const stop = (e) => e.stopPropagation();
+  // A phone shows each group's cards 20 at a time ("Show 20 more"), as every long list
+  // in the app does; a wide screen shows the whole table. Selecting all, expanding all
+  // and deleting still act on every row the filters keep, shown or not.
+  const phone = useMedia("(max-width: 640px)");
+  const [caps, setCaps] = useState({});
+  useEffect(() => setCaps({}), [search, faultFilter, grouping, sortCol, sortDir]);
+  const capOf = (key) => caps[key] || PHONE_PAGE;
 
   return (
     <>
@@ -563,18 +583,7 @@ export default function IncidentTable({
               </option>
             ))}
           </select>
-          <div
-            style={{
-              fontFamily: "var(--mono)",
-              fontSize: 10,
-              color: "var(--text-2)",
-              textTransform: "uppercase",
-              letterSpacing: "0.1em",
-              alignSelf: "center",
-            }}
-          >
-            Group by:
-          </div>
+          <div className="toolbar-label">Group by</div>
           <div className="month-picker" style={{ margin: 0 }}>
             <button
               className={`month-btn ${grouping === "category" ? "active" : ""}`}
@@ -623,7 +632,7 @@ export default function IncidentTable({
             <div className="empty-state">No incidents match filters</div>
           ) : (
             <div className="table-wrap">
-              <table className="data incident-data">
+              <table className={`data incident-data ${showBulkActions ? "has-check" : ""}`.trim()}>
                 <thead>
                   <tr>
                     {showBulkActions && (
@@ -653,42 +662,22 @@ export default function IncidentTable({
                     <SortableTh col="reason" label="Reason" />
                     <th>Notes</th>
                     <th style={{ width: 70 }}>Photos</th>
-                    <th style={{ width: 90 }} />
+                    <th style={{ width: 44 }} aria-label="Actions" />
                   </tr>
                 </thead>
                 <tbody>
                   {groups.map((group) => (
                     <Fragment key={group.key}>
                       {grouping !== "none" && (
-                        <tr
-                          style={{
-                            background: "var(--bg-2)",
-                            cursor: "pointer",
-                            borderTop: "2px solid var(--border)",
-                          }}
-                          onClick={() => toggleCollapse(group.key)}
-                        >
-                          <td
-                            colSpan={colCount}
-                            style={{
-                              padding: "8px 14px",
-                              fontFamily: "var(--mono)",
-                              fontSize: 11,
-                              fontWeight: 700,
-                              letterSpacing: "0.1em",
-                              textTransform: "uppercase",
-                              color: "var(--davis-blue)",
-                            }}
-                          >
-                            <span style={{ marginRight: 8 }}>
-                              {collapsed.has(group.key) ? "▸" : "▾"}
-                            </span>
+                        <tr className="inc-group" onClick={() => toggleCollapse(group.key)}>
+                          <td colSpan={colCount}>
+                            <span className="row-caret">{collapsed.has(group.key) ? "▸" : "▾"}</span>
                             {group.label}
                           </td>
                         </tr>
                       )}
                       {!collapsed.has(group.key) &&
-                        group.items.map((inc) => (
+                        (phone ? group.items.slice(0, capOf(group.key)) : group.items).map((inc) => (
                           <Fragment key={inc.id}>
                             <tr
                               className={`inc-row ${expandedIds.has(inc.id) ? "expanded" : ""}`}
@@ -696,15 +685,16 @@ export default function IncidentTable({
                               title="Click to expand details"
                             >
                               {showBulkActions && (
-                                <td onClick={stop}>
+                                <td onClick={stop} className="inc-c-check">
                                   <input
                                     type="checkbox"
                                     checked={selected.has(inc.id)}
                                     onChange={() => toggleSelect(inc.id)}
+                                    aria-label={`Select PRO ${inc.pro_number || ""}`.trim()}
                                   />
                                 </td>
                               )}
-                              <td className="pro-num">
+                              <td className="pro-num inc-c-pro">
                                 <span className="row-caret">
                                   {expandedIds.has(inc.id) ? "▾" : "▸"}
                                 </span>
@@ -719,24 +709,25 @@ export default function IncidentTable({
                                   <span className="src-badge nofault">No Fault</span>
                                 )}
                               </td>
-                              <td>{inc.ship_date || inc.return_date || inc.delivered_date || inc.trace_date || "—"}</td>
+                              <td className="nowrap inc-c-date" data-label="Date">{fmtDate(inc.ship_date || inc.return_date || inc.delivered_date || inc.trace_date) || "—"}</td>
                               {grouping !== "category" && (
-                                <td>
+                                <td className="inc-c-cat" data-label="Category">
                                   <span className={`chip cat ${inc.category}`} style={catChipStyle(inc.category)}>
                                     {inc.category}
                                   </span>
                                 </td>
                               )}
-                              <td onClick={stop}>
+                              <td onClick={stop} className="inc-c-driver" data-label="Driver">
                                 <select
+                                  className={`inc-driver-select ${inc.driver_id ? "" : "is-empty"}`.trim()}
                                   value={inc.driver_id || ""}
                                   onChange={(e) =>
                                     changeDriver(inc, e.target.value)
                                   }
-                                  style={{ minWidth: 140 }}
+                                  title={driverName(inc.driver_id) || inc.driver_raw || ""}
                                 >
                                   <option value="">
-                                    {inc.driver_raw || "—"}
+                                    {displayName(inc.driver_raw) || "—"}
                                   </option>
                                   {drivers
                                     .slice()
@@ -748,17 +739,17 @@ export default function IncidentTable({
                                     )
                                     .map((d) => (
                                       <option key={d.id} value={d.id}>
-                                        {d.name}
+                                        {displayName(d.name)}
                                         {d.active === false ? " (inactive)" : ""}
                                       </option>
                                     ))}
                                 </select>
                               </td>
                               {grouping !== "fault" && (
-                                <td onClick={stop}>
+                                <td onClick={stop} className="inc-c-fault" data-label={isLateRow(inc) ? "Late reason" : "Fault"}>
                                   {isLateRow(inc) ? (
                                     <select
-                                      className="fault-select"
+                                      className={`fault-select ${inc.late_reason ? "" : "is-empty"}`.trim()}
                                       value={inc.late_reason || ""}
                                       onChange={(e) =>
                                         changeLateReason(inc, e.target.value)
@@ -773,7 +764,7 @@ export default function IncidentTable({
                                     </select>
                                   ) : (
                                     <select
-                                      className="fault-select"
+                                      className={`fault-select ${!inc.fault || inc.fault === "unknown" ? "is-empty" : ""}`.trim()}
                                       value={
                                         FAULT_IDS.has(inc.fault)
                                           ? inc.fault
@@ -800,12 +791,12 @@ export default function IncidentTable({
                                   )}
                                 </td>
                               )}
-                              <td>
+                              <td className={`inc-c-reason ${inc.reason ? "" : "is-empty"}`.trim()} data-label="Reason">
                                 <div className="cell-ellipsis" title={inc.reason}>
                                   {inc.reason || "—"}
                                 </div>
                               </td>
-                              <td>
+                              <td className={`inc-c-notes ${inc.your_note || inc.notes ? "" : "is-empty"}`.trim()}>
                                 <div
                                   className="cell-ellipsis"
                                   title={inc.your_note || inc.notes}
@@ -813,12 +804,12 @@ export default function IncidentTable({
                                   {inc.your_note || inc.notes}
                                 </div>
                               </td>
-                              <td>
+                              <td className={`inc-c-photos ${incidentHasPhotos(inc) ? "" : "is-empty"}`.trim()} data-label="Photos">
                                 {inc.has_photos ||
                                 (inc.photo_urls &&
                                   inc.photo_urls.length > 0) ? (
-                                  <span style={{ color: "var(--accent-green)" }}>
-                                    ✓{" "}
+                                  <span className="inc-photos" title="Photos on file">
+                                    <Icon name="camera" />
                                     {inc.photo_count ||
                                       inc.photo_urls?.length ||
                                       0}
@@ -829,23 +820,17 @@ export default function IncidentTable({
                                   </span>
                                 )}
                               </td>
-                              <td onClick={stop}>
-                                <button
-                                  className="btn ghost sm"
-                                  onClick={() => setEditing(inc)}
-                                  title="Edit all fields"
-                                  style={{ marginRight: 4 }}
-                                >
-                                  ✎
-                                </button>
-                                <button
-                                  className="btn ghost sm"
-                                  onClick={() => removeIncident(inc.id)}
-                                  title="Delete"
-                                  style={{ color: "var(--accent-red)" }}
-                                >
-                                  ×
-                                </button>
+                              <td onClick={stop} className="row-menu-cell">
+                                {/* Edit and Delete behind one quiet ⋯, not a red × on every row. */}
+                                <CardMenu
+                                  label={`Actions for PRO ${inc.pro_number || ""}`.trim()}
+                                  className="row-menu"
+                                  fixed
+                                  items={[
+                                    { id: "edit", label: "Edit all fields", icon: "pencil", onSelect: () => setEditing(inc) },
+                                    { id: "delete", label: "Delete incident", icon: "trash-2", danger: true, onSelect: () => removeIncident(inc.id) },
+                                  ]}
+                                />
                               </td>
                             </tr>
                             {expandedIds.has(inc.id) && (
@@ -862,6 +847,20 @@ export default function IncidentTable({
                             )}
                           </Fragment>
                         ))}
+                      {phone && !collapsed.has(group.key) && group.items.length > capOf(group.key) && (
+                        <tr className="inc-more">
+                          <td colSpan={colCount}>
+                            <button
+                              type="button"
+                              className="bl-more aot-more"
+                              onClick={() => setCaps((c) => ({ ...c, [group.key]: capOf(group.key) + PHONE_PAGE }))}
+                            >
+                              Show {Math.min(PHONE_PAGE, group.items.length - capOf(group.key))} more ·{" "}
+                              {group.items.length - capOf(group.key)} not shown
+                            </button>
+                          </td>
+                        </tr>
+                      )}
                     </Fragment>
                   ))}
                 </tbody>

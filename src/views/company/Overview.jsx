@@ -1,14 +1,13 @@
 import React from "react";
 import { useAnalytics } from "../../data/AnalyticsProvider.jsx";
 import { catLabel, catColor, categoriesFor, ATTEMPTS } from "../../data/categories.js";
-import { addDays } from "../../data/period.js";
+import { addDays, currentYmET, fmtDate, fmtDateRange } from "../../data/period.js";
 import { csvName } from "../../data/csv.js";
 import { fetchAttemptsRange, todayET, FEED_EPOCH } from "../../data/attemptsFeed.js";
 import { buildAttemptRecords } from "../../data/attemptRecords.js";
 import { STATE_TEXT, APP_ERA, fmtYm, monthsText } from "../../data/coverage.js";
 import {
   monthlySeries,
-  sparkRuns,
   compareWindows,
   overviewTiles,
   weeklyAttempts,
@@ -18,10 +17,11 @@ import {
   VERDICT_TEXT,
 } from "../../data/companyMetrics.js";
 import ChartCard from "../kit/ChartCard.jsx";
-import StatTile from "../kit/StatTile.jsx";
+import StatTile, { TileStrip } from "../kit/StatTile.jsx";
 import StackedColumns from "../kit/charts/StackedColumns.jsx";
-import { chartTable } from "../kit/shape.js";
-import { BRAND, PRIOR, SURFACE, axisTick } from "../kit/chartTheme.js";
+import { chartTable, avgLine, peakSummary, toDate, sparkPlan, shadedReasons } from "../kit/shape.js";
+import { BRAND, SURFACE, WASH, ZERO } from "../kit/chartTheme.js";
+import useSize from "../kit/useSize.js";
 import { openDrill } from "../kit/drillNav.js";
 import { openCoverage } from "./nav.js";
 import WhatChanged from "./WhatChanged.jsx";
@@ -37,60 +37,6 @@ import LeftOut from "./LeftOut.jsx";
 const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const plural = (n, word) => `${n.toLocaleString()} ${word}${n === 1 ? "" : "s"}`;
 const fmtPct = (x) => `${x > 0 ? "+" : x < 0 ? "−" : "±"}${Math.abs(Math.round(x * 1000) / 10)}%`;
-
-// A month's provenance, one ink glyph under its column: L live, H history, ◐ partly
-// captured (drawn, not typed: the font's ◐ is a speck), ⚠ live and history disagree,
-// – no data on file. Blank: nothing tracked.
-function glyphOf(row, cats) {
-  const states = cats.map((c) => row.states[c]);
-  if (states.includes("conflict")) return "⚠";
-  if (states.includes("partial")) return "◐";
-  const whole = states.filter((s) => s === "live" || s === "history");
-  if (!whole.length) return states.includes("no_data") ? "–" : "";
-  if (whole.every((s) => s === "live")) return "L";
-  if (whole.every((s) => s === "history")) return "H";
-  return "LH";
-}
-const GLYPH_KEY = [
-  ["L", "live entries"],
-  ["H", "imported history"],
-  ["◐", "partly captured"],
-  ["⚠", "live and history disagree"],
-  ["–", "no data on file"],
-];
-const GLYPH_INK = "#374151";
-
-// The partly-captured mark: a ring with its lower half filled, centred on (0, cy).
-function PartialMark({ cy = 0, r = 4.25 }) {
-  return (
-    <g>
-      <circle cx={0} cy={cy} r={r} fill="none" stroke={GLYPH_INK} strokeWidth={1.3} />
-      <path d={`M${-r},${cy} A${r},${r} 0 0 0 ${r},${cy} Z`} fill={GLYPH_INK} />
-    </g>
-  );
-}
-
-// A column's slot narrower than this has no room for its glyph: the strip is left out
-// (the hover, the table view and Data Coverage still say where each month came from).
-const STRIP_MIN_SLOT = 10;
-
-// The plot's width, followed as the card resizes. The axis runs the card's width less
-// its padding (2 × 14), the y-axis band (44 − 12) and the right margin (10).
-function usePlotWidth() {
-  const ref = React.useRef(null);
-  const [w, setW] = React.useState(0);
-  React.useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return undefined;
-    const read = () => setW(Math.max(0, el.clientWidth - 70));
-    read();
-    if (typeof ResizeObserver === "undefined") return undefined;
-    const ro = new ResizeObserver(read);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-  return [ref, w];
-}
 
 // Where a month's numbers come from, in words: "imported history: Damage, Forgotten
 // Freight · not tracked: Late".
@@ -152,7 +98,11 @@ export default function Overview({ cov, months, label, cmpMonths, cats, measure,
     label: c.id === "complaint" ? "Other (complaints)" : c.label,
     color: c.color,
   }));
-  const LINE = { id: "roll3", label: "3-month average", color: BRAND, line: true, loneDots: true };
+  // The table keeps every 3-month average (roll3); the chart draws it only over runs of
+  // three months or more (roll3Line), and the hover reads roll3, so the hover and the
+  // table never disagree.
+  const LINE = { id: "roll3", label: "3-month average", color: BRAND, line: true, digits: 2 };
+  const LINE_DRAWN = { ...LINE, id: "roll3Line", tip: "roll3" };
   // The hover readout: the month and its workdays on the head line, then one short line
   // per way a category wasn't captured whole ("Damage, Late: partly captured"). Why is
   // left to the table view and Data Coverage — the long reasons ran the readout off the
@@ -164,20 +114,43 @@ export default function Overview({ cov, months, label, cmpMonths, cats, measure,
       if (st === "live" || st === "history") continue;
       (by.get(st) || by.set(st, []).get(st)).push(catLabel(c));
     }
+    const now = currentYmET();
+    const td = r.ym === now ? toDate({ key: r.ym, start: `${r.ym}-01`, end: `${r.ym}-31` }, today) : null;
     return {
       ...r,
-      __head: `${r.label} · ${plural(r.workdays, "workday")}`,
+      __partial: r.ym === now,
+      __head: `${r.label} · ${plural(r.workdays, "workday")}${td ? ` · to date (${td.days} of ${td.of} days)` : ""}`,
       __notes: [
         ...[...by].map(([st, list]) => `${list.join(", ")}: ${STATE_TEXT[st]}`),
         ...(measure === "workday" && r.count !== null ? [`${r.count} counted`] : []),
+        ...(r.count !== null ? ["Click a segment for its entries"] : []),
       ],
     };
   });
-  const glyphs = rows.map((r) => glyphOf(r, cats));
-  const every = months.length > 24 ? (phone ? 6 : 2) : phone && months.length > 12 ? 2 : 1;
-  const [plotRef, plotWidth] = usePlotWidth();
-  const strip = !plotWidth || plotWidth / Math.max(1, months.length) >= STRIP_MIN_SLOT;
+  // The 3-month average exists only where three months in a row were captured the same
+  // way (rolling3). It is drawn over runs of three months or more, and only when that is
+  // a real line — six months or more, reaching the latest six (kit/shape.js avgLine);
+  // scattered fragments read as a fault, so then the chart drops it and only the hover
+  // and the table carry it. Display only — they keep every value.
+  const avg = avgLine(rows.map((r) => r.roll3));
+  const drawnRows = rows.map((r, i) => ({ ...r, roll3Line: avg.values[i] }));
+  const rollDrawn = avg.drawn;
+  const rollAny = rows.some((r) => r.roll3 !== null && r.roll3 !== undefined);
   const crossesApp = months[0] < APP_ERA && months[months.length - 1] >= APP_ERA;
+  // The shaded months (no count at all), each reason named once with its months, as on
+  // the manual-entry trends: "Shaded: no data on file (Jul 2025, Dec 2025)".
+  const shadedNote = shadedReasons(
+    rows.filter((r) => r.count === null),
+    {
+      keyOf: (r) => r.ym,
+      why: (r) => {
+        const st = new Set(cats.map((c) => r.states[c]));
+        return st.size === 1 && st.has("not_tracked") ? STATE_TEXT.not_tracked : STATE_TEXT.no_data;
+      },
+    },
+  )
+    .map((x) => `${x.why} (${monthsText(x.keys).replace(/ (\d{4})/g, "\u00a0$1")})`)
+    .join(", ");
   // Near the right edge of a phone-width plot the long words would run off it.
   const tightNote = phone && months.indexOf(APP_ERA) / months.length > 0.7;
   const table = (() => {
@@ -197,7 +170,6 @@ export default function Overview({ cov, months, label, cmpMonths, cats, measure,
     t.columns = t.columns.map((c) => (c.key === "__source" ? { ...c, wrap: true } : c));
     return t;
   })();
-  const usedGlyphs = new Set(glyphs);
 
   const caveats = result.exclusions;
 
@@ -235,10 +207,11 @@ export default function Overview({ cov, months, label, cmpMonths, cats, measure,
             </div>
           ) : (
             <div className="co-delta">
-              Nothing in {label} can be compared {lfl ? "like-for-like " : ""}with {cmpLabel} —{" "}
-              {caveats.length ? "see what was left out below" : "no months to compare"}.
+              Nothing in {label} can be compared {lfl ? "like-for-like " : ""}with {cmpLabel}
+              {caveats.length ? "" : " — no months to compare"}.
             </div>
           )}
+          {lfl && <LeftOut exclusions={caveats} />}
           <Sparkline rows={sparkRows} today={today} />
         </div>
         <WhatChanged
@@ -253,7 +226,7 @@ export default function Overview({ cov, months, label, cmpMonths, cats, measure,
           today={today}
           onFocus={setHover}
         />
-        <div className="kpi-grid co-kpis">
+        <TileStrip className="card-strip co-kpis">
           <StatTile
             label="Per workday"
             value={tiles.perWorkday.value === null ? "—" : tiles.perWorkday.value.toFixed(2)}
@@ -287,7 +260,7 @@ export default function Overview({ cov, months, label, cmpMonths, cats, measure,
             onClick={tiles.unattributed.drill ? () => openDrill(tiles.unattributed.drill) : null}
           >
             <button type="button" className="kpi-action" onClick={() => openCoverage({ section: "unattributed" })}>
-              By month in Data Coverage →
+              By month in Data Coverage
             </button>
           </StatTile>
           <StatTile
@@ -312,7 +285,7 @@ export default function Overview({ cov, months, label, cmpMonths, cats, measure,
             title="Compliments are a credit: never added to or netted against failures"
             onClick={tiles.compliments.drill ? () => openDrill(tiles.compliments.drill) : null}
           />
-        </div>
+        </TileStrip>
       </div>
 
       {showCompared && compared && (
@@ -379,55 +352,61 @@ export default function Overview({ cov, months, label, cmpMonths, cats, measure,
         </div>
       )}
 
-      {lfl && <LeftOut exclusions={caveats} phone={phone} />}
-
-      <div ref={plotRef}>
+      <div>
         <ChartCard
           className="co-monthly"
           title="Every month on file"
-          count={`${A.toLocaleString()} counted failures`}
-          legend={[...SERIES, LINE]}
+          subtitle={[
+            `${A.toLocaleString()} counted failures`,
+            measure === "workday" ? null : peakSummary(rows, { grain: "month", value: (r) => r.count, keyOf: (r) => r.ym, partial: (r) => r.__partial }),
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+          legend={[...SERIES, ...(rollDrawn ? [LINE] : [])]}
           onLegend={(id) => setFocus((f) => (f === id ? null : id))}
           focus={isolated}
           note={
-            <>
-              {strip ? (
-                GLYPH_KEY.filter(([g]) => usedGlyphs.has(g) || (g === "L" && usedGlyphs.has("LH"))).map(([g, t]) => (
-                  <span key={g} className="co-glyph-key">
-                    {g === "◐" ? (
-                      <svg width="10" height="10" viewBox="-5 -5 10 10" aria-hidden="true">
-                        <PartialMark />
-                      </svg>
-                    ) : (
-                      <b>{g}</b>
-                    )}{" "}
-                    {t}
-                  </span>
-                ))
-              ) : (
-                <span>Too many months to mark each one&apos;s source here — the table view lists it</span>
-              )}
-              <span>Click a segment for its entries, a column for the month</span>
-            </>
+            shadedNote || crossesApp || (!rollDrawn && rollAny)
+              ? [
+                  shadedNote ? (
+                    <span key="band" title="Data Coverage has each month's detail">
+                      <i className="cc-note-swatch" style={{ background: WASH, boxShadow: `inset 0 0 0 1px ${ZERO}` }} />
+                      Shaded: {shadedNote}
+                    </span>
+                  ) : null,
+                  crossesApp ? (
+                    <span key="era" title="Data Coverage has each month's detail">
+                      Before {fmtYm(APP_ERA)}: mostly spreadsheet history
+                    </span>
+                  ) : null,
+                  !rollDrawn && rollAny ? (
+                    <span key="avg" title="Too few months in a row were captured the same way to draw it">
+                      3-month average in the hover
+                    </span>
+                  ) : null,
+                ]
+              : null
           }
           table={table}
           csv={csvName("Company history", measure === "workday" ? "per workday" : "", label)}
           height={phone ? 300 : 340}
         >
           <StackedColumns
-            data={rows}
-            xKey="label"
+            data={drawnRows}
+            xKey="ym"
+            grain="month"
             keyOf={(r) => r.ym}
             series={SERIES}
-            lines={[LINE]}
+            lines={rollDrawn ? [LINE_DRAWN] : []}
+            hoverLines={rollDrawn || !rollAny ? [] : [LINE]}
             focusId={emphasis}
             decimals={measure === "workday"}
             annotations={
               crossesApp
                 ? [
                     tightNote
-                      ? { x: fmtYm(APP_ERA), before: "spreadsheet", after: "app" }
-                      : { x: fmtYm(APP_ERA), before: "spreadsheet backfill", after: "app incidents" },
+                      ? { x: APP_ERA, before: "spreadsheet", after: "app" }
+                      : { x: APP_ERA, before: "spreadsheet backfill", after: "app incidents" },
                   ]
                 : []
             }
@@ -437,11 +416,6 @@ export default function Overview({ cov, months, label, cmpMonths, cats, measure,
             }}
             onMark={(r) => {
               if (r.count !== null) open(cats, [r.ym], r.count, fmtYm(r.ym), "Counted failures");
-            }}
-            xAxis={{
-              interval: 0,
-              height: strip ? 46 : 30,
-              tick: <MonthTick rows={rows} glyphs={strip ? glyphs : null} every={every} />,
             }}
           />
         </ChartCard>
@@ -460,115 +434,79 @@ function measureRate(r) {
   return x && c ? `${x} vs ${c} a workday` : null;
 }
 
-// One column's tick: the month, the year under January (and the first column), and the
-// provenance glyph under both. Dense ranges label every `every`-th month; the glyph is
-// there for every month whenever the strip is (`glyphs`, null when there's no room).
-function MonthTick({ x, y, payload, rows, glyphs, every }) {
-  const i = payload?.index ?? rows.findIndex((r) => r.label === payload?.value);
-  const ym = rows[i]?.ym || "";
-  if (!ym) return null;
-  const jan = ym.endsWith("-01");
-  const showMonth = i % every === 0 || jan;
-  return (
-    <g transform={`translate(${x},${y})`}>
-      {showMonth && (
-        <text y={9} textAnchor="middle" {...axisTick}>
-          {MONTH_ABBR[Number(ym.slice(5, 7)) - 1]}
-        </text>
-      )}
-      {(jan || i === 0) && (
-        <text y={20} textAnchor="middle" {...axisTick} fontSize={9}>
-          {ym.slice(0, 4)}
-        </text>
-      )}
-      {glyphs &&
-        (glyphs[i] === "◐" ? (
-          <PartialMark cy={32} />
-        ) : (
-          <text y={36} textAnchor="middle" fill={GLYPH_INK} fontSize={12} fontFamily="var(--sans)">
-            {glyphs[i] || ""}
-          </text>
-        ))}
-    </g>
-  );
-}
-
-// The hero's sparkline: 24 monthly totals in the comparison gray, the latest complete
-// month in the brand blue, nothing drawn across a gap or a change in what was captured
-// (companyMetrics.js sparkRuns). Hover or arrow keys read a month out.
+// The hero's sparkline: 24 monthly totals as one brand-blue line over a light area,
+// drawn over each run of three or more months that hold a count, a gap band where there
+// is none, and one dot on the latest complete month (kit/shape.js sparkPlan). The month
+// in progress isn't drawn — part of a month reads as a dip. With fewer than six months
+// on file it isn't drawn at all. Hover or arrow keys read a month out.
 function Sparkline({ rows, today }) {
   const [peek, setPeek] = React.useState(null);
-  const W = 240;
-  const H = 44;
+  const [ref, size] = useSize();
+  const W = size.width;
+  const H = 40;
   const pad = 5;
-  const values = rows.map((r) => r.count);
-  const runs = sparkRuns(
-    values,
-    rows.map((r) => r.sig),
-  );
-  const max = Math.max(1, ...values.filter((v) => v !== null));
-  const x = (i) => pad + (i * (W - 2 * pad)) / Math.max(1, rows.length - 1);
-  const y = (v) => H - pad - (v / max) * (H - 2 * pad);
-  const lastComplete = String(today).slice(0, 7);
+  const thisMonth = String(today).slice(0, 7);
+  const values = rows.map((r) => (r.ym < thisMonth ? r.count : null));
   let latest = -1;
-  rows.forEach((r, i) => {
-    if (r.count !== null && r.ym < lastComplete) latest = i;
+  values.forEach((v, i) => {
+    if (v !== null && v !== undefined) latest = i;
   });
+  const plan = sparkPlan(values, { latest });
+  if (!rows.length || !plan) return null;
+  const max = Math.max(1, ...values.filter((v) => v !== null && v !== undefined));
+  const slot = W > 0 ? (W - 2 * pad) / Math.max(1, rows.length - 1) : 0;
+  const x = (i) => pad + i * slot;
+  const y = (v) => H - 2 - (v / max) * (H - pad - 2);
   const read = (i) => (rows[i] ? `${fmtYm(rows[i].ym)}: ${rows[i].count === null ? "no data" : rows[i].count}` : "");
-  const slot = (W - 2 * pad) / Math.max(1, rows.length - 1);
-  if (!rows.length) return null;
+  const path = (run) => run.map((i, k) => `${k ? "L" : "M"}${x(i)},${y(values[i])}`).join(" ");
+  const area = (run) => `${path(run)} L${x(run[run.length - 1])},${H} L${x(run[0])},${H} Z`;
   return (
-    <div className="co-spark">
-      <svg
-        viewBox={`0 0 ${W} ${H}`}
-        role="img"
-        tabIndex={0}
-        aria-label={`Counted failures by month, ${fmtYm(rows[0].ym)} to ${fmtYm(rows[rows.length - 1].ym)}. Use the arrow keys to read a month.`}
-        onKeyDown={(e) => {
-          if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-          e.preventDefault();
-          const from = peek === null ? rows.length - 1 : peek;
-          setPeek(Math.max(0, Math.min(rows.length - 1, from + (e.key === "ArrowLeft" ? -1 : 1))));
-        }}
-        onBlur={() => setPeek(null)}
-      >
-        {runs.map((run, k) =>
-          run.length > 1 ? (
-            <polyline
-              key={k}
-              points={run.map((p) => `${x(p.i)},${y(p.v)}`).join(" ")}
-              fill="none"
-              stroke={PRIOR}
-              strokeWidth={2}
-              strokeLinejoin="round"
-              strokeLinecap="round"
-              vectorEffect="non-scaling-stroke"
+    <div className="co-spark" ref={ref}>
+      {W > 0 && (
+        <svg
+          width={W}
+          height={H}
+          viewBox={`0 0 ${W} ${H}`}
+          role="img"
+          tabIndex={0}
+          aria-label={`Counted failures by month, ${fmtYm(rows[0].ym)} to ${fmtYm(rows[rows.length - 1].ym)}. Use the arrow keys to read a month.`}
+          onKeyDown={(e) => {
+            if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+            e.preventDefault();
+            const from = peek === null ? rows.length - 1 : peek;
+            setPeek(Math.max(0, Math.min(rows.length - 1, from + (e.key === "ArrowLeft" ? -1 : 1))));
+          }}
+          onBlur={() => setPeek(null)}
+        >
+          {plan.gaps.map(([a, b]) => (
+            <rect key={`g${a}`} x={x(a) - slot / 2} y={0} width={(b - a + 1) * slot} height={H} fill={WASH} />
+          ))}
+          {plan.runs.map((run) => (
+            <g key={`r${run[0]}`}>
+              <path d={area(run)} fill={BRAND} fillOpacity={0.1} stroke="none" />
+              <path d={path(run)} fill="none" stroke={BRAND} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+            </g>
+          ))}
+          {peek !== null && values[peek] !== null && values[peek] !== undefined && (
+            <circle cx={x(peek)} cy={y(values[peek])} r={3} fill={SURFACE} stroke={BRAND} strokeWidth={1.5} />
+          )}
+          {plan.latest >= 0 && <circle cx={x(plan.latest)} cy={y(values[plan.latest])} r={4} fill={BRAND} stroke={SURFACE} strokeWidth={1.5} />}
+          {rows.map((r, i) => (
+            <rect
+              key={r.ym}
+              x={x(i) - slot / 2}
+              y={0}
+              width={slot}
+              height={H}
+              fill="transparent"
+              onMouseEnter={() => setPeek(i)}
+              onMouseLeave={() => setPeek(null)}
             />
-          ) : (
-            <circle key={k} cx={x(run[0].i)} cy={y(run[0].v)} r={1.8} fill={PRIOR} />
-          ),
-        )}
-        {peek !== null && rows[peek]?.count !== null && (
-          <circle cx={x(peek)} cy={y(rows[peek].count)} r={3} fill={SURFACE} stroke={PRIOR} strokeWidth={1.5} />
-        )}
-        {latest >= 0 && (
-          <circle cx={x(latest)} cy={y(rows[latest].count)} r={3.2} fill={BRAND} stroke={SURFACE} strokeWidth={1.5} />
-        )}
-        {rows.map((r, i) => (
-          <rect
-            key={r.ym}
-            x={x(i) - slot / 2}
-            y={0}
-            width={slot}
-            height={H}
-            fill="transparent"
-            onMouseEnter={() => setPeek(i)}
-            onMouseLeave={() => setPeek(null)}
-          />
-        ))}
-      </svg>
+          ))}
+        </svg>
+      )}
       <div className="co-spark-read" aria-live="polite">
-        {peek !== null ? read(peek) : latest >= 0 ? `${read(latest)} · 24 months` : "24 months"}
+        {peek !== null ? read(peek) : plan.latest >= 0 ? `${read(plan.latest)} · last ${rows.length} months` : `last ${rows.length} months`}
       </div>
     </div>
   );
@@ -634,10 +572,33 @@ function AttemptedOrders({ logged, label }) {
     [records, feed.days, loadedSpan],
   );
   const shown = weeks.reduce((t, w) => t + w.n, 0);
-  // The no-data days are under every week's column (WeekTick); a week with nothing to
-  // draw is also a hairline, so it can't read as an empty week.
-  const bars = React.useMemo(() => weeks.map((w) => ({ ...w, gap: !w.n && w.noData ? "no data" : null })), [weeks]);
+  // A week with no feed data and nothing hand-logged has no count to draw: its slot is
+  // shaded, never a zero. A week only partly covered is faded; the hover says which days.
+  // The chart draws __n; the hover reads n, the count the table lists.
+  const bars = React.useMemo(
+    () =>
+      weeks.map((w) => ({
+        ...w,
+        __n: !w.n && w.noData ? null : w.n,
+        __partial: w.n > 0 && (w.noData > 0 || w.start !== w.key || w.end !== addDays(w.key, 6)),
+      })),
+    [weeks],
+  );
   const allFailed = feed.status === "error" || (feed.status === "ready" && feed.days.size > 0 && feed.failed === feed.days.size);
+  // Which weeks are faded, and why, named as shadedReasons names months: "a day with no
+  // feed data (Aug 31, Sep 7), partly loaded (Aug 24), to date (Oct 5)".
+  const fadedNote = shadedReasons(bars, {
+    why: (w) =>
+      !w.__partial
+        ? null
+        : w.noData > 0
+          ? "days with no feed data"
+          : w.start !== w.key
+            ? "partly loaded"
+            : "to date",
+  })
+    .map((x) => `${x.why} (${x.keys.map((k) => fmtDate(k)).join(", ")})`)
+    .join(", ");
 
   // The drawer counts a week's orders from these records — published once they're in,
   // taken back when the Overview closes (the Attempts tab publishes its own).
@@ -651,22 +612,24 @@ function AttemptedOrders({ logged, label }) {
   }, [feed.status, records, allFailed, publishAttempts]);
   React.useEffect(() => () => publishAttempts(null), [publishAttempts]);
 
-  const SERIES = [{ id: "n", label: "Attempted orders", color: catColor(ATTEMPTS) }];
+  const SERIES = [{ id: "__n", tip: "n", label: "Attempted orders", color: catColor(ATTEMPTS) }];
   return (
     <ChartCard
       className="co-attempts"
       title="Attempted orders · dispatch feed"
-      count={loadedSpan ? `${shown.toLocaleString()} orders · ${monthsDays(loadedSpan)}` : null}
+      subtitle={loadedSpan ? `${shown.toLocaleString()} orders · ${monthsDays(loadedSpan)}` : null}
       table={{
         columns: [
-          { key: "week", label: "Week of" },
+          { key: "week", label: "Week of", value: (row) => row.__csvWeek },
           { key: "n", label: "Orders", num: true },
           { key: "noData", label: "Days no data", num: true },
           { key: "unassigned", label: "Unassigned", num: true },
           { key: "source", label: "Source" },
         ],
         rows: weeks.map((w) => ({
-          week: `${w.start} – ${w.end}`,
+          week: fmtDateRange(w.start, w.end),
+          // The CSV keeps its ISO span, with the year; the screen reads "Aug 25–30".
+          __csvWeek: `${w.start} – ${w.end}`,
           n: w.n,
           noData: w.noData,
           unassigned: w.unassigned,
@@ -677,10 +640,14 @@ function AttemptedOrders({ logged, label }) {
       note={
         <>
           {logged.value === null ? (
-            <span>Attempts (logged) on the Scorecard: {logged.reason} — none in {label}.</span>
+            <span title={`Attempts (logged) on the Scorecard: ${logged.reason}`}>Logged attempts on the Scorecard: none in {label}</span>
           ) : (
-            <span>
-              Attempts (logged) on the Scorecard, {label}:{" "}
+            <span
+              title={`Attempts (logged) on the Scorecard, ${label}: a separate count, never added to failures${
+                logged.from ? `, logged from ${fmtYm(logged.from)}` : ""
+              }`}
+            >
+              Logged on the Scorecard:{" "}
               <button
                 type="button"
                 className="kpi-note-n"
@@ -688,11 +655,11 @@ function AttemptedOrders({ logged, label }) {
                 disabled={!logged.drill}
               >
                 {logged.value}
-              </button>{" "}
-              — a separate count, never added to failures{logged.from ? `, logged from ${fmtYm(logged.from)}` : ""}.
+              </button>
             </span>
           )}
-          {weeks.some((w) => w.noData) && <span>Under a week: its days with no feed data — not zero</span>}
+          {bars.some((w) => w.__n === null) && <span>Shaded: no feed data</span>}
+          {fadedNote && <span title="The hover says which days">Faded: {fadedNote}</span>}
           {feed.status === "loading" && <span>Loading the dispatch feed…</span>}
           {allFailed && <span className="co-error">Couldn&apos;t reach the dispatch feed — only hand-logged attempts are counted.</span>}
           {!allFailed && feed.failed > 0 && (
@@ -712,12 +679,11 @@ function AttemptedOrders({ logged, label }) {
       {weeks.length ? (
         <StackedColumns
           data={bars}
-          xKey="label"
+          xKey="key"
+          grain="week"
           keyOf={(w) => w.key}
           series={SERIES}
-          gapKey="gap"
-          onMark={(w) => openDrill(weekDrill(w))}
-          xAxis={{ interval: 0, height: 30, tick: <WeekTick weeks={weeks} /> }}
+          onMark={(w) => openDrill(weekDrill(weeks.find((x) => x.key === w.key) || w))}
         />
       ) : (
         <div className="empty-state">{feed.status === "loading" ? "Loading…" : "No feed days loaded."}</div>
@@ -726,31 +692,5 @@ function AttemptedOrders({ logged, label }) {
   );
 }
 
-// A week's tick: its Monday, and under it how many of its days had no feed data
-// ("2d no data") — a part-loaded week must not read as a full count. Weeks too narrow
-// for every label show every other one, the latest always; the no-data line stays,
-// shortened to "2d" when there is no room for the words.
-function WeekTick({ x, y, payload, width, weeks }) {
-  const i = payload?.index ?? weeks.findIndex((w) => w.label === payload?.value);
-  const w = weeks[i];
-  if (!w) return null;
-  const slot = width && weeks.length ? width / weeks.length : 60;
-  const showLabel = slot >= 34 || i % 2 === (weeks.length - 1) % 2;
-  return (
-    <g transform={`translate(${x},${y})`}>
-      {showLabel && (
-        <text y={9} textAnchor="middle" {...axisTick}>
-          {w.label}
-        </text>
-      )}
-      {w.noData > 0 && (
-        <text y={21} textAnchor="middle" {...axisTick} fontSize={9}>
-          {slot >= 54 ? `${w.noData}d no data` : `${w.noData}d`}
-        </text>
-      )}
-    </g>
-  );
-}
-
 const fmtLong = (ymd) => `${MONTH_ABBR[Number(ymd.slice(5, 7)) - 1]} ${Number(ymd.slice(8, 10))}, ${ymd.slice(0, 4)}`;
-const monthsDays = ({ start, end }) => `${fmtLong(start)} – ${fmtLong(end)}`;
+const monthsDays = ({ start, end }) => fmtDateRange(start, end);

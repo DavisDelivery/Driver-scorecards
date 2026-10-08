@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { getReviews } from "../data/reviews.js";
 import {
   getDrivers,
@@ -16,6 +16,11 @@ import {
 import { getBrandLogo, setBrandLogo } from "../reports/brandLogo.js";
 import { PERIODS, periodWindow, periodLabel, toYMD, etDay } from "../data/period.js";
 import { clickStatus, clickLabel, rollupClicks, fmtRate } from "../data/reviewClicks.js";
+import StatTile, { TileStrip } from "./kit/StatTile.jsx";
+import BarList from "./kit/charts/BarList.jsx";
+import Icon from "./kit/Icon.jsx";
+import CardMenu from "./kit/CardMenu.jsx";
+import { PRESET_TEXT, useActiveInView } from "./kit/PeriodBar.jsx";
 
 // Per-browser cache of PRO → resolved driver so we don't re-hit NuVizz each load.
 const ATTR_CACHE = "dds_review_pro_driver";
@@ -152,6 +157,10 @@ const matchesRating = (r, f) => {
 const ratingFilterLabel = (f) =>
   (RATING_FILTERS.find(([v]) => v === f) || [])[1] || "All stars";
 
+// "Clicked through" is as far as we can see: the whole of it, in that tile's hover.
+const CLICK_EXPLAINER =
+  "It means the customer took the Google link from the tracking portal. Whether they then signed in and posted happens on Google, and Google tells us nothing — so a click is evidence they went, not proof a review exists. Reviews submitted before click tracking existed carry no click record either way and are left out of the rate.";
+
 export default function Reviews({ incidents = [] }) {
   const [allReviews, setAllReviews] = useState([]);
   // Whether the source could read its Google-click store on this load. true / false / null
@@ -198,10 +207,14 @@ export default function Reviews({ incidents = [] }) {
   const [printing, setPrinting] = useState(false);
   // The logo the printed report puts in its banner, kept in this browser.
   const [logo, setLogo] = useState(() => getBrandLogo());
+  // The hidden file input behind the More menu's "Add logo".
+  const logoInput = useRef(null);
   // Period the whole page is scoped to — the same pills every other tab uses, so a
   // range means the same thing here as it does there. Defaults wide (12M) because
   // reviews are sparse and a 30-day default would look like most of them vanished.
   const [periodSel, setPeriodSel] = useState("12");
+  // On a phone the presets scroll sideways: the picked one is kept in view.
+  const periodRow = useActiveInView(periodSel);
   const [rangeFrom, setRangeFrom] = useState("");
   const [rangeTo, setRangeTo] = useState("");
 
@@ -611,11 +624,10 @@ export default function Reviews({ incidents = [] }) {
         padding: "8px 10px",
         cursor: "pointer",
         userSelect: "none",
-        fontSize: "11px",
-        textTransform: "uppercase",
-        letterSpacing: ".04em",
-        color: "#5a6779",
-        borderBottom: "2px solid #e6eaef",
+        fontSize: "12px",
+        fontWeight: 500,
+        color: "#6b7280",
+        borderBottom: "1px solid #eef1f5",
         whiteSpace: "nowrap",
       }}
     >
@@ -636,53 +648,30 @@ export default function Reviews({ incidents = [] }) {
   return (
     <div className="fade-in" style={{ display: "flex", flexDirection: "column", gap: "18px", maxWidth: "100%" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px", flexWrap: "wrap" }}>
-        <div>
-          <h2 style={{ fontSize: "20px", color: "#0a2744", margin: 0 }}>Customer Reviews</h2>
-          <p style={{ color: "#97a3b3", fontSize: "13px", marginTop: "4px" }}>
-            Delivery ratings from the public tracking portal, attributed to the delivering driver by PRO.
-          </p>
+        {/* The shared page header (an overline, then the title with its sub-line), as on
+            every other page. */}
+        <div style={{ minWidth: 0 }}>
+          <div className="page-title">Customer feedback</div>
+          <h1 className="page-heading" style={{ marginBottom: 0 }}>
+            Reviews
+            <span className="meta">
+              <span className="meta-sep">· </span>delivery ratings from the tracking portal, attributed to the driver by PRO
+            </span>
+          </h1>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+        <div className="rv-actions">
           {resolving > 0 && (
             <span style={{ fontSize: "12px", color: "#97a3b3" }}>
               Attributing {resolving} PRO{resolving === 1 ? "" : "s"}…
             </span>
           )}
-          <button
-            className="btn ghost sm"
-            onClick={() => resolveAttributions(allReviews, drivers, true)}
-            disabled={resolving > 0 || loading}
-            title="Re-check every unattributed review's driver from NuVizz"
-          >
-            Re-attribute
-          </button>
-          <label
-            className="btn ghost sm"
-            title="The logo printed in the report banner (PNG or JPG). Saved in this browser."
-            style={{ display: "inline-flex", alignItems: "center", gap: "6px", cursor: "pointer" }}
-          >
-            {logo ? (
-              <img
-                src={logo}
-                alt="Report logo"
-                style={{ height: "16px", maxWidth: "60px", objectFit: "contain" }}
-              />
-            ) : (
-              "🖼️"
-            )}
-            {logo ? "Change logo" : "Add logo"}
-            <input type="file" accept="image/*" onChange={onPickLogo} style={{ display: "none" }} />
-          </label>
-          {logo && (
-            <button className="btn ghost sm" onClick={removeLogo} title="Print the default D mark instead">
-              Remove logo
-            </button>
-          )}
+          {/* One primary action — Print — with the driver it prints for; the rest wait
+              behind More, each named in three words or fewer. */}
           <select
             value={printScope}
             onChange={(e) => setPrintScope(e.target.value)}
             aria-label="Driver to print reviews for"
-            style={{ maxWidth: 210 }}
+            className="rv-scope"
           >
             <option value="">All drivers</option>
             {sortedDrivers.map((d) => (
@@ -695,32 +684,56 @@ export default function Reviews({ incidents = [] }) {
             className="btn primary sm"
             onClick={printReviews}
             disabled={printing || loading || !reviews.length}
-            title="PDF of these reviews, in the order shown"
+            title={`PDF of these reviews (${ratingFilterLabel(ratingFilter)}), in the order shown`}
           >
-            {printing
-              ? "Building PDF…"
-              : `📄 Print reviews (${ratingFilterLabel(ratingFilter)})`}
+            <Icon name="printer" />
+            {printing ? "Building PDF…" : "Print"}
           </button>
-          <button
-            className="btn ghost sm"
-            onClick={printAllDriverReviews}
-            disabled={printing || loading || !reviews.length}
-            title="One PDF with every driver's reviews — each driver starts on a new page"
-          >
-            📄 Print all by driver ({ratingFilterLabel(ratingFilter)})
-          </button>
+          <CardMenu
+            text="More"
+            label="More actions"
+            items={[
+              {
+                id: "by-driver",
+                label: "Print by driver",
+                icon: "printer",
+                disabled: printing || loading || !reviews.length,
+                title: `One PDF with every driver's reviews (${ratingFilterLabel(ratingFilter)}) — each driver starts on a new page`,
+                onSelect: printAllDriverReviews,
+              },
+              {
+                id: "reattribute",
+                label: "Re-attribute",
+                icon: "refresh-cw",
+                disabled: resolving > 0 || loading,
+                title: "Re-check every unattributed review's driver from NuVizz",
+                onSelect: () => resolveAttributions(allReviews, drivers, true),
+              },
+              {
+                id: "logo",
+                label: logo ? "Change logo" : "Add logo",
+                icon: "image-plus",
+                title: "The logo printed in the report banner (PNG or JPG). Saved in this browser.",
+                onSelect: () => logoInput.current?.click(),
+              },
+              ...(logo
+                ? [{ id: "logo-off", label: "Remove logo", icon: "x", title: "Print the default D mark instead", onSelect: removeLogo }]
+                : []),
+            ]}
+          />
+          <input ref={logoInput} type="file" accept="image/*" onChange={onPickLogo} style={{ display: "none" }} />
         </div>
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "10px", flexWrap: "wrap", minWidth: 0 }}>
-        <div className="month-picker" style={{ margin: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-start", gap: "10px", flexWrap: "wrap", minWidth: 0 }}>
+        <div className="month-picker" style={{ margin: 0 }} ref={periodRow}>
           {PERIODS.map(([val, label]) => (
             <button
               key={val}
               className={`month-btn ${periodSel === val ? "active" : ""}`}
               onClick={() => setPeriodSel(val)}
             >
-              {label}
+              {PRESET_TEXT[val] || label}
             </button>
           ))}
         </div>
@@ -732,7 +745,7 @@ export default function Reviews({ incidents = [] }) {
               max={toYMD(new Date())}
               onChange={(e) => setRangeFrom(e.target.value)}
             />
-            <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-2)" }}>to</span>
+            <span style={{ fontSize: 12, color: "var(--text-2)" }}>to</span>
             <input
               type="date"
               value={rangeTo}
@@ -749,135 +762,137 @@ export default function Reviews({ incidents = [] }) {
         </div>
       )}
 
-      {/* KPI cards */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: "12px" }}>
-        <div style={card}>
-          <div style={{ fontSize: "11px", color: "#97a3b3", textTransform: "uppercase", letterSpacing: ".04em" }}>Total Reviews</div>
-          <div style={{ fontSize: "28px", fontWeight: 800, color: "#0a2744" }}>{kpis.n}</div>
-        </div>
-        <div style={card}>
-          <div style={{ fontSize: "11px", color: "#97a3b3", textTransform: "uppercase", letterSpacing: ".04em" }}>Avg Rating</div>
-          <div style={{ fontSize: "28px", fontWeight: 800, color: ratingColor(kpis.avg) }}>
-            {kpis.n ? kpis.avg.toFixed(2) : "—"}
-          </div>
-          <Stars n={kpis.avg} />
-        </div>
+      {/* Headline tiles. Zero and "—" are ink, never red: an empty period is not an
+          alarm — and it keeps its total alone, not a row of zeros and dashes over the
+          empty card below. */}
+      <TileStrip
+        className="card-strip"
+        footer={
+          /* What a click can and can't tell, as one quiet line inside the tile card (the
+             whole of it in the Clicked through tile's hover). Only a click store that
+             failed to read is a failure, and says so in red; one that didn't report is
+             unknown, said plainly. */
+          <>
+            <span>
+              Clicked through means the customer took the Google link — evidence they went, not proof a
+              review was posted.
+            </span>
+            {clicksReadable !== true && (
+              <span className={clicksReadable === false ? "rv-note-failed" : undefined}>
+                {" "}
+                {clicksReadable === false
+                  ? "The click store could not be read on this load, so no row below can show a click — not the same as nobody clicking."
+                  : "The review source didn't report whether its click store was readable, so clicks are shown as unconfirmed, not absent."}
+              </span>
+            )}
+          </>
+        }
+      >
+        <StatTile label="Total reviews" value={kpis.n} />
+        {kpis.n > 0 && (
+          <StatTile
+            label="Avg rating"
+            value={kpis.n ? kpis.avg.toFixed(2) : "—"}
+            sub={kpis.n ? <Stars n={kpis.avg} /> : null}
+          />
+        )}
         {/* Shown vs clicked, kept apart on purpose. "Shown" is how many customers were
             handed the Google button — it follows from the rating alone and nobody has done
             anything yet. "Clicked through" is the one we actually observed. */}
-        <div style={card}>
-          <div style={{ fontSize: "11px", color: "#97a3b3", textTransform: "uppercase", letterSpacing: ".04em" }}>Shown Google link</div>
-          <div style={{ fontSize: "28px", fontWeight: 800, color: "#5a6779" }}>{kpis.clicks.shown}</div>
-          <div style={{ fontSize: "11px", color: "#97a3b3" }}>4★+ · offered, not taken yet</div>
-        </div>
-        <div style={card}>
-          <div style={{ fontSize: "11px", color: "#97a3b3", textTransform: "uppercase", letterSpacing: ".04em" }}>Clicked through</div>
-          {/* A green 0 during a click-store outage would be the same false confidence this
-              screen exists to remove — every tracked row looks un-clicked when the store is
-              down. Withhold the count, do not print a zero. */}
-          <div style={{ fontSize: "28px", fontWeight: 800, color: kpis.clicks.answerable ? GREEN : "#97a3b3" }}>
-            {kpis.clicks.answerable ? kpis.clicks.clicked : "—"}
-          </div>
-          <div style={{ fontSize: "11px", color: "#97a3b3" }}>
-            {!kpis.clicks.answerable
-              ? "click store unreadable — cannot say"
-              : kpis.clicks.untracked > 0
-                ? `${kpis.clicks.untracked} older review${kpis.clicks.untracked === 1 ? "" : "s"} predate tracking`
-                : "observed at the redirect"}
-          </div>
-        </div>
-        <div style={card}>
-          <div style={{ fontSize: "11px", color: "#97a3b3", textTransform: "uppercase", letterSpacing: ".04em" }}>Click-through rate</div>
-          <div style={{ fontSize: "28px", fontWeight: 800, color: kpis.clicks.rate == null ? "#97a3b3" : GREEN }}>
-            {fmtRate(kpis.clicks.rate)}
-          </div>
-          <div style={{ fontSize: "11px", color: "#97a3b3" }}>
-            {kpis.clicks.rate == null
-              ? "not enough tracked reviews"
-              : `${kpis.clicks.clicked} of ${kpis.clicks.trackable} tracked`}
-          </div>
-        </div>
-        <div style={card}>
-          <div style={{ fontSize: "11px", color: "#97a3b3", textTransform: "uppercase", letterSpacing: ".04em" }}>≤3★</div>
-          <div style={{ fontSize: "28px", fontWeight: 800, color: RED }}>{kpis.internal}</div>
-        </div>
-      </div>
-
-      {/* The ceiling of what any of this can know, stated where the numbers are read. */}
-      <div
-        style={{
-          ...card,
-          borderLeft: `4px solid ${clicksReadable === true ? "#e8a838" : RED}`,
-          fontSize: "12px",
-          color: "#5a6779",
-          lineHeight: 1.5,
-        }}
-      >
-        <strong style={{ color: "#0a2744" }}>"Clicked through" is as far as we can see.</strong>{" "}
-        It means the customer took the Google link from the tracking portal. Whether they then
-        signed in and posted happens on Google, and Google tells us nothing — so a click is
-        evidence they went, not proof a review exists. Reviews submitted before click tracking
-        existed carry no click record either way and are left out of the rate.
-        {clicksReadable !== true && (
-          <div style={{ marginTop: "6px", color: RED, fontWeight: 600 }}>
-            {clicksReadable === false
-              ? "The click store could not be read on this load, so no row below can show a click — this is not the same as nobody clicking."
-              : "The review source did not report whether its click store was readable, so clicks below are shown as unconfirmed rather than as absent."}
-          </div>
+        {kpis.n > 0 && (
+          <StatTile label="Shown Google link" value={kpis.clicks.shown} sub="4★+ · offered, not taken yet" />
         )}
-      </div>
+        {/* A 0 during a click-store outage would be the same false confidence this screen
+            exists to remove — every tracked row looks un-clicked when the store is down.
+            Withhold the count, do not print a zero. */}
+        {kpis.n > 0 && (
+          <StatTile
+            label="Clicked through"
+            title={CLICK_EXPLAINER}
+            value={kpis.clicks.answerable ? kpis.clicks.clicked : "—"}
+            sub={
+              !kpis.clicks.answerable
+                ? "click store unreadable — cannot say"
+                : kpis.clicks.untracked > 0
+                  ? `${kpis.clicks.untracked} older review${kpis.clicks.untracked === 1 ? "" : "s"} predate tracking`
+                  : "observed at the redirect"
+            }
+          />
+        )}
+        {kpis.n > 0 && (
+          <StatTile
+            label="Click-through rate"
+            value={fmtRate(kpis.clicks.rate)}
+            kind="number"
+            sub={kpis.clicks.rate == null ? "not enough tracked reviews" : `${kpis.clicks.clicked} of ${kpis.clicks.trackable} tracked`}
+          />
+        )}
+        {kpis.n > 0 && (
+          <StatTile label="3★ or lower" value={kpis.internal} />
+        )}
+      </TileStrip>
 
+      {/* A period with no reviews is one empty card, not three ("No ratings", "No reviews
+          yet" twice). */}
+      {kpis.n === 0 ? (
+        <div style={card}>
+          <div className="empty-state" style={{ padding: "16px 0" }}>
+            No reviews in this period.
+          </div>
+        </div>
+      ) : (
+      <>
       {/* Rating distribution */}
       <div style={card}>
-        <div style={{ fontSize: "12px", fontWeight: 700, color: "#0a2744", marginBottom: "10px" }}>Rating Distribution</div>
-        {[5, 4, 3, 2, 1].map((star) => {
-          const c = kpis.dist[star - 1];
-          const pct = kpis.n ? Math.round((c / kpis.n) * 100) : 0;
-          return (
-            <div key={star} style={{ display: "flex", alignItems: "center", gap: "10px", margin: "5px 0" }}>
-              <div style={{ width: "44px", fontSize: "12px", color: "#5a6779" }}>{star}★</div>
-              <div style={{ flex: 1, background: "#eef1f5", borderRadius: "6px", height: "14px", overflow: "hidden" }}>
-                <div style={{ width: `${pct}%`, height: "100%", background: star >= 4 ? GREEN : star === 3 ? AMBER : RED }} />
-              </div>
-              <div style={{ width: "70px", textAlign: "right", fontSize: "12px", color: "#5a6779" }}>
-                {c} · {pct}%
-              </div>
-            </div>
-          );
-        })}
+        <div style={{ fontSize: "14px", fontWeight: 600, color: "#111827", marginBottom: "12px" }}>Rating distribution</div>
+        {kpis.n === 0 ? (
+          <div className="empty-state" style={{ padding: "16px 0" }}>No ratings in this period.</div>
+        ) : (
+          <BarList
+            rows={[5, 4, 3, 2, 1].map((star) => ({ key: String(star), label: `${star}★`, value: kpis.dist[star - 1] }))}
+            order="given"
+            limit={0}
+            share
+            shareOf={kpis.n}
+            colorOf={(r) => (Number(r.key) >= 4 ? GREEN : Number(r.key) === 3 ? AMBER : RED)}
+            ariaLabel="Rating distribution"
+          />
+        )}
       </div>
 
       {/* Per-driver scorecard */}
       <div style={{ ...card, padding: 0, overflow: "hidden" }}>
-        <div style={{ padding: "14px 18px", fontSize: "13px", fontWeight: 700, color: "#0a2744", borderBottom: "1px solid #eef1f5" }}>
-          By Driver
+        <div className="card-header">
+          <div className="card-title">By driver</div>
         </div>
         <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+          {/* On a phone each driver is a card (.cards-on-phone): nothing is cut off. */}
+          <table className="rv-drivers cards-on-phone" style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
             <thead>
               <tr>
                 <Th k="driver">Driver</Th>
                 <Th k="count" right>Reviews</Th>
                 <Th k="avg" right>Avg</Th>
                 <Th k="low" right>≤3★</Th>
-                <Th k="clicked" right>→ Google</Th>
-                <Th k="last" right>Last Review</Th>
+                <Th k="clicked" right>Google</Th>
+                <Th k="last" right>Last review</Th>
               </tr>
             </thead>
             <tbody>
               {sortedDrivers.map((d) => (
                 <tr key={d.driver} style={{ borderBottom: "1px solid #f1f4f7" }}>
-                  <td style={{ padding: "9px 10px", fontWeight: 600, color: d.driver.startsWith("Unattributed") ? "#97a3b3" : "#0a2744" }}>
-                    {d.driver}
+                  <td className="card-primary" style={{ padding: "9px 10px", fontWeight: 600, color: d.driver.startsWith("Unattributed") ? "#97a3b3" : "#0a2744" }}>
+                    <span>{d.driver}</span>
                   </td>
-                  <td style={{ padding: "9px 10px", textAlign: "right" }}>{d.count}</td>
-                  <td style={{ padding: "9px 10px", textAlign: "right", fontWeight: 700, color: ratingColor(d.avg) }}>
+                  <td data-label="Reviews" style={{ padding: "9px 10px", textAlign: "right" }}>{d.count}</td>
+                  <td data-label="Avg" style={{ padding: "9px 10px", textAlign: "right", fontWeight: 700, color: ratingColor(d.avg) }}>
                     {d.avg.toFixed(2)} <Stars n={d.avg} />
                   </td>
-                  <td style={{ padding: "9px 10px", textAlign: "right", color: d.low ? RED : "#5a6779" }}>{d.low}</td>
+                  <td data-label="≤3★" style={{ padding: "9px 10px", textAlign: "right", color: d.low ? RED : "#5a6779" }}>{d.low}</td>
                   {/* Clicked out of trackable, never out of total — the denominator is the
                       reviews that could show a click at all. */}
                   <td
+                    data-label="Google"
                     style={{ padding: "9px 10px", textAlign: "right", color: d.clicked ? GREEN : "#97a3b3", whiteSpace: "nowrap" }}
                     title={
                       !d.clicksAnswerable
@@ -892,7 +907,7 @@ export default function Reviews({ incidents = [] }) {
                       <span style={{ color: "#97a3b3", fontWeight: 400 }}> · {fmtRate(d.clickRate)}</span>
                     )}
                   </td>
-                  <td style={{ padding: "9px 10px", textAlign: "right", color: "#5a6779" }}>{fmtDate(d.last)}</td>
+                  <td data-label="Last review" style={{ padding: "9px 10px", textAlign: "right", color: "#5a6779" }}>{fmtDate(d.last)}</td>
                 </tr>
               ))}
               {!sortedDrivers.length && (
@@ -908,9 +923,9 @@ export default function Reviews({ incidents = [] }) {
       {/* Recent reviews */}
       <div style={{ ...card, padding: 0, overflow: "hidden" }}>
         <div style={{ padding: "14px 18px", borderBottom: "1px solid #eef1f5", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
-          <span style={{ fontSize: "13px", fontWeight: 700, color: "#0a2744" }}>
-            Recent Reviews
-            <span style={{ fontWeight: 400, color: "#97a3b3" }}>
+          <span className="card-title">
+            Recent reviews
+            <span style={{ fontWeight: 400, fontSize: "12px", color: "var(--text-2)" }}>
               {" "}· showing {recent.length} of {sortedReviews.length}
               {ratingFilter !== "all"
                 ? ` ${ratingFilterLabel(ratingFilter)} · ${reviews.length} in this period`
@@ -1062,6 +1077,8 @@ export default function Reviews({ incidents = [] }) {
           )}
         </div>
       </div>
+      </>
+      )}
 
       {/* Hidden reviews. Nothing is deleted — a suppressed review keeps its reason and
           comes back with one click, because "this one doesn't count" is a judgement

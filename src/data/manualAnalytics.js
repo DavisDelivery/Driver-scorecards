@@ -22,6 +22,7 @@ import { peerSet, rankOf } from "./people.js";
 import { matchDriver } from "./driverMatch.js";
 
 export const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+export const WEEKDAY_FULL = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 // The ET day a record is filed under.
@@ -185,6 +186,8 @@ export function ordinal(n) {
 
 // The fleet's top driver by name, as the leader tile has always shown it: deactivated
 // drivers and rows with no driver at all left out, first to the top count wins.
+// `tied` names everyone on the top count (the winner first), so a tile can say "2
+// drivers tied" rather than crown whoever happened to come first.
 export function topDriver(rows, { hidden = new Set(), nameOf = (r) => r.driver_name || "" } = {}) {
   const m = new Map();
   for (const r of rows || []) {
@@ -195,6 +198,7 @@ export function topDriver(rows, { hidden = new Set(), nameOf = (r) => r.driver_n
   }
   let best = null;
   for (const [name, count] of m) if (!best || count > best.count) best = { name, count };
+  if (best) best.tied = [...m].filter(([, c]) => c === best.count).map(([name]) => name);
   return best;
 }
 
@@ -709,6 +713,65 @@ export function historyOnlyMonths(blend, category, win) {
     if (n > 0) out.push({ ym, n });
   }
   return out;
+}
+
+// The months of a window this tab has no number for, by why — from the company's cells
+// (sparkSource, fault filter off), never a driver's:
+//   "not_captured"  the category wasn't being captured: before the entry tabs began
+//                   (MANUAL_SINCE, June 2026) in a month no spreadsheet held it for
+//   "no_data"       nothing on file at all (Dec 2025: no spreadsheet month on file)
+// A month with live entries or history is never here, and neither is one since the
+// tabs began: nothing logged then is a real zero. Map(ym → why).
+export function uncapturedMonths(blend, category, win, { since = MANUAL_SINCE } = {}) {
+  const out = new Map();
+  if (!blend || !win?.start || !win?.end) return out;
+  for (let ym = win.start.slice(0, 7); ym <= win.end.slice(0, 7) && ym < since; ym = shiftYm(ym, 1)) {
+    const src = sparkSource(blend, ym, category, { since });
+    if (src === "not_tracked") out.set(ym, "not_captured");
+    else if (src === "none") out.set(ym, "no_data");
+  }
+  return out;
+}
+
+// What one trend slot draws and what its hover reads, beside the count its table row
+// lists (`b.count`, which nothing here changes):
+//   a count                  drawn and read as itself
+//   no feed data at all      (bucketGap empty) drawn as nothing, read as its count or "—"
+//   only imported history    never a filled bar — history is a monthly total, not
+//                            entries this tab lists or totals: `draw` is nothing, so the
+//                            filled bars still add up to the tab's total, and `hist` is
+//                            history's total, drawn as an OUTLINED bar of its own (a
+//                            different mark from a count, named in the note) and read
+//                            in the hover beside the row's 0
+//   not captured / no data   (every month of the slot in `uncaptured`, nothing logged)
+//                            drawn as nothing (shaded), read as its 0, with why
+// → { draw, tip, why, hist? }: why is "history only" | "not captured" | "no data on
+// file" | null (a feed gap's own words come from bucketGap); hist only on a history slot.
+export const UNCAPTURED_SHORT = { not_captured: "not captured", no_data: "no data on file" };
+export function trendSlot(b, { hist = 0, uncaptured = null } = {}) {
+  const gap = bucketGap(b);
+  if (gap?.empty) return { draw: b.count || null, tip: b.count || null, why: null };
+  if (hist > 0 && !b.count) return { draw: null, tip: b.count, why: "history only", hist };
+  const unc = !b.count && uncaptured?.size ? slotUncaptured(b, uncaptured) : null;
+  if (unc) return { draw: null, tip: b.count, why: UNCAPTURED_SHORT[unc] };
+  return { draw: b.count, tip: b.count, why: null };
+}
+
+// Why a slot (a day, week or month) holds no captured number: every month its span
+// touches is in `uncaptured` (uncapturedMonths). "not_captured" wins over "no_data"
+// when they mix. null when any month of it was captured.
+export function slotUncaptured(b, uncaptured) {
+  if (!uncaptured?.size || !b) return null;
+  const from = String(b.start || b.key || "").slice(0, 7);
+  const to = String(b.end || b.key || "").slice(0, 7);
+  if (!/^\d{4}-\d{2}$/.test(from) || !/^\d{4}-\d{2}$/.test(to)) return null;
+  let why = null;
+  for (let ym = from; ym <= to; ym = shiftYm(ym, 1)) {
+    const w = uncaptured.get(ym);
+    if (!w) return null;
+    if (!why || w === "not_captured") why = w;
+  }
+  return why;
 }
 
 // A live-only monthly count of rows, for what the blend doesn't hold (Unable to Track,

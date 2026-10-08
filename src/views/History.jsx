@@ -178,10 +178,10 @@ To put a report's counts back afterwards, open it in Reports and press Re-sync t
   if (rows.length > 0) {
     return (
       <div>
-        <div className="page-title">Import History · Preview</div>
+        <div className="page-title">History import · preview</div>
         <h1 className="page-heading">
           Review before saving
-          <span className="meta">· {rows.length} monthly rollup records</span>
+          <span className="meta"><span className="meta-sep">· </span>{rows.length} monthly rollup records</span>
         </h1>
 
         {/* KPI row */}
@@ -428,8 +428,8 @@ To put a report's counts back afterwards, open it in Reports and press Re-sync t
 
   return (
     <div>
-      <div className="page-title">Import History</div>
-      <h1 className="page-heading">Backfill Historical Driver Performance</h1>
+      <div className="page-title">History import</div>
+      <h1 className="page-heading">Backfill historical driver performance</h1>
 
       <div className="card co-link-card" style={{ marginBottom: 16 }}>
         <div className="card-body">

@@ -308,32 +308,32 @@ test("dispatch's count comes from the cache alone, and says how much of the peri
     cache.set("2026-10-07", entry([leg("2026-10-07", "007187644"), leg("2026-10-07", "007187644-1"), leg("2026-10-07", "007187365")]), opts);
     d = cachedDispatch(["2026-10"], { cache, ...opts });
     assert.deepEqual([d.of, d.loaded, d.withData, d.orders], [7, 1, 1, 2]);
-    assert.equal(dispatchText(d), "dispatch saw 2 orders in 1 of 7 days");
+    assert.equal(dispatchText(d), "feed: 2 orders on 1 of 7 days");
     // Every day in, one with no scan that night: loaded, but it says nothing.
     for (const day of ["2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05"]) cache.set(day, entry(), opts);
     cache.set("2026-10-06", entry([], "no_manifest"), opts);
     d = cachedDispatch(["2026-10"], { cache, ...opts });
     assert.deepEqual([d.of, d.loaded, d.withData], [7, 7, 6]);
-    assert.equal(dispatchText(d), "dispatch saw 2 orders in 6 of 7 days");
+    assert.equal(dispatchText(d), "feed: 2 orders on 6 of 7 days");
     cache.set("2026-10-06", entry(), opts);
-    assert.equal(dispatchText(cachedDispatch(["2026-10"], { cache, ...opts })), "dispatch saw 2 orders");
+    assert.equal(dispatchText(cachedDispatch(["2026-10"], { cache, ...opts })), "feed: 2 orders");
     // Loaded days with no scan to read say nothing: never "saw 0 orders".
     const empty = createDayCache();
     empty.set("2026-10-06", entry([], "no_manifest"), opts);
     d = cachedDispatch(["2026-10"], { cache: empty, ...opts });
     assert.deepEqual([d.loaded, d.withData], [1, 0]);
-    assert.equal(dispatchText(d), "dispatch: no evening scan on the day loaded");
+    assert.equal(dispatchText(d), "feed: no evening scan on the day loaded");
     // A period starting before the feed: the count is since the feed began, and says so.
     cache.set("2026-06-30", entry([leg("2026-06-30", "007100001")]), opts);
     d = cachedDispatch(["2026-06"], { cache, ...opts });
     assert.deepEqual([d.of, d.loaded, d.sinceFeed, d.start], [6, 1, true, "2026-06-25"]);
-    assert.equal(dispatchText(d), "dispatch saw 1 order in 1 of 6 days since 06/25 (feed start)");
+    assert.equal(dispatchText(d), "feed from Jun 25: 1 order on 1 of 6 days");
     for (const day of ["2026-06-25", "2026-06-26", "2026-06-27", "2026-06-28", "2026-06-29"]) cache.set(day, entry(), opts);
-    assert.equal(dispatchText(cachedDispatch(["2026-06"], { cache, ...opts })), "dispatch saw 1 order since 06/25 (feed start)");
+    assert.equal(dispatchText(cachedDispatch(["2026-06"], { cache, ...opts })), "feed from Jun 25: 1 order");
     assert.equal(cachedDispatch(["2026-10"], { cache, ...opts }).sinceFeed, false);
     // Before the feed began, and a month with no finished day yet.
-    assert.equal(dispatchText(cachedDispatch(["2026-03"], { cache, ...opts })), "dispatch feed starts 06/25/2026");
-    assert.equal(dispatchText(cachedDispatch(["2026-10"], { cache, today: "2026-10-01", now: 0 })), "dispatch: no evening scan yet");
+    assert.equal(dispatchText(cachedDispatch(["2026-03"], { cache, ...opts })), "dispatch feed starts Jun 25, 2026");
+    assert.equal(dispatchText(cachedDispatch(["2026-10"], { cache, today: "2026-10-01", now: 0 })), "feed: no evening scan yet");
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -397,9 +397,9 @@ test("a month with no day to show says why, from the days actually tried", () =>
       ],
       "Jun 2026",
     ),
-    "No evening scan to show for any of the 4 business days from 06/25/2026 to 06/30/2026.",
+    "No evening scan to show for any of the 4 business days from Jun 25, 2026 to Jun 30, 2026.",
   );
-  assert.equal(noScanText([{ day: "2026-09-02", status: "no_manifest", n: 0 }], "Sep 2026"), "No evening scan to show for 09/02/2026.");
+  assert.equal(noScanText([{ day: "2026-09-02", status: "no_manifest", n: 0 }], "Sep 2026"), "No evening scan to show for Sep 2, 2026.");
   assert.equal(noScanText([], "Nov 2026"), "No business day of Nov 2026 to show yet.");
 });
 

@@ -13,6 +13,7 @@ import {
 import { AnalyticsProvider } from "./data/AnalyticsProvider.jsx";
 import { applyReadResult } from "./data/loadState.js";
 import { DrillHost } from "./views/kit/DrillDrawer.jsx";
+import Icon from "./views/kit/Icon.jsx";
 import { AnalyticsGate } from "./views/kit/LoadState.jsx";
 import Dashboard from "./views/Dashboard.jsx";
 import Ingest from "./views/Ingest.jsx";
@@ -33,7 +34,7 @@ import { migrateBlobsToFirestore } from "./data/migrateFromBlobs.js";
 import { rescueLocalEntries } from "./data/rescueLocal.js";
 import { useHashState, writeHash } from "./data/hashState.js";
 
-export const APP_VERSION = "0.24.0";
+export const APP_VERSION = "0.24.1";
 // Host the app is actually served from — shown in the footer so two people can
 // instantly confirm they're on the SAME deploy/store (a mismatch is a common
 // reason one person's entries never reach another's view).
@@ -46,18 +47,18 @@ const APP_HOST =
 // "New Report" is deliberately NOT here: it lives on the Reports tab, and listing
 // it twice made one screen look like two places. `n` still jumps straight to it.
 const TABS = [
-  { id: "dashboard", label: "Scorecard", icon: "◫", shortcut: "d" },
-  { id: "reports", label: "Reports", icon: "▦", shortcut: "r" },
-  { id: "company", label: "Company History", icon: "▤", shortcut: "o" },
-  { id: "ff", label: "Forgotten Freight", icon: "▣", shortcut: "f" },
-  { id: "misdeliveries", label: "Mis-Deliveries", icon: "⇄", shortcut: "m" },
-  { id: "attempts", label: "Attempts", icon: "↻", shortcut: "a" },
-  { id: "compliments", label: "Compliments", icon: "✦", shortcut: "c" },
-  { id: "trends", label: "Trends", icon: "◭", shortcut: "t" },
-  { id: "reviews", label: "Reviews", icon: "★", shortcut: "e" },
-  { id: "incidents", label: "All Incidents", icon: "⚠", shortcut: "i" },
-  { id: "history", label: "History Import", icon: "↥", shortcut: "h" },
-  { id: "drivers", label: "Drivers", icon: "◉", shortcut: "v" },
+  { id: "dashboard", label: "Scorecard", icon: "layout-dashboard", shortcut: "d" },
+  { id: "reports", label: "Reports", icon: "file-text", shortcut: "r" },
+  { id: "company", label: "Company History", icon: "history", shortcut: "o" },
+  { id: "ff", label: "Forgotten Freight", icon: "package", shortcut: "f" },
+  { id: "misdeliveries", label: "Mis-Deliveries", icon: "shuffle", shortcut: "m" },
+  { id: "attempts", label: "Attempts", icon: "rotate-ccw", shortcut: "a" },
+  { id: "compliments", label: "Compliments", icon: "thumbs-up", shortcut: "c" },
+  { id: "trends", label: "Trends", icon: "trending-up", shortcut: "t" },
+  { id: "reviews", label: "Reviews", icon: "star", shortcut: "e" },
+  { id: "incidents", label: "All Incidents", icon: "alert-triangle", shortcut: "i" },
+  { id: "history", label: "History Import", icon: "upload", shortcut: "h" },
+  { id: "drivers", label: "Drivers", icon: "users", shortcut: "v" },
 ];
 // Every screen the hash can open: the sidebar tabs plus New Report (`n`).
 const TAB_IDS = new Set([...TABS.map((x) => x.id), "ingest"]);
@@ -303,7 +304,7 @@ export default function App() {
         <div className="sidebar-brand">
           <img className="brand-logo" src={davisLogo} alt="Davis Delivery Service" />
           <div className="brand-text">
-            <div className="brand-name">DRIVER SCORECARD</div>
+            <div className="brand-name">Driver Scorecard</div>
           </div>
         </div>
         <div className="sidebar-nav-section">
@@ -317,7 +318,7 @@ export default function App() {
                 onClick={() => setTab(x.id)}
                 title={`Go to ${x.label} (g ${x.shortcut})`}
               >
-                <span className="sidebar-tab-icon">{x.icon}</span>
+                <span className="sidebar-tab-icon"><Icon name={x.icon} /></span>
                 <span className="sidebar-tab-label">{x.label}</span>
                 {count !== undefined && (
                   <span className="sidebar-tab-count">{count}</span>
@@ -330,7 +331,7 @@ export default function App() {
           <span className="version">v{APP_VERSION}</span>
           <div className="status-pill">
             <span className="status-dot" />
-            CLOUD
+            Cloud
           </div>
         </div>
       </aside>
@@ -348,7 +349,7 @@ export default function App() {
           <div className="brand">
             <img className="brand-logo sm" src={davisLogo} alt="Davis Delivery Service" />
             <div className="brand-text">
-              <div className="brand-name">DRIVER SCORECARD</div>
+              <div className="brand-name">Driver Scorecard</div>
               <div className="brand-sub" title={APP_HOST}>
                 v{APP_VERSION}
                 {APP_HOST ? ` · ${APP_HOST}` : ""}
@@ -358,7 +359,7 @@ export default function App() {
         </div>
         <div className="status-pill">
           <span className="status-dot" />
-          CLOUD
+          Cloud
         </div>
       </header>
 
@@ -367,7 +368,7 @@ export default function App() {
           <nav className="nav-drawer" onClick={(e) => e.stopPropagation()}>
             <div className="nav-drawer-head">
               <img className="brand-logo sm" src={davisLogo} alt="Davis Delivery Service" />
-              <div className="brand-name">DRIVER SCORECARD</div>
+              <div className="brand-name">Driver Scorecard</div>
               <button
                 className="nav-drawer-close"
                 onClick={() => setMenuOpen(false)}
@@ -387,7 +388,7 @@ export default function App() {
                     setMenuOpen(false);
                   }}
                 >
-                  <span className="nav-drawer-icon">{x.icon}</span>
+                  <span className="nav-drawer-icon"><Icon name={x.icon} /></span>
                   <span className="nav-drawer-label">{x.label}</span>
                   {count !== undefined && (
                     <span className="sidebar-tab-count">{count}</span>

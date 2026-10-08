@@ -45,6 +45,9 @@ import {
   monthSpark,
   sparkSource,
   historyOnlyMonths,
+  uncapturedMonths,
+  trendSlot,
+  slotUncaptured,
   liveMonthCounts,
   weekSpark,
   dayDiff,
@@ -701,8 +704,93 @@ test("a tab's history-only months are the cells history serves, beside live entr
   assert.deepEqual(historyOnlyMonths(null, "misdelivery", win), []);
 });
 
+test("a history-only month is never drawn as a bar, and its hover reads what its table row lists", () => {
+  // Forgotten Freight 12M: Nov 2025 and Feb–Mar 2026 exist only as imported monthly
+  // totals; Dec 2025 has nothing on file; Apr–May 2026 are before the entry tabs began;
+  // Jan 2026 has back-dated entries; Sep 2026 has entries.
+  const blend = buildBlend({
+    incidents: [
+      { id: "j", driver_id: "d1", category: "forgotten_freight", fault: "driver", delivered_date: "2026-01-12" },
+      { id: "a", driver_id: "d1", category: "damage", fault: "driver", delivered_date: "2026-04-20" },
+      { id: "m", driver_id: "d1", category: "late", fault: "driver", delivered_date: "2026-05-11" },
+      { id: "s", driver_id: "d1", category: "forgotten_freight", fault: "driver", delivered_date: "2026-09-14" },
+    ],
+    history: [
+      { year: 2025, month: 11, driver_id: "d1", category: "forgotten_freight", count: 16 },
+      { year: 2026, month: 2, driver_id: "d1", category: "forgotten_freight", count: 15 },
+      { year: 2026, month: 3, driver_id: "d1", category: "forgotten_freight", count: 16 },
+    ],
+  });
+  const win = { start: "2025-11-01", end: "2026-10-08", bucket: "month", months: [] };
+  for (let ym = "2025-11"; ym <= "2026-10"; ym = ym.slice(5) === "12" ? `${+ym.slice(0, 4) + 1}-01` : `${ym.slice(0, 5)}${String(+ym.slice(5) + 1).padStart(2, "0")}`) win.months.push(ym);
+  const rows = [
+    { id: "j", driver_id: "d1", category: "forgotten_freight", delivered_date: "2026-01-12" },
+    { id: "s", driver_id: "d1", category: "forgotten_freight", delivered_date: "2026-09-14" },
+  ];
+  const trend = trendSeries(rows, win, { today: "2026-10-08" });
+  const hist = new Map(historyOnlyMonths(blend, "forgotten_freight", win).map((m) => [m.ym, m.n]));
+  const unc = uncapturedMonths(blend, "forgotten_freight", win);
+  assert.deepEqual([...hist.keys()], ["2025-11", "2026-02", "2026-03"]);
+  assert.deepEqual([...unc.entries()], [
+    ["2025-12", "no_data"],
+    ["2026-04", "not_captured"],
+    ["2026-05", "not_captured"],
+  ]);
+  const slots = trend.map((b) => ({ key: b.key, count: b.count, ...trendSlot(b, { hist: hist.get(b.key) || 0, uncaptured: unc }) }));
+  const by = Object.fromEntries(slots.map((s) => [s.key, s]));
+  for (const s of slots) {
+    // The hover reads exactly the table row's count; nothing drawn is ever more than it.
+    assert.equal(s.tip, s.count, `${s.key}: hover = table`);
+    assert.ok(s.draw === null || s.draw === s.count, `${s.key}: drawn value is the table's or nothing`);
+  }
+  assert.deepEqual(
+    ["2025-11", "2026-02", "2026-03"].map((k) => [by[k].draw, by[k].why, by[k].hist]),
+    [
+      [null, "history only", 16],
+      [null, "history only", 15],
+      [null, "history only", 16],
+    ],
+  );
+  // History's total is an outline of its own, never on a slot that counted anything.
+  for (const s of slots) assert.ok(s.hist === undefined || (s.count === 0 && s.draw === null), `${s.key}: outline only on an empty slot`);
+  assert.deepEqual([by["2025-12"].draw, by["2025-12"].why], [null, "no data on file"]);
+  assert.deepEqual([by["2026-05"].draw, by["2026-05"].why], [null, "not captured"]);
+  assert.deepEqual([by["2026-01"].draw, by["2026-01"].why], [1, null], "back-dated entries are drawn");
+  assert.deepEqual([by["2026-07"].draw, by["2026-07"].why], [0, null], "after logging began, none is a real zero");
+  // The filled bars add up to what the tab totals: never history's monthly totals on top.
+  const drawnSum = slots.reduce((a, s) => a + (s.draw || 0), 0);
+  assert.equal(drawnSum, rows.length);
+  // A slot is uncaptured only when every month it touches is.
+  assert.equal(slotUncaptured({ start: "2026-05-25", end: "2026-05-31" }, unc), "not_captured");
+  assert.equal(slotUncaptured({ start: "2026-05-30", end: "2026-06-05" }, unc), null);
+  assert.equal(slotUncaptured({ start: "2025-12-29", end: "2026-01-04" }, unc), null);
+  // A feed day with no data stays what it was: blank both ways.
+  assert.deepEqual(trendSlot({ key: "2026-09-01", start: "2026-09-01", end: "2026-09-01", count: 0, gap: "no_manifest" }), {
+    draw: null,
+    tip: null,
+    why: null,
+  });
+});
+
 test("the default window is the one the panel and the log share", () => {
   const w = periodWindow("30d");
   assert.equal(w.bucket, "day");
   assert.ok(w.start < w.end);
+});
+
+test("the leader names a tie as a tie, and the leader itself is unchanged", () => {
+  const rows = [
+    { id: "1", driver_id: "a", driver_name: "Ann" },
+    { id: "2", driver_id: "b", driver_name: "Bo" },
+    { id: "3", driver_id: "a", driver_name: "Ann" },
+    { id: "4", driver_id: "b", driver_name: "Bo" },
+    { id: "5", driver_id: "c", driver_name: "Cy" },
+  ];
+  const top = topDriver(rows, { nameOf: (r) => r.driver_name });
+  // The same winner and count as before ties were named (first to the top count).
+  assert.equal(top.name, "Ann");
+  assert.equal(top.count, 2);
+  assert.deepEqual(top.tied, ["Ann", "Bo"]);
+  assert.deepEqual(topDriver(rows.slice(0, 3), { nameOf: (r) => r.driver_name }).tied, ["Ann"]);
+  assert.equal(topDriver([]), null);
 });

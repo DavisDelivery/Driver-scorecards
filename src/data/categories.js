@@ -14,32 +14,38 @@
 //   excluded  logged and listed, but charted and rolled up nowhere
 //
 // COLOURS. The array order is the stack order, and its first six hues are the
-// validated categorical palette:
+// validated categorical palette — the same hue family as before (red, orange, pink,
+// amber, violet, teal), with the candy brightness taken out: chroma 0.105–0.145, OKLCH
+// lightness 0.49–0.74, so the marks sit quietly on white and the numbers lead.
 //
-//   node validate_palette.js "#dc3545,#fb923c,#f472b6,#ca8a04,#a855f7,#14b8a6"
+//   node validate_palette.js "#994137,#e2975f,#c16791,#a07e12,#7052a6,#20a1af"
 //        --mode light --surface "#ffffff"           → ALL CHECKS PASS
 //
-// Late moved to #ca8a04 because the old #facc15 failed the lightness band in every
-// ordering, and Misdelivery pink can no longer sit beside Attempts teal (deutan ΔE 3.0).
-// Four of the six are below 3:1 on white, which is why every chart has a table view.
+//   worst adjacent CVD ΔE 12.9 (late ↔ misdelivery, deutan; was 16.1)
+//   worst adjacent normal-vision ΔE 16.9 (misdelivery ↔ forgotten freight)
+//   one contrast WARN: Forgotten Freight 2.38:1 — relieved by every chart's table view
+//   and by values written in ink beside the marks
+//
+// Misdelivery pink still must not sit beside Attempts teal (all-pairs deutan ΔE 4.8):
+// the stack order keeps them apart.
 //
 // The rest are deliberately NOT validated slots:
 //   complaint   the de-emphasis gray — next to the five failure hues it reads as
 //               "Other", which is what it is
-//   compliment  green, drawn only on its own card and tab. It must never be stacked
-//               beside Attempts: the two are hard to tell apart even with full colour
-//               vision (normal ΔE 11.3).
+//   compliment  an olive green, drawn only on its own card and tab. It now reads clearly
+//               apart from Attempts (normal ΔE 16.2, CVD ≥ 16.3; it was 11.3), but it is
+//               still never stacked beside it.
 //   excluded    neutral slates/blue; never charted, only named on rows.
 
 const LIST = [
-  { id: "damage", label: "Damage", title: "Damages", polarity: "failure", color: "#dc3545" },
-  { id: "forgotten_freight", label: "Forgotten Freight", title: "Forgotten Freight", polarity: "failure", color: "#fb923c" },
-  { id: "misdelivery", label: "Misdelivery", title: "Misdeliveries", polarity: "failure", color: "#f472b6" },
-  { id: "late", label: "Late", title: "Lates", polarity: "failure", color: "#ca8a04" },
-  { id: "missing", label: "Lost/Missing", title: "Lost / Missing", polarity: "failure", color: "#a855f7" },
-  { id: "attempts", label: "Attempts", title: "Attempts", polarity: "attempt", color: "#14b8a6" },
+  { id: "damage", label: "Damage", title: "Damages", polarity: "failure", color: "#994137" },
+  { id: "forgotten_freight", label: "Forgotten Freight", title: "Forgotten Freight", polarity: "failure", color: "#e2975f" },
+  { id: "misdelivery", label: "Misdelivery", title: "Misdeliveries", polarity: "failure", color: "#c16791" },
+  { id: "late", label: "Late", title: "Lates", polarity: "failure", color: "#a07e12" },
+  { id: "missing", label: "Lost/Missing", title: "Lost / Missing", polarity: "failure", color: "#7052a6" },
+  { id: "attempts", label: "Attempts", title: "Attempts", polarity: "attempt", color: "#20a1af" },
   { id: "complaint", label: "Complaint", title: "Complaints", polarity: "failure", color: "#94a3b8" },
-  { id: "compliment", label: "Compliment", title: "Compliments", polarity: "credit", color: "#22c55e" },
+  { id: "compliment", label: "Compliment", title: "Compliments", polarity: "credit", color: "#6f992a" },
   { id: "return", label: "Return", title: "Returns", polarity: "excluded", color: "#3b82f6" },
   { id: "trace", label: "Trace", title: "Traces", polarity: "excluded", color: "#64748b" },
   // Logged from Forgotten Freight when a PRO can't be tracked to a driver: a record of a

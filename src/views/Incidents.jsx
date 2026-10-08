@@ -3,6 +3,8 @@ import { saveIncident, deleteIncident, deleteIncidentsBatch } from "../data/fire
 import { FAULT_CODES, INCIDENT_CATEGORIES } from "../data/drivers.js";
 import { catChipStyle } from "../data/categories.js";
 import IncidentEditor from "./IncidentEditor.jsx";
+import CardMenu from "./kit/CardMenu.jsx";
+import { fmtDate } from "../data/period.js";
 
 // ---------------------------------------------------------------------------
 // Category sort order (matches bundle constant b6)
@@ -143,11 +145,9 @@ function IncidentList({
     const result = Array.from(map.entries()).map(([key, items]) => {
       let label = key;
       if (groupBy === "category")
-        label = (CATEGORY_LABEL_MAP[key] || key).toUpperCase();
+        label = CATEGORY_LABEL_MAP[key] || key;
       else if (groupBy === "fault")
-        label = (
-          FAULT_CODES.find((f) => f.id === key)?.label || key
-        ).toUpperCase();
+        label = FAULT_CODES.find((f) => f.id === key)?.label || key;
       return { key, label: `${label} · ${items.length}`, items };
     });
     if (groupBy === "category") {
@@ -314,15 +314,12 @@ function IncidentList({
           </select>
           <div
             style={{
-              fontFamily: "var(--mono)",
-              fontSize: 10,
+              fontSize: 12,
               color: "var(--text-2)",
-              textTransform: "uppercase",
-              letterSpacing: "0.1em",
               alignSelf: "center",
             }}
           >
-            Group by:
+            Group by
           </div>
           <div className="month-picker" style={{ margin: 0 }}>
             <button
@@ -365,7 +362,8 @@ function IncidentList({
             <div className="empty-state">No incidents match filters</div>
           ) : (
             <div className="table-wrap">
-              <table className="data">
+              {/* Rows read as data: the pickers are text until hovered (.inc-quiet). */}
+              <table className="data inc-quiet">
                 <thead>
                   <tr>
                     {showBulkActions && (
@@ -447,12 +445,9 @@ function IncidentList({
                             colSpan={colSpan}
                             style={{
                               padding: "8px 14px",
-                              fontFamily: "var(--mono)",
-                              fontSize: 11,
-                              fontWeight: 700,
-                              letterSpacing: "0.1em",
-                              textTransform: "uppercase",
-                              color: "var(--davis-blue)",
+                              fontSize: 13,
+                              fontWeight: 600,
+                              color: "var(--text-0)",
                             }}
                           >
                             <span style={{ marginRight: 8 }}>
@@ -475,7 +470,13 @@ function IncidentList({
                               </td>
                             )}
                             <td className="pro-num">{inc.pro_number}</td>
-                            <td>{inc.ship_date || inc.return_date || inc.delivered_date || inc.trace_date || "—"}</td>
+                            {/* "Sep 14, 2026": the same date the Date sort reads, as people read it. */}
+                            <td className="nowrap">
+                              {(() => {
+                                const d = inc.ship_date || inc.return_date || inc.delivered_date || inc.trace_date || "";
+                                return /^\d{4}-\d{2}-\d{2}/.test(d) ? fmtDate(d, { year: true }) : d || "—";
+                              })()}
+                            </td>
                             {groupBy !== "category" && (
                               <td>
                                 <span className={`chip cat ${inc.category}`} style={catChipStyle(inc.category)}>
@@ -485,11 +486,12 @@ function IncidentList({
                             )}
                             <td>
                               <select
+                                className={`inc-driver-select ${inc.driver_id ? "" : "is-empty"}`.trim()}
                                 value={inc.driver_id || ""}
                                 onChange={(e) =>
                                   handleInlineDriver(inc, e.target.value)
                                 }
-                                style={{ minWidth: 140 }}
+                                title={drivers.find((d) => d.id === inc.driver_id)?.name || inc.driver_raw || undefined}
                               >
                                 <option value="">
                                   {inc.driver_raw || "—"}
@@ -513,6 +515,7 @@ function IncidentList({
                             {groupBy !== "fault" && (
                               <td>
                                 <select
+                                  className="fault-select"
                                   value={inc.fault || "unknown"}
                                   onChange={(e) =>
                                     handleInlineFault(inc, e.target.value)
@@ -563,23 +566,17 @@ function IncidentList({
                                 </span>
                               )}
                             </td>
-                            <td>
-                              <button
-                                className="btn ghost sm"
-                                onClick={() => setEditingIncident(inc)}
-                                title="Edit all fields"
-                                style={{ marginRight: 4 }}
-                              >
-                                ✎
-                              </button>
-                              <button
-                                className="btn ghost sm"
-                                onClick={() => handleDelete(inc.id)}
-                                title="Delete"
-                                style={{ color: "var(--accent-red)" }}
-                              >
-                                ×
-                              </button>
+                            {/* Edit and Delete behind the row's ⋯, never a red × on every row. */}
+                            <td className="row-menu-cell">
+                              <CardMenu
+                                label={`Actions for ${inc.pro_number || "this incident"}`}
+                                className="row-menu"
+                                fixed
+                                items={[
+                                  { id: "edit", label: "Edit all fields", icon: "pencil", onSelect: () => setEditingIncident(inc) },
+                                  { id: "delete", label: "Delete incident", icon: "trash-2", danger: true, onSelect: () => handleDelete(inc.id) },
+                                ]}
+                              />
                             </td>
                           </tr>
                         ))}
@@ -640,9 +637,9 @@ export default function Incidents({ incidents, drivers, reports, onUpdate }) {
 
   return (
     <div>
-      <div className="page-title">All Incidents · Cross-Report Search</div>
+      <div className="page-title">All Incidents · cross-report search</div>
       <h1 className="page-heading">
-        Incident Log{" "}
+        Incident log{" "}
         <span className="meta">
           · {filtered.length} / {incidents.length}
         </span>

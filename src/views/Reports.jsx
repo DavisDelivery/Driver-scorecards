@@ -16,20 +16,28 @@ import {
   reportColumn,
   REPORT_OTHER,
 } from "../data/analytics.js";
-import { OTHER_COLOR, categoriesFor } from "../data/categories.js";
+import { OTHER_COLOR, categoriesFor, catLabel } from "../data/categories.js";
+import { yearCapture, yearCompared } from "../data/companyMetrics.js";
+import useCoverage from "./company/useCoverage.js";
 import { historyCoverage } from "../data/liveHistoryBlend.js";
+import { SOURCE_FROM, fmtYm, exclusionText } from "../data/coverage.js";
 import { sourceLabel } from "../data/blend.js";
-import { reportSpanLabel, reportStartLabel } from "../reports/reportNaming.js";
+import { reportSpanLabel, reportWeekOf, reportWeekName, reportWeekTick } from "../reports/reportNaming.js";
 import { useHashState } from "../data/hashState.js";
 import { csvName } from "../data/csv.js";
 import ReportDetail from "./ReportDetail.jsx";
 import { AnalyticsGate, LoadError } from "./kit/LoadState.jsx";
 import ChartCard from "./kit/ChartCard.jsx";
 import StackedColumns from "./kit/charts/StackedColumns.jsx";
-import { chartTable } from "./kit/shape.js";
-import { BRAND, PRIOR, axisTick } from "./kit/chartTheme.js";
+import EmphasisBars from "./kit/charts/EmphasisBars.jsx";
+import BarList from "./kit/charts/BarList.jsx";
+import CardMenu from "./kit/CardMenu.jsx";
+import { chartTable, peakSummary, toDate, rowTotal } from "./kit/shape.js";
+import { BRAND, PRIOR } from "./kit/chartTheme.js";
+import { currentYmET, nowET, toYMD, shiftYm } from "../data/period.js";
 
-// The six stacked categories, bottom first, in the registry's order and colours.
+// The six stacked categories, bottom first, in the registry's order and colours. Every
+// total on this page holds all six, Attempts (logged) included, as it always has.
 const SERIES = ANALYTICS_CATEGORIES.map((c) => ({ id: c.id, label: c.label, color: c.color }));
 // A weekly column also stacks "other" — returns, traces, complaints — in the gray an
 // uncharted category gets, so it adds up to the report's Inc.
@@ -72,36 +80,43 @@ function ChartSkeleton() {
   );
 }
 
-// Signed delta vs a prior period. Down (fewer incidents) is good → green.
-function Delta({ value }) {
-  if (value === null || value === undefined) return <span className="delta flat">—</span>;
-  if (value === 0) return <span className="delta flat">±0</span>;
-  const up = value > 0;
+// Signed delta vs a prior period. Down (fewer incidents) is good → green. Beside a
+// period still in progress the number stays, but uncoloured and marked "to date": part
+// of a month set against a whole one isn't an improvement.
+// A change that isn't like-for-like (`notCompared`: the two years weren't captured the
+// same way) keeps its raw number but is never a coloured arrow — the year chart above
+// says those years hold different things.
+function Delta({ value, toDate = false, notCompared = null, title = undefined }) {
+  if (value === null || value === undefined) return <span className="delta flat" title={title}>—</span>;
+  const text = value === 0 ? "±0" : `${value > 0 ? "▲" : "▼"} ${Math.abs(value)}`;
+  if (toDate) {
+    return (
+      <span className="delta flat" title={title || "Still in progress: part of this period set against the whole one before it"}>
+        {text} · to date
+      </span>
+    );
+  }
+  if (notCompared) {
+    return (
+      <span className="delta flat" title={notCompared}>
+        {text} · not compared
+      </span>
+    );
+  }
+  if (value === 0) return <span className="delta flat" title={title}>±0</span>;
   return (
-    <span className={`delta ${up ? "up" : "down"}`}>
-      {up ? "▲" : "▼"} {Math.abs(value)}
+    <span className={`delta ${value > 0 ? "up" : "down"}`} title={title}>
+      {text}
     </span>
   );
 }
 
-// Lightweight inline SVG sparkline (one per row — no recharts overhead).
-function Sparkline({ values, width = 76, height = 22 }) {
-  if (!values || values.length < 2) return <span className="spark-empty">—</span>;
-  const max = Math.max(...values, 1);
-  const min = Math.min(...values, 0);
-  const span = max - min || 1;
-  const stepX = width / (values.length - 1);
-  const pts = values
-    .map((v, i) => `${(i * stepX).toFixed(1)},${(height - ((v - min) / span) * height).toFixed(1)}`)
-    .join(" ");
-  const last = values[values.length - 1];
-  const prev = values[values.length - 2];
-  const stroke = last > prev ? "#dc3545" : last < prev ? "#16a34a" : "#6b7280";
-  return (
-    <svg className="sparkline" width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
-      <polyline points={pts} fill="none" stroke={stroke} strokeWidth="1.5" />
-    </svg>
-  );
+// A count in a table cell: the number, a counted zero as "0" in ink 2, and "—" where
+// the category wasn't tracked — one placeholder each, never a lone "·".
+function Count({ v, strong = false }) {
+  if (v === null || v === undefined) return <span className="cell-none" title="Not tracked">—</span>;
+  if (v === 0) return <span className="cell-zero">0</span>;
+  return strong ? <strong>{v}</strong> : v;
 }
 
 // A category column header: a swatch beside ink, never coloured text.
@@ -184,10 +199,9 @@ export default function Reports({
       };
     });
     rows.sort((a, b) => String(a.date).localeCompare(String(b.date)));
-    // Trailing sparkline series + vs-prior delta (chronological order).
+    // Each report's change on the one before it (chronological order).
     const totals = rows.map((r) => r.count);
     rows.forEach((r, i) => {
-      r.spark = totals.slice(Math.max(0, i - 7), i + 1);
       r.delta = i > 0 ? r.count - totals[i - 1] : null;
     });
     return rows;
@@ -236,9 +250,13 @@ export default function Reports({
     const inYear = weeklyAll.filter(
       (r) => !selectedYear || Number(String(r.date).slice(0, 4)) === selectedYear,
     );
+    // Each column is named by its report's week (the Monday the table's "Week of"
+    // names), so the ticks fall on a weekly grid and match the table below.
     return inYear.slice(-12).map((r) => ({
       name: reportSpanLabel(r.report),
-      start: reportStartLabel(r.report),
+      week: reportWeekOf(r.report),
+      start: reportWeekTick(r.report),
+      __head: `${reportWeekName(r.report)} · ${reportSpanLabel(r.report)}`,
       fault: r.driverFault,
       ...reportColumn(r.byCat, r.count),
     }));
@@ -254,17 +272,32 @@ export default function Reports({
     () => (selectedYear ? buildMonthlyTotals(selectedYear - 1, blend) : []),
     [selectedYear, blend],
   );
+  // The table's months and their change on the month before; the month in progress is
+  // marked "to date" beside its change (display only).
   const monthlyRows = useMemo(() => {
     const rows = monthly.filter((m) => m.total > 0 || m.source !== "none");
-    return rows.map((m, idx) => {
+    const nowYm = currentYmET();
+    return rows.map((m) => {
       const realIdx = m.month - 1;
       const prior = realIdx > 0 ? monthly[realIdx - 1].total : null;
-      return { ...m, delta: prior === null ? null : m.total - prior };
+      return { ...m, toDate: ymOf(selectedYear, m.month) === nowYm, delta: prior === null ? null : m.total - prior };
     });
-  }, [monthly]);
+  }, [monthly, selectedYear]);
 
   // Which categories each history month tracked: an untracked one reads "—", not 0.
   const tracked = useMemo(() => historyCoverage(history, ANALYTICS_CATEGORY_IDS), [history]);
+  // What each (month, category) cell covers (coverage.js), read once for the table's
+  // "—", the chart, and the years' notes.
+  const today = toYMD(nowET());
+  const { cov } = useCoverage(today);
+  // A month's cell that holds no count reads "—", never 0: a month with no data at all,
+  // or a category the history serving it never tracked (and no live entry fills) — the
+  // cells the chart's table has always left empty. A live month's counted 0 stays 0, even
+  // before coverage says the category was captured (Attempts in Apr–May 2026): the hover
+  // and the note say so, the number doesn't change (CLAUDE.md).
+  const untracked = (ym, source, cat) =>
+    source === "none" ||
+    ((source === "history" || source === "mixed") && !tracked(ym).has(cat) && !blend.isLive(ym, cat));
 
   const monthlyChart = useMemo(() => {
     // A month with no data at all (no live rows, no history) is a gap in the chart and
@@ -272,26 +305,70 @@ export default function Reports({
     return monthly.map((m) => {
       const prior = prevMonthly[m.month - 1];
       const ghost = !prior || prior.source === "none" ? null : prior.total;
-      const row = { name: m.monthName, ghost, source: m.source };
+      const ym0 = ymOf(selectedYear, m.month);
+      const now = currentYmET();
+      const row = {
+        name: m.monthName,
+        key: ym0,
+        ghost,
+        source: m.source,
+        // Display only: a month still to come draws nothing; the month in progress is
+        // faded and its hover says "to date".
+        __future: ym0 > now,
+        __partial: ym0 === now,
+        __toDate: ym0 === now ? toDate({ key: ym0, start: `${ym0}-01`, end: `${ym0}-31` }, toYMD(nowET())) : null,
+      };
       // A category history serves but never tracked reads "—": in a month that is part
       // live, part history (Jan 2026), one with no live entries the history didn't track.
       const ym = ymOf(selectedYear, m.month);
       const has = m.source === "history" || m.source === "mixed" ? tracked(ym) : null;
+      const unc = [];
       for (const c of ANALYTICS_CATEGORIES) {
         const untracked = has && !has.has(c.id) && !blend.isLive(ym, c.id);
         row[c.id] = m.source === "none" || untracked ? null : m.byCat[c.id] || 0;
+        // A counted 0 coverage says wasn't captured keeps its 0 (table, CSV, hover); the
+        // hover adds why (display only).
+        if (!row.__future && row[c.id] === 0 && cov.cell(ym, c.id).value === null) unc.push(c.label);
       }
+      if (unc.length) row.__notes = [`Not captured: ${unc.join(", ")}`];
       return row;
     });
-  }, [monthly, prevMonthly, tracked, blend, selectedYear]);
+  }, [monthly, prevMonthly, tracked, blend, selectedYear, cov]);
 
   const yearly = useMemo(() => buildYearlyTotals(years, blend), [years, blend]);
+  // Each year's change on the one before; the year in progress is marked "to date"
+  // beside its change (display only).
+  const thisYear = nowET().getFullYear();
+  // A year captured differently from the one before (likeForLike, coverage.js) keeps its
+  // raw change but says "not compared", with what differed in its title.
   const yearlyRows = useMemo(() => {
-    return yearly.map((y, i) => ({
-      ...y,
-      delta: i > 0 ? y.total - yearly[i - 1].total : null,
-    }));
-  }, [yearly]);
+    return yearly.map((y, i) => {
+      const cmp = i > 0 && y.year !== thisYear ? yearCompared(cov, y.year, ANALYTICS_CATEGORY_IDS) : null;
+      return {
+        ...y,
+        toDate: y.year === thisYear,
+        delta: i > 0 ? y.total - yearly[i - 1].total : null,
+        notCompared:
+          cmp && !cmp.compared
+            ? `Not like-for-like: ${y.year} and ${y.year - 1} weren't captured the same way (${cmp.left
+                .slice(0, 3)
+                .map((e) => exclusionText(e))
+                .join("; ")}${cmp.left.length > 3 ? `; ${cmp.left.length - 3} more` : ""}). Company History › Compare sets them side by side like-for-like.`
+            : null,
+      };
+    });
+  }, [yearly, thisYear, cov]);
+  // Under each year's row in the chart: the categories it never tracked, and those it
+  // held for part of the year only, so a short bar is never read as a quiet year.
+  const lastYm = shiftYm(currentYmET(), -1);
+  const yearNote = (year) => {
+    const cap = yearCapture(cov, Number(year), ANALYTICS_CATEGORY_IDS, { lastYm });
+    const parts = [];
+    if (cap.none.length) parts.push(`Not tracked: ${cap.none.map(catLabel).join(", ")}`);
+    if (cap.part.length) parts.push(`part of the year only: ${cap.part.map(catLabel).join(", ")}`);
+    const line = parts.join(" · ");
+    return line ? line.charAt(0).toUpperCase() + line.slice(1) : null;
+  };
   const yearlyChart = useMemo(
     () =>
       yearly.map((y) => {
@@ -408,10 +485,10 @@ export default function Reports({
 
   return (
     <div>
-      <div className="page-title">Reports &amp; Analytics</div>
+      <div className="page-title">Reports &amp; analytics</div>
       <h1 className="page-heading">
         Reports
-        <span className="meta">· {reports.length} weekly reports</span>
+        <span className="meta"><span className="meta-sep">· </span>{reports.length} weekly reports</span>
       </h1>
 
       {/* Granularity switcher + period controls + search */}
@@ -423,7 +500,7 @@ export default function Reports({
               className={`month-btn ${gran === g ? "active" : ""}`}
               onClick={() => setGran(g)}
             >
-              {g}
+              {g.charAt(0).toUpperCase() + g.slice(1)}
             </button>
           ))}
         </div>
@@ -466,7 +543,7 @@ export default function Reports({
 
         <div className="toolbar-spacer" />
         <button className="btn" onClick={onNewReport}>
-          + New Weekly Report
+          + New weekly report
         </button>
       </div>
 
@@ -474,7 +551,7 @@ export default function Reports({
         <div className="card">
           <div className="card-body">
             <div className="empty-state">
-              No reports yet. Click <strong>+ New Weekly Report</strong> to create one,
+              No reports yet. Click <strong>+ New weekly report</strong> to create one,
               or import history on the <strong>History Import</strong> tab.
             </div>
           </div>
@@ -513,6 +590,7 @@ export default function Reports({
               setExpandedKey={setExpandedKey}
               reportsInMonth={reportsInMonth}
               onOpen={(id) => setSelectedId(id)}
+              untracked={untracked}
             />
           ) : (
             <YearlyView
@@ -521,6 +599,9 @@ export default function Reports({
               expandedKey={expandedKey}
               setExpandedKey={setExpandedKey}
               monthlyForYear={(y) => buildMonthlyTotals(y, blend).filter((m) => m.total > 0)}
+              yearNote={yearNote}
+              untracked={untracked}
+              thisYear={thisYear}
             />
           )}
         </AnalyticsGate>
@@ -534,9 +615,15 @@ export default function Reports({
 // chart as a line; a rate or a percentage never could.
 const WEEK_FAULT_LINE = { id: "fault", label: "Driver fault", color: BRAND, line: true, dots: true };
 function WeeklyView({ rows, chart, kbIndex, onOpen, onDelete, onSort, sortArrow }) {
-  // The axis names each week by its first day; twelve whole spans ran into one smear at
-  // phone width. Ticks that would still collide are skipped, never overlapped.
-  const startOf = new Map(chart.map((r) => [r.name, r.start]));
+  // The axis names each column by its report's week ("Sep 14", the Monday the table's
+  // "Week of" names); the ticks the width can't hold are thinned (kit/shape.js), never
+  // overlapped. Driver fault is a different measure from the stack, so it has a chart of
+  // its own under it.
+  const weekTotal = chart.reduce((a, r) => a + WEEK_SERIES.reduce((b, c) => b + (r[c.id] || 0), 0), 0);
+  // The legend names only what the columns draw: a category with nothing in these weeks
+  // has no segment, so it has no key either. The table view keeps every column.
+  const weekSeries = WEEK_SERIES.filter((c) => chart.some((r) => (r[c.id] || 0) > 0));
+  const tick = (r) => r.start || r.name;
   return (
     <>
       {chart.length === 0 ? (
@@ -546,29 +633,41 @@ function WeeklyView({ rows, chart, kbIndex, onOpen, onDelete, onSort, sortArrow 
           </div>
         </div>
       ) : (
-        <ChartCard
-          className="chart-band"
-          title="Incidents per week · stacked by category"
-          legend={[...WEEK_SERIES, WEEK_FAULT_LINE]}
-          table={chartTable({
-            rows: chart,
-            x: { key: "name", label: "Week" },
-            series: WEEK_SERIES,
-            lines: [WEEK_FAULT_LINE],
-            total: true,
-            source: "weekly report",
-          })}
-          csv={csvName("Reports weekly")}
-          height={280}
-        >
-          <StackedColumns
-            data={chart}
-            xKey="name"
-            series={WEEK_SERIES}
-            lines={[WEEK_FAULT_LINE]}
-            xAxis={{ tickFormatter: (name) => startOf.get(name) || name, interval: "preserveStartEnd", minTickGap: 6 }}
-          />
-        </ChartCard>
+        <>
+          <ChartCard
+            className="chart-band"
+            title="Incidents per week"
+            subtitle={`${weekTotal.toLocaleString()} across the last ${chart.length} report${chart.length === 1 ? "" : "s"}, by category`}
+            legend={weekSeries}
+            table={chartTable({
+              rows: chart,
+              x: { key: "name", label: "Week" },
+              series: WEEK_SERIES,
+              lines: [WEEK_FAULT_LINE],
+              total: true,
+              source: "weekly report",
+            })}
+            csv={csvName("Reports weekly")}
+            height={320}
+          >
+            <StackedColumns data={chart} xKey="name" tickLabel={tick} series={weekSeries} />
+          </ChartCard>
+          <ChartCard
+            className="chart-band"
+            title="Driver fault per week"
+            subtitle={`${chart.reduce((a, r) => a + (r.fault || 0), 0).toLocaleString()} incidents set to the driver's fault`}
+            table={chartTable({
+              rows: chart,
+              x: { key: "name", label: "Week" },
+              series: [{ id: "fault", label: "Driver fault" }],
+              source: "weekly report",
+            })}
+            csv={csvName("Reports weekly driver fault")}
+            height={180}
+          >
+            <EmphasisBars data={chart} xKey="name" tickLabel={tick} valueKey="fault" valueName="Driver fault" color={BRAND} keyOf={(r) => r.name} />
+          </ChartCard>
+        </>
       )}
 
       {rows.length === 0 ? (
@@ -577,13 +676,16 @@ function WeeklyView({ rows, chart, kbIndex, onOpen, onDelete, onSort, sortArrow 
         <div className="card">
           <div className="card-body tight">
             <div className="table-wrap">
-              <table className="data analytics-table">
+              {/* One row per report: its week with its dates under it, the counts, its
+                  change on the report before, and Delete behind the row's ⋯ (never a red
+                  × on every row). On a phone each row is a card (.cards-on-phone). */}
+              <table className="data analytics-table rp-table cards-on-phone">
                 <thead>
                   <tr>
-                    <th onClick={() => onSort("name")} className="sortable">Name{sortArrow("name")}</th>
-                    <th onClick={() => onSort("date")} className="sortable">Date span{sortArrow("date")}</th>
-                    <th onClick={() => onSort("incidents")} className="sortable num">Inc.{sortArrow("incidents")}</th>
-                    <th onClick={() => onSort("driverFault")} className="sortable num">Drv-fault{sortArrow("driverFault")}</th>
+                    <th onClick={() => onSort("date")} className="sortable">Report{sortArrow("date")}</th>
+                    <th onClick={() => onSort("incidents")} className="sortable num">Incidents{sortArrow("incidents")}</th>
+                    <th className="num" title="Incidents against the report before it">vs previous</th>
+                    <th onClick={() => onSort("driverFault")} className="sortable num">Driver fault{sortArrow("driverFault")}</th>
                     <th onClick={() => onSort("withPhotos")} className="sortable num">Photos{sortArrow("withPhotos")}</th>
                     {WEEK_COLS.map((c) => (
                       <th key={c.id} onClick={() => onSort(c.id)} className="sortable num">
@@ -593,8 +695,7 @@ function WeeklyView({ rows, chart, kbIndex, onOpen, onDelete, onSort, sortArrow 
                         </span>
                       </th>
                     ))}
-                    <th className="num">Trend</th>
-                    <th style={{ width: 40 }} />
+                    <th aria-label="Actions" />
                   </tr>
                 </thead>
                 <tbody>
@@ -604,33 +705,34 @@ function WeeklyView({ rows, chart, kbIndex, onOpen, onDelete, onSort, sortArrow 
                       className={`clickable ${i === kbIndex ? "kb-active" : ""}`}
                       onClick={() => onOpen(r.report.id)}
                     >
-                      <td>
-                        <strong style={{ color: "var(--davis-blue)" }}>
-                          {r.report.name || "Untitled Report"}
-                        </strong>
+                      <td className="card-primary rp-name" title={r.report.name || undefined}>
+                        <span className="rp-name-text">{reportWeekName(r.report)}</span>
+                        <span className="rp-span">{reportSpanLabel(r.report)}</span>
                       </td>
-                      <td>{reportSpanLabel(r.report)}</td>
-                      <td className="num">{r.count}</td>
-                      <td className="num">{r.driverFault || "·"}</td>
-                      <td className="num">{r.withPhotos || "·"}</td>
+                      <td className="num" data-label="Incidents"><Count v={r.count} /></td>
+                      <td className="num" data-label="vs previous"><Delta value={r.delta} /></td>
+                      <td className="num" data-label="Driver fault"><Count v={r.driverFault || 0} /></td>
+                      <td className="num" data-label="Photos"><Count v={r.withPhotos || 0} /></td>
                       {WEEK_COLS.map((c) => (
-                        <td key={c.id} className="num">{r.byCat[c.id] || "·"}</td>
+                        <td key={c.id} className="num" data-label={c.label}><Count v={r.byCat[c.id] || 0} /></td>
                       ))}
-                      <td className="num">
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                          <Sparkline values={r.spark} />
-                          <Delta value={r.delta} />
-                        </span>
-                      </td>
-                      <td onClick={(e) => e.stopPropagation()}>
-                        <button
-                          className="btn ghost sm"
-                          onClick={(e) => onDelete(e, r.report)}
-                          title="Delete report and its incidents"
-                          style={{ color: "var(--accent-red)" }}
-                        >
-                          ×
-                        </button>
+                      <td className="row-menu-cell" onClick={(e) => e.stopPropagation()}>
+                        <CardMenu
+                          label={`Actions for ${r.report.name || "this report"}`}
+                          className="row-menu"
+                          fixed
+                          items={[
+                            { id: "open", label: "Open report", icon: "file-text", onSelect: () => onOpen(r.report.id) },
+                            {
+                              id: "delete",
+                              label: "Delete report",
+                              icon: "trash-2",
+                              danger: true,
+                              title: "Delete the report and its incidents",
+                              onSelect: () => onDelete({ stopPropagation() {} }, r.report),
+                            },
+                          ]}
+                        />
                       </td>
                     </tr>
                   ))}
@@ -645,15 +747,44 @@ function WeeklyView({ rows, chart, kbIndex, onOpen, onDelete, onSort, sortArrow 
 }
 
 // ── MONTHLY ──────────────────────────────────────────────────────────────────
-function MonthlyView({ year, rows, chart, expandedKey, setExpandedKey, reportsInMonth, onOpen }) {
+function MonthlyView({ year, rows, chart, expandedKey, setExpandedKey, reportsInMonth, onOpen, untracked }) {
+  // Whether the columns carry their numbers at the width they're drawn (StackedColumns'
+  // label plan): the subtitle names the peak only when they don't.
+  const [plan, setPlan] = useState("none");
   const priorLine = { id: "ghost", label: `${year - 1} total`, color: PRIOR, line: true };
+  const keys = SERIES.map((c) => c.id);
+  const partial = chart.find((r) => r.__partial && r.__toDate && (rowTotal(r, keys) || 0) > 0);
+  // Last year's months with nothing on file draw no tick; the note names them.
+  const priorGaps = chart.filter((r) => r.ghost === null).map((r) => ymOf(year - 1, Number(r.key.slice(5, 7))));
+  const anyPrior = priorGaps.length < chart.length;
+  const notes = [];
+  if (partial) notes.push(`Faded: ${partial.name} is to date (${partial.__toDate.days} of ${partial.__toDate.of} days)`);
+  if (anyPrior && priorGaps.length) {
+    const names = priorGaps.map((ym) => fmtYm(ym).slice(0, 3));
+    const list = names.length < 3 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+    notes.push(`${year - 1}: ${list} not on file`);
+  }
+  // Attempts (logged) began with the entry tabs: a month before that holds none.
+  if (`${year}-01` < SOURCE_FROM.manual) notes.push(`Attempts (logged) begin ${fmtYm(SOURCE_FROM.manual)}; earlier months hold none`);
   return (
     <>
-      {/* Last year's total is a solid gray line: a dashed one reads as a projection. */}
+      {/* Last year's total is a 2px gray tick across each month's column, a little
+          wider than it (a bullet chart's target), on the same axis — not a line through
+          the bars (it sliced the segments and broke mid-bar where a month was missing).
+          The columns stay centred on their months; a month with no column (still to
+          come) gets no tick, and its last-year total stays in the hover and the table.
+          Each column keeps its number over its own cap, lifted only past a tick that
+          would cross it. */}
       <ChartCard
         className="chart-band"
-        title={`${year} · monthly trend (stacked) with prior-year line`}
-        legend={[...SERIES, priorLine]}
+        title={`Incidents by month · ${year}`}
+        subtitle={[
+          `${rows.reduce((a, m) => a + m.total, 0).toLocaleString()} total`,
+          plan !== "all" && peakSummary(chart, { grain: "month", value: (r) => rowTotal(r, keys), partial: (r) => r.__partial }),
+        ]
+          .filter(Boolean)
+          .join(" · ")}
+        legend={anyPrior ? [...SERIES, priorLine] : SERIES}
         table={chartTable({
           rows: chart,
           x: { key: "name", label: "Month" },
@@ -663,9 +794,10 @@ function MonthlyView({ year, rows, chart, expandedKey, setExpandedKey, reportsIn
           source: (r) => sourceLabel(r.source),
         })}
         csv={csvName("Reports monthly", year)}
-        height={280}
+        height={320}
+        note={notes.length ? notes.join(" · ") : null}
       >
-        <StackedColumns data={chart} xKey="name" series={SERIES} lines={[priorLine]} />
+        <StackedColumns data={chart} xKey="key" grain="month" series={SERIES} marks={anyPrior ? [priorLine] : []} onLabelPlan={setPlan} />
       </ChartCard>
 
       {rows.length === 0 ? (
@@ -674,7 +806,9 @@ function MonthlyView({ year, rows, chart, expandedKey, setExpandedKey, reportsIn
         <div className="card">
           <div className="card-body tight">
             <div className="table-wrap">
-              <table className="data analytics-table">
+              {/* On a phone each month is a card (.cards-on-phone): nothing runs off the
+                  screen. */}
+              <table className="data analytics-table rp-table cards-on-phone">
                 <thead>
                   <tr>
                     <th>Month</th>
@@ -691,19 +825,22 @@ function MonthlyView({ year, rows, chart, expandedKey, setExpandedKey, reportsIn
                     const key = `m${m.month}`;
                     const open = expandedKey === key;
                     const weeks = open ? reportsInMonth(year, m.month) : [];
+                    const ym = ymOf(year, m.month);
                     return (
                       <FragmentRow key={key}>
                         <tr className="clickable" onClick={() => setExpandedKey(open ? null : key)}>
-                          <td>
+                          <td className="nowrap card-primary">
                             <span className="row-caret">{open ? "▾" : "▸"}</span>
-                            <strong>{m.monthName} {year}</strong>
+                            {m.monthName} {year}
                           </td>
-                          <td className="num"><strong>{m.total}</strong></td>
-                          <td className="num"><Delta value={m.delta} /></td>
+                          <td className="num" data-label="Total"><Count v={m.total} strong /></td>
+                          <td className="num" data-label="vs prior"><Delta value={m.delta} toDate={m.toDate} /></td>
                           {ANALYTICS_CATEGORIES.map((c) => (
-                            <td key={c.id} className="num">{m.byCat[c.id] || "·"}</td>
+                            <td key={c.id} className="num" data-label={c.label}>
+                              <Count v={untracked(ym, m.source, c.id) ? null : m.byCat[c.id] || 0} />
+                            </td>
                           ))}
-                          <td><span className={`src-badge ${m.source}`}>{sourceLabel(m.source)}</span></td>
+                          <td className="src-text" data-label="Source">{sourceLabel(m.source)}</td>
                         </tr>
                         {open && (
                           <tr className="expander-row">
@@ -720,7 +857,7 @@ function MonthlyView({ year, rows, chart, expandedKey, setExpandedKey, reportsIn
                                       className="mini-week"
                                       onClick={() => onOpen(w.report.id)}
                                     >
-                                      <span className="mini-week-name">{w.report.name}</span>
+                                      <span className="mini-week-name">{reportWeekName(w.report)}</span>
                                       <span className="mini-week-meta">
                                         {reportSpanLabel(w.report)} · {w.count} inc.
                                       </span>
@@ -745,7 +882,9 @@ function MonthlyView({ year, rows, chart, expandedKey, setExpandedKey, reportsIn
 }
 
 // ── YEARLY ───────────────────────────────────────────────────────────────────
-function YearlyView({ rows, chart, expandedKey, setExpandedKey, monthlyForYear }) {
+function YearlyView({ rows, chart, expandedKey, setExpandedKey, monthlyForYear, yearNote, untracked, thisYear }) {
+  const keys = SERIES.map((c) => c.id);
+  const chartOf = new Map(chart.map((r) => [r.name, r]));
   return (
     <>
       {chart.length === 0 ? (
@@ -758,6 +897,7 @@ function YearlyView({ rows, chart, expandedKey, setExpandedKey, monthlyForYear }
         <ChartCard
           className="chart-band"
           title="Year totals by category"
+          subtitle={`${chart.length} years${chart.some((r) => Number(r.name) === thisYear) ? ` · ${thisYear} is to date` : ""}`}
           legend={SERIES}
           table={chartTable({
             rows: chart,
@@ -767,9 +907,25 @@ function YearlyView({ rows, chart, expandedKey, setExpandedKey, monthlyForYear }
             source: (r) => r.source,
           })}
           csv={csvName("Reports yearly")}
-          height={280}
+          height="auto"
         >
-          <StackedColumns data={chart} xKey="name" series={SERIES} xAxis={{ tick: { ...axisTick, fontSize: 12 } }} />
+          {/* One row per year, stacked by category, its total at the end; under it what
+              the year never tracked — a short bar is never read as a quiet year. */}
+          <BarList
+            rows={chart.map((r) => ({ ...r, key: r.name, total: rowTotal(r, keys) || 0 }))}
+            order="given"
+            value={(r) => r.total}
+            label={(r) => (Number(r.name) === thisYear ? `${r.name} to date` : r.name)}
+            series={SERIES}
+            faded={(r) => Number(r.name) === thisYear}
+            size="lg"
+            limit={0}
+            note={(r) => yearNote(r.name)}
+            rowTitle={(r) =>
+              [`${r.name}: ${r.total} total`, ...SERIES.map((c) => `${c.label} ${r[c.id] === null ? "—" : r[c.id]}`)].join("\n")
+            }
+            ariaLabel="Year totals by category"
+          />
         </ChartCard>
       )}
 
@@ -779,7 +935,7 @@ function YearlyView({ rows, chart, expandedKey, setExpandedKey, monthlyForYear }
         <div className="card">
           <div className="card-body tight">
             <div className="table-wrap">
-              <table className="data analytics-table">
+              <table className="data analytics-table rp-table cards-on-phone">
                 <thead>
                   <tr>
                     <th>Year</th>
@@ -795,17 +951,20 @@ function YearlyView({ rows, chart, expandedKey, setExpandedKey, monthlyForYear }
                     const key = `y${y.year}`;
                     const open = expandedKey === key;
                     const months = open ? monthlyForYear(y.year) : [];
+                    const cr = chartOf.get(String(y.year));
                     return (
                       <FragmentRow key={key}>
                         <tr className="clickable" onClick={() => setExpandedKey(open ? null : key)}>
-                          <td>
+                          <td className="nowrap card-primary">
                             <span className="row-caret">{open ? "▾" : "▸"}</span>
-                            <strong>{y.year}</strong>
+                            {y.year}
                           </td>
-                          <td className="num"><strong>{y.total}</strong></td>
-                          <td className="num"><Delta value={y.delta} /></td>
+                          <td className="num" data-label="Total"><Count v={y.total} strong /></td>
+                          <td className="num" data-label="YoY"><Delta value={y.delta} toDate={y.toDate} notCompared={y.notCompared} /></td>
                           {ANALYTICS_CATEGORIES.map((c) => (
-                            <td key={c.id} className="num">{y.byCat[c.id] || "·"}</td>
+                            <td key={c.id} className="num" data-label={c.label}>
+                              <Count v={cr && cr[c.id] === null ? null : y.byCat[c.id] || 0} />
+                            </td>
                           ))}
                         </tr>
                         {open && (
@@ -814,28 +973,32 @@ function YearlyView({ rows, chart, expandedKey, setExpandedKey, monthlyForYear }
                               {months.length === 0 ? (
                                 <div className="drawer-muted" style={{ padding: 8 }}>No monthly data.</div>
                               ) : (
-                                <table className="data analytics-subtable">
-                                  <thead>
-                                    <tr>
-                                      <th>Month</th>
-                                      <th className="num">Total</th>
-                                      {ANALYTICS_CATEGORIES.map((c) => (
-                                        <th key={c.id} className="num">{c.label}</th>
-                                      ))}
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {months.map((m) => (
-                                      <tr key={m.month}>
-                                        <td>{m.monthName}</td>
-                                        <td className="num">{m.total}</td>
+                                <div className="table-wrap">
+                                  <table className="data analytics-subtable">
+                                    <thead>
+                                      <tr>
+                                        <th>Month</th>
+                                        <th className="num">Total</th>
                                         {ANALYTICS_CATEGORIES.map((c) => (
-                                          <td key={c.id} className="num">{m.byCat[c.id] || "·"}</td>
+                                          <th key={c.id} className="num">{c.label}</th>
                                         ))}
                                       </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
+                                    </thead>
+                                    <tbody>
+                                      {months.map((m) => (
+                                        <tr key={m.month}>
+                                          <td>{m.monthName}</td>
+                                          <td className="num">{m.total}</td>
+                                          {ANALYTICS_CATEGORIES.map((c) => (
+                                            <td key={c.id} className="num">
+                                              <Count v={untracked(ymOf(y.year, m.month), m.source, c.id) ? null : m.byCat[c.id] || 0} />
+                                            </td>
+                                          ))}
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
                               )}
                             </td>
                           </tr>

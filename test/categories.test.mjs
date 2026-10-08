@@ -27,16 +27,16 @@ import { computeContribution } from "../src/data/rollup.js";
 import { ANALYTICS_CATEGORIES, ANALYTICS_CATEGORY_IDS } from "../src/data/analytics.js";
 
 test("failures are pinned in the validated stack order and colours", () => {
-  // `node validate_palette.js "#dc3545,#fb923c,#f472b6,#ca8a04,#a855f7,#14b8a6"
-  //  --mode light --surface "#ffffff"` → ALL CHECKS PASS (worst adjacent CVD ΔE 16.1).
+  // `node validate_palette.js "#994137,#e2975f,#c16791,#a07e12,#7052a6,#20a1af"
+  //  --mode light --surface "#ffffff"` → ALL CHECKS PASS (worst adjacent CVD ΔE 12.9).
   // Changing a hue or the order here means re-running it.
   assert.deepEqual(FAILURES, ["damage", "forgotten_freight", "misdelivery", "late", "missing", "complaint"]);
   assert.deepEqual(
     FAILURES.slice(0, 5).map(catColor),
-    ["#dc3545", "#fb923c", "#f472b6", "#ca8a04", "#a855f7"],
+    ["#994137", "#e2975f", "#c16791", "#a07e12", "#7052a6"],
   );
   assert.equal(ATTEMPTS, "attempts");
-  assert.equal(catColor(ATTEMPTS), "#14b8a6");
+  assert.equal(catColor(ATTEMPTS), "#20a1af");
   // Complaint is the de-emphasis gray, not a validated slot.
   assert.equal(catColor("complaint"), "#94a3b8");
 });
@@ -45,7 +45,7 @@ test("the six stacked categories are the validated six-slot order", () => {
   assert.deepEqual(CHARTED6, ["damage", "forgotten_freight", "misdelivery", "late", "missing", "attempts"]);
   assert.deepEqual(
     CHARTED6.map(catColor),
-    ["#dc3545", "#fb923c", "#f472b6", "#ca8a04", "#a855f7", "#14b8a6"],
+    ["#994137", "#e2975f", "#c16791", "#a07e12", "#7052a6", "#20a1af"],
   );
   // Reports and Trends stack exactly these, in this order.
   assert.deepEqual(ANALYTICS_CATEGORY_IDS, CHARTED6);
@@ -54,7 +54,7 @@ test("the six stacked categories are the validated six-slot order", () => {
     [...ANALYTICS_CATEGORY_IDS].sort(),
     ["attempts", "damage", "forgotten_freight", "late", "misdelivery", "missing"],
   );
-  assert.equal(ANALYTICS_CATEGORIES.find((c) => c.id === "late").color, "#ca8a04");
+  assert.equal(ANALYTICS_CATEGORIES.find((c) => c.id === "late").color, "#a07e12");
 });
 
 test("COUNTED8 is the rollup's TRACKED set", () => {
@@ -85,7 +85,7 @@ test("every category has a polarity, and polarities partition the registry", () 
 
 test("compliment has a defined colour", () => {
   assert.match(catColor("compliment"), /^#[0-9a-f]{6}$/);
-  assert.equal(catColor("compliment"), "#22c55e");
+  assert.equal(catColor("compliment"), "#6f992a");
 });
 
 test("the incident vocabulary takes its labels and colours from the registry", () => {
@@ -93,7 +93,7 @@ test("the incident vocabulary takes its labels and colours from the registry", (
     assert.equal(c.color, catColor(c.id), c.id);
     assert.equal(c.label, catLabel(c.id), c.id);
   }
-  assert.equal(INCIDENT_CATEGORIES.find((c) => c.id === "forgotten_freight").color, "#fb923c");
+  assert.equal(INCIDENT_CATEGORIES.find((c) => c.id === "forgotten_freight").color, "#e2975f");
 });
 
 test("an unknown id is shown, not dropped", () => {
@@ -103,21 +103,22 @@ test("an unknown id is shown, not dropped", () => {
 });
 
 test("print colours are the screen colours", () => {
-  assert.deepEqual(catRgb("late"), [202, 138, 4]);
-  assert.deepEqual(catRgb("forgotten_freight"), [251, 146, 60]);
-  assert.deepEqual(catRgb("attempts"), [20, 184, 166]);
+  assert.deepEqual(catRgb("late"), [160, 126, 18]);
+  assert.deepEqual(catRgb("forgotten_freight"), [226, 151, 95]);
+  assert.deepEqual(catRgb("attempts"), [32, 161, 175]);
 });
 
 // Nothing outside categories.js may spell a category colour again — not in .js, .jsx or
-// .css. Every registry hex is banned, with the hexes the six old copies used and the PDF
-// RGB triples of the distinctive hues.
+// .css. Every registry hex is banned, with the hexes the six old copies used, the bright
+// palette v0.24.1 retired (so the candy hues can't creep back), and the PDF RGB triples
+// of the distinctive hues.
 //
 // A few registry values are ALSO a status or neutral token with a job of its own (the
 // red is the driver-fault red; the slates are muted text). Those are allowed only in the
 // files listed, each for the reason given; anywhere else they fail like the rest.
 const ALLOWED = {
   "styles.css": {
-    "#dc3545": "--accent-red and the driver-fault chip: status red",
+    "#dc3545": "--accent-red and the driver-fault chip: status red, no longer a category hue",
     "#94a3b8": "slate muted text",
     "#64748b": "slate muted text, and the Uline traces source badge",
     "#3b82f6": "the Uline returns source badge: a report source, not the Return category",
@@ -135,6 +136,9 @@ test("no other source file carries a category colour", () => {
     ...new Set(CATEGORIES.map((c) => c.color.toLowerCase())),
     "#f97316", "#facc15", "#ef4444", "#22aa5c",
     "[249, 115, 22]", "[168, 85, 247]", "[244, 114, 182]",
+    // The bright palette before v0.24.1.
+    "#dc3545", "#fb923c", "#f472b6", "#ca8a04", "#a855f7", "#14b8a6", "#22c55e",
+    "[251, 146, 60]", "[202, 138, 4]", "[20, 184, 166]", "[34, 197, 94]",
     ...["forgotten_freight", "misdelivery", "late", "missing", "attempts", "compliment"].map(
       (id) => `[${catRgb(id).join(", ")}]`,
     ),
