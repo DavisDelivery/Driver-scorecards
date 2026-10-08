@@ -36,6 +36,7 @@ import {
 //   layout        "columns" (vertical) or "bars" (horizontal, a ranked list)
 //   labelAll      label every bar at its tip (a ranked list reads that way); otherwise
 //                 only the latest and the largest are labelled
+//   colorOf       (row) => colour, for a bar that isn't the series ("Not set" in gray)
 export default function EmphasisBars({
   data,
   xKey = "label",
@@ -49,11 +50,12 @@ export default function EmphasisBars({
   labelAll = false,
   categoryWidth = 132,
   xAxis = {},
+  colorOf = null,
 }) {
   const bars = layout === "bars";
   const labelled = new Set(labelAll ? data.map((_, i) => i) : labelIndexes(data.map((d) => d[valueKey])));
   const series = [{ id: valueKey, label: valueName, color }];
-  const fillOf = (d) => (highlightKey && keyOf(d) !== highlightKey ? DEEMPH : color);
+  const fillOf = (d) => (highlightKey && keyOf(d) !== highlightKey ? DEEMPH : colorOf ? colorOf(d) : color);
   return (
     <ResponsiveContainer width="100%" height="100%">
       <BarChart

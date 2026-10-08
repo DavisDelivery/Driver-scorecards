@@ -5,13 +5,23 @@ import React from "react";
 //
 //   compact  the small in-card tile (.me-stat) rather than the page-level .kpi
 //   title    hover text: the tile's one-line definition
-export default function StatTile({ label, value, sub = null, title, compact = false }) {
+//   onClick  makes the compact tile a button: it opens what the number counted
+export default function StatTile({ label, value, sub = null, title, compact = false, onClick = null }) {
   if (compact) {
-    return (
+    const body = (
+      <>
+        <span className="me-stat-num">{value}</span>
+        <span className="me-stat-lbl">{label}</span>
+        {sub && <span className="me-stat-sub">{sub}</span>}
+      </>
+    );
+    return onClick ? (
+      <button type="button" className="me-stat clickable" title={title} onClick={onClick}>
+        {body}
+      </button>
+    ) : (
       <div className="me-stat" title={title}>
-        <div className="me-stat-num">{value}</div>
-        <div className="me-stat-lbl">{label}</div>
-        {sub && <div className="me-stat-sub">{sub}</div>}
+        {body}
       </div>
     );
   }

@@ -12,13 +12,20 @@
 //              driver (a company total, as the Reports analytics counts it)
 //   window     { start, end, categoryIds, driverId?, roleGroup?, fault? } day grain, same rule
 //   incidents  { ids, months?, categoryIds?, driverId? }                 an explicit live list
-//   attempts   { start, end, driverId? }                                 attempt orders
+//   attempts   { start, end, driverId?, driverKey?, filter?, label? }      attempt orders
+//              driverKey is attemptRecords.js's key, so Unassigned and a feed name the
+//              roster doesn't match can be drilled into too; filter narrows the way the
+//              tile did (manualAnalytics.js filterAttempts; `filter.within` is the driver
+//              key whose list a repeat customer was found in, null for the window's);
+//              label says how, for the drawer's heading
 //
 // ctx: { blend: (fault) => blend (blend.js), history, incidents, roleOf: id => role,
-//        attemptRecords }
+//        attemptRecords } — attemptRecords is null until the Attempts tab has loaded them
 import { buildCategoryDetail, buildWindowDetail } from "./scorecardDetail.js";
 import { incidentYm, incidentDateStr } from "./incidentDate.js";
 import { shiftYm } from "./period.js";
+import { driverKey } from "./attemptRecords.js";
+import { filterAttempts } from "./manualAnalytics.js";
 
 // The Scorecard's role groups: "loader" is loaders, "driver" everyone else. An id with
 // no roster row reads as a driver.
@@ -31,7 +38,8 @@ export function groupFilter(roleGroup, roleOf = () => "driver") {
 }
 
 // Tallies for a plain list (incidents or attempt orders), in the detail's shape.
-function listDetail(rows, { ymOf, catOf, nameOf }) {
+// `idOf` is who a row counts under in byDriver (the driver id, or an attempt's key).
+function listDetail(rows, { ymOf, catOf, nameOf, idOf = (r) => r.driver_id || "" }) {
   const out = {
     incidents: [],
     historyRows: [],
@@ -45,7 +53,7 @@ function listDetail(rows, { ymOf, catOf, nameOf }) {
   for (const r of rows) {
     const ym = ymOf(r);
     const cat = catOf(r);
-    const id = r.driver_id || "";
+    const id = idOf(r);
     out.byMonth.set(ym, (out.byMonth.get(ym) || 0) + 1);
     out.byCategory.set(cat, (out.byCategory.get(cat) || 0) + 1);
     const mc = out.byMonthCategory.get(ym) || out.byMonthCategory.set(ym, new Map()).get(ym);
@@ -108,18 +116,28 @@ export function resolveDrill(spec, ctx = {}) {
 
   if (kind === "attempts") {
     const months = spec.months ? new Set(spec.months) : null;
-    const rows = (ctx.attemptRecords || []).filter(
+    const keyOf = (o) => o.key || driverKey(o);
+    const inWindow = (ctx.attemptRecords || []).filter(
+      (o) => (!spec.start || o.date >= spec.start) && (!spec.end || o.date <= spec.end),
+    );
+    const scoped = inWindow.filter(
       (o) =>
-        (!spec.start || o.date >= spec.start) &&
-        (!spec.end || o.date <= spec.end) &&
         (!spec.driverId || o.driver_id === spec.driverId) &&
+        (!spec.driverKey || keyOf(o) === spec.driverKey) &&
         (!months || months.has(String(o.date).slice(0, 7))),
     );
+    // A repeat customer is one the tile's own list saw twice (the window, or the
+    // driver the tile was counting), not one seen twice in what is left after a
+    // driver or a month is picked inside the drawer.
+    const within = spec.filter?.within;
+    const pool = within ? inWindow.filter((o) => keyOf(o) === within) : inWindow;
+    const rows = [...filterAttempts(scoped, spec.filter, { pool })];
     rows.sort((a, b) => String(b.date).localeCompare(String(a.date)));
     const detail = listDetail(rows, {
       ymOf: (o) => String(o.date).slice(0, 7),
       catOf: () => "attempts",
       nameOf: (o) => o.driver_name,
+      idOf: keyOf,
     });
     detail.orders = rows;
     return { ...detail, months: [...detail.byMonth.keys()].sort(), sourceOf: () => "live", liveOnly: true };
@@ -158,6 +176,7 @@ export function narrowSpec(spec, op) {
   if (!op) return spec;
   if (op.category) return { ...spec, categoryIds: [op.category] };
   if (op.driverId) return { ...spec, driverId: op.driverId };
+  if (op.driverKey) return { ...spec, driverKey: op.driverKey };
   if (op.month) {
     if (spec.kind === "window") {
       const start = spec.start > `${op.month}-01` ? spec.start : `${op.month}-01`;
@@ -271,6 +290,41 @@ export function drillStamp({ incidents = [], history = [], drivers = [] } = {}) 
   for (const d of drivers) add(`d|${d.id}|${d.role || ""}`);
   const n = incidents.length + history.length + drivers.length;
   return `${n.toString(36)}.${sum.toString(36)}.${mix.toString(36)}`;
+}
+
+// The same fingerprint for the attempt records the Attempts tab has loaded: which
+// orders, on which days, under whom, and how each one ended. A drawer opened on them is
+// checked only against a count of the same orders.
+export function attemptStamp(records = []) {
+  let sum = 0;
+  let mix = 0;
+  for (const r of records) {
+    const h = fnv(`a|${r.id}|${r.date}|${r.key || ""}|${r.outcome || ""}`);
+    sum = (sum + h) >>> 0;
+    mix = (mix ^ Math.imul(h, 2654435761)) >>> 0;
+  }
+  return `${records.length.toString(36)}.${sum.toString(36)}.${mix.toString(36)}`;
+}
+
+// Everything a drill-down counts from, as the one stamp a drawer state carries
+// (`at`): drillStamp's data, plus the attempt orders the Attempts tab has published,
+// once it has. Before they're published the stamp says so by leaving them out, so a
+// tile clicked while its period was still loading is never checked against the
+// orders that arrive after it.
+export function dataStamp({ incidents = [], history = [], drivers = [], attemptRecords = null } = {}) {
+  return drillStamp({ incidents, history, drivers }) + (attemptRecords ? `~${attemptStamp(attemptRecords)}` : "");
+}
+
+// What the drawer says about the number that was clicked, given what it counts now:
+//   null        nothing to say: no number was clicked, or the two agree
+//   "mismatch"  they differ, counted from the same data — a real disagreement
+//   "moved"     they differ, but the data has changed since the click
+// A state with no stamp was opened just now, from the data on screen (DrillHost
+// stamps it); a screen whose numbers can be on screen before the drawer's data is in
+// (the Attempts tab, while its period loads) stamps the state itself when clicked.
+export function drillVerdict({ expected, total, at = null, stamp }) {
+  if (typeof expected !== "number" || typeof total !== "number" || total === expected) return null;
+  return !at || at === stamp ? "mismatch" : "moved";
 }
 
 function fnv(s) {

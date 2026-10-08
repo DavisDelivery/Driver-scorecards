@@ -12,6 +12,7 @@ import {
   decodeDrill,
   groupFilter,
   drillStamp,
+  attemptStamp,
   spanMonths,
 } from "../src/data/drill.js";
 
@@ -126,6 +127,25 @@ test("the data stamp moves with anything a drill-down counts, and not with order
   ]) {
     assert.notEqual(drillStamp(changed), stamp);
   }
+});
+
+test("the attempts stamp moves with which orders, their day, driver and outcome", () => {
+  const recs = [
+    { id: "feed:2026-09-01:1", date: "2026-09-01", key: "d1", outcome: "delivered", customer: "A" },
+    { id: "feed:2026-09-02:2", date: "2026-09-02", key: "unassigned", outcome: "unplanned" },
+  ];
+  const stamp = attemptStamp(recs);
+  assert.equal(attemptStamp([...recs].reverse()), stamp);
+  assert.equal(attemptStamp([{ ...recs[0], customer: "B" }, recs[1]]), stamp, "a customer name isn't counted");
+  for (const changed of [
+    [recs[0]],
+    [{ ...recs[0], key: "d2" }, recs[1]], // reassigned
+    [{ ...recs[0], outcome: "rescheduled" }, recs[1]],
+    [{ ...recs[0], date: "2026-09-03" }, recs[1]],
+  ]) {
+    assert.notEqual(attemptStamp(changed), stamp);
+  }
+  assert.equal(attemptStamp([]), "0.0.0");
 });
 
 test("a span runs from the first month to the last, gaps included", () => {

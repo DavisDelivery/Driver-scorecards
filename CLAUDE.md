@@ -71,6 +71,16 @@ seeding), catch it there deliberately and say why in a comment.
   roster when the roster read succeeded and came back empty.
 - File an incident under a month with `incidentYm()` / `incidentDateStr()` from
   `src/data/incidentDate.js`. Hand-copied date precedences drifted apart before.
+- The manual-entry tabs (Forgotten Freight, Unable to Track, Mis-Deliveries, Compliments,
+  Attempts) draw from `src/data/manualAnalytics.js`, attempts from
+  `attemptRecords.js`. A picked driver (`<ns>.driver` in the hash) re-scopes the tiles,
+  charts, table and log against the rest of the fleet — never a total. Rank leaves out
+  Unassigned and feed names the roster doesn't match. An attempts drill-down counts the
+  records the Attempts tab publishes (`publishAttempts` in AnalyticsProvider), so its
+  total is the tile's; the tab stamps the drawer with the data on screen when clicked
+  (`at`), since its period can still be loading. The picker, rank, by-driver chart and
+  driver card wait for the roster (`RosterGate`), and a feed that can't be reached shows
+  "—", never 0.
 
 ## Categories, charts and screen state
 
@@ -93,8 +103,8 @@ seeding), catch it there deliberately and say why in a comment.
   Owns the shared print primitives (brand and ink palette, `drawBadge`, `loadImage`,
   `fitDims`). Category colours come from `categories.js`, not from here.
 - `src/reports/driverReport.js` — single-driver handout for the selected period, printed
-  from the manual-entry tabs. Imports its styling from `pdfGenerator.js` so the two can't
-  drift apart.
+  from the manual-entry tabs: exactly the rows on screen (the order table on Attempts, the
+  log elsewhere). Imports its styling from `pdfGenerator.js` so the two can't drift apart.
 
 ## Dates
 

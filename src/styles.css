@@ -588,6 +588,7 @@ table.data tr.clickable {
   cursor: not-allowed;
 }
 input[type="text"],
+input[type="search"],
 input[type="number"],
 input[type="date"],
 select,
@@ -2528,7 +2529,7 @@ table.data.analytics-subtable th {
 }
 .ff-unassigned-row {
   display: grid;
-  grid-template-columns: 88px 120px minmax(0, 1fr) minmax(0, 1.2fr) auto;
+  grid-template-columns: 128px 120px minmax(0, 1fr) minmax(0, 1.2fr) auto;
   align-items: center;
   gap: 10px;
   padding: 5px 0;
@@ -2609,6 +2610,19 @@ table.data.analytics-subtable th {
 }
 .ff-feed-coverage-gap { color: #b45309; }
 .ff-feed-coverage-gap strong { font-weight: 600; }
+/* A no-data day: opens it in the daily log. */
+.ff-feed-coverage-day {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: inherit;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.ff-feed-coverage-day:hover { text-decoration-style: solid; }
 
 /* --- Chart kit (v0.20.0) ----------------------------------------------------
    One frame for every chart: title, count, a legend for 2+ series, and the
@@ -2936,3 +2950,254 @@ table.data.analytics-subtable th {
 @media (max-width: 760px) {
   .modal.drill .cd-grid { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* --- Manual-entry tabs follow a picked driver (v0.21.0) ----------------------
+   One filter row (period, driver, Print) scopes everything below it; the tiles open
+   what they count; a chart click narrows the order table or log behind a chip. */
+.me-analytics-head.stacked { flex-direction: column; align-items: stretch; gap: 8px; }
+.me-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.me-focus { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.me-focus input { width: 220px; max-width: 100%; padding: 6px 10px; font-size: 12.5px; }
+.me-notice {
+  margin: -4px 2px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-1);
+}
+/* A tile that opens what it counts: a button that keeps the tile's look. */
+.me-stat.clickable {
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  padding: 6px 8px;
+  margin: -6px -8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.me-stat.clickable:hover { background: #f4f7fb; }
+.me-stat.clickable:hover .me-stat-lbl { color: var(--davis-blue); }
+.me-stat.clickable:focus-visible { outline: 2px solid var(--davis-blue); outline-offset: 2px; }
+.me-chart-grid-2 { margin-top: 18px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+@media (max-width: 760px) {
+  .me-chart-grid-2 { grid-template-columns: 1fr; }
+  .me-focus { flex: 1 1 100%; }
+  .me-focus input { flex: 1; width: auto; }
+}
+.ct-note { color: var(--text-1); margin-top: 3px; padding-left: 19px; max-width: 240px; white-space: normal; }
+
+/* What a click narrowed the list to: each chip takes itself off. */
+.me-chips {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  margin: 12px 0 2px;
+  font-size: 12px;
+}
+.me-chips-lead {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.me-chip {
+  border: 1px solid #c7d4ea;
+  background: var(--davis-blue-bg);
+  color: var(--text-0);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.me-chip span { color: var(--text-2); margin-left: 2px; }
+.me-chip:hover { border-color: var(--davis-blue); }
+.card-body > .me-chips:first-child { margin-top: 0; margin-bottom: 10px; }
+
+/* What happened after the attempt: one 100% bar, 2px gaps, rounded ends only. */
+.ob { display: flex; flex-direction: column; gap: 6px; }
+.ob-bar { display: flex; gap: 2px; height: 24px; }
+.ob-seg {
+  min-width: 6px;
+  flex-basis: 0;
+  border: 0;
+  padding: 0;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.ob-seg:first-child { border-radius: 4px 0 0 4px; }
+.ob-seg:last-child { border-radius: 0 4px 4px 0; }
+.ob-seg:only-child { border-radius: 4px; }
+.ob-seg.dim { opacity: 0.35; }
+.ob-seg:focus-visible { outline: 2px solid var(--text-0); outline-offset: 1px; }
+.ob-cap { font-size: 11px; color: var(--text-2); }
+
+/* The picked driver's card under the Drivers chart. */
+.dc {
+  margin-top: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: #fbfcfe;
+}
+.dc-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.dc-name { font-size: 16px; font-weight: 700; color: var(--text-0); }
+.dc-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.dc-grid {
+  display: grid;
+  grid-template-columns: minmax(120px, auto) minmax(0, 1.3fr) minmax(0, 1fr);
+  gap: 18px;
+  margin-top: 12px;
+  align-items: start;
+}
+.dc-stats { display: flex; flex-direction: column; gap: 10px; }
+.dc-stat { display: flex; flex-direction: column; gap: 2px; }
+.dc-stat-num { font-family: var(--mono); font-size: 20px; font-weight: 700; color: var(--text-0); line-height: 1.1; }
+.dc-break-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12.5px;
+  padding: 3px 0;
+  border-bottom: 1px solid #eef2f6;
+}
+.dc-break-row b { font-family: var(--mono); color: var(--text-0); }
+.dc-notes { margin-top: 10px; font-size: 12px; line-height: 1.5; color: var(--text-1); }
+.dc-recent { margin-top: 10px; }
+.dc-recent-row { display: flex; align-items: center; gap: 10px; padding: 3px 0; font-size: 12px; flex-wrap: wrap; }
+.dc-spark-cols { display: flex; align-items: flex-end; gap: 3px; height: 92px; }
+.dc-spark-col {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 34px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.dc-spark-n { font-family: var(--mono); font-size: 9.5px; color: var(--text-2); min-height: 12px; }
+.dc-spark-bar { width: 100%; max-width: 16px; height: 52px; display: flex; align-items: flex-end; }
+.dc-spark-bar span { display: block; width: 100%; border-radius: 3px 3px 0 0; min-height: 0; }
+.dc-spark-lbl { font-family: var(--mono); font-size: 8.5px; color: var(--text-2); white-space: nowrap; }
+.dc-spark-src { font-size: 8px; line-height: 1; color: #64748b; }
+.dc-spark-key { display: flex; gap: 10px; margin-top: 4px; font-size: 10.5px; color: var(--text-2); }
+@media (max-width: 760px) {
+  .dc-grid { grid-template-columns: 1fr; gap: 12px; }
+  .dc-stats { flex-direction: row; gap: 24px; }
+}
+
+/* The period's attempted orders: sortable, searchable, one row per order. */
+.aot-tools { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.aot-search { flex: 1; padding: 6px 10px; }
+.aot-wrap { border: 1px solid var(--border); border-radius: 8px; max-height: 620px; overflow: auto; }
+.aot-table { min-width: 860px; }
+.aot.compact .aot-table { min-width: 560px; }
+.aot-table th { position: sticky; top: 0; z-index: 1; }
+.aot-table td { font-size: 12.5px; vertical-align: top; white-space: nowrap; }
+.aot-table td.aot-cust { white-space: normal; min-width: 180px; }
+/* The legs and MANUAL chips sit under the shipment number, so they don't widen every
+   row's shipment column past what the drawer and the tab have room for. */
+.aot-table td.aot-ship { white-space: normal; }
+.aot-ship .aot-chip { display: table; margin: 3px 0 0; white-space: nowrap; }
+.aot-sort {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.aot-sort:hover { color: var(--davis-blue); }
+.aot-date { font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
+.aot-chip { margin-left: 6px; }
+.aot-link {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: #234294;
+  cursor: pointer;
+  text-align: left;
+}
+.aot-link:hover { text-decoration: underline; text-underline-offset: 2px; }
+.aot-late { margin-left: 8px; font-size: 11.5px; font-weight: 600; }
+.aot-change { margin-left: 8px; font-size: 11px; color: var(--text-2); }
+.aot-unassigned { color: #b45309; }
+.aot-driver .aot-link { color: var(--text-0); }
+.aot-driver .aot-link.aot-unassigned { color: #b45309; }
+.aot-driver .aot-link:hover { color: #234294; }
+.aot-cust { max-width: 320px; }
+.aot-sort-phone { display: none; }
+/* On a phone each order is a small card: the date and shipment on top, the rest as
+   labelled lines, so nothing hides off to the side. The header row goes, so the sort
+   moves into a select beside the search; and the list scrolls with the page, since a
+   second, vertical scroll inside it would trap the thumb. */
+@media (max-width: 760px) {
+  .aot-tools { flex-wrap: wrap; }
+  .aot-search { flex: 1 1 100%; }
+  .aot-sort-phone { display: block; flex: 1; width: auto; font-size: 12px; padding: 5px 8px; }
+  .aot-wrap { max-height: none; overflow: visible; border: 0; border-radius: 0; }
+  table.data.aot-table,
+  .aot.compact table.data.aot-table { min-width: 0; }
+  .aot-table thead { display: none; }
+  .aot-table,
+  .aot-table tbody,
+  .aot-table tr,
+  .aot-table td { display: block; }
+  .aot-table tr {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin-bottom: 8px;
+  }
+  table.data.aot-table tr:hover td { background: transparent; }
+  table.data.aot-table td {
+    border: 0;
+    padding: 2px 0;
+    min-width: 0;
+    max-width: none;
+    white-space: normal;
+  }
+  table.data.aot-table td.aot-date { float: left; margin-right: 10px; }
+  .aot-table td[data-label] { display: flex; gap: 8px; align-items: baseline; }
+  .aot-table td[data-label]::before {
+    content: attr(data-label);
+    flex: 0 0 96px;
+    font-family: var(--mono);
+    font-size: 9.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-2);
+  }
+}
+.aot-foot {
+  margin-top: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-2);
+}
+.aot-loading { margin-bottom: 6px; }
+.me-one-class { padding: 10px 0 4px; font-size: 13px; color: var(--text-0); }
+.aot-driver select { font-size: 12px; padding: 3px 6px; max-width: 190px; }
+
+/* Unassigned queue: filter by reason, sort by age. */
+.ff-unassigned-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0 6px; }
+.ff-unassigned-tools select { width: auto; font-size: 12px; padding: 3px 6px; margin-left: 4px; }
+.ff-unassigned-age { color: #b45309; font-family: var(--mono); font-size: 11px; }
+.ff-cell-link.dd-driver-link { font-size: inherit; font-weight: 500; color: #1f2937; }
+.ff-cell-link.dd-driver-link:hover { color: #234294; }
+/* A click on a chart focuses it (for the arrow keys); only keyboard focus draws the ring. */
+.cc-plot *:focus:not(:focus-visible) { outline: none; }

@@ -5,7 +5,7 @@
 // only — never out of a total.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { personIndex, nameOf, peerSet, fleetStats, rankOf } from "../src/data/people.js";
+import { personIndex, nameOf, nameOfKey, peerSet, fleetStats, rankOf } from "../src/data/people.js";
 import { historyLoadState, initialLoadState, isStale, HISTORY_MAX_AGE_MS } from "../src/data/loadState.js";
 import { drivers, incidents, history } from "./blend-fixture.mjs";
 
@@ -20,6 +20,16 @@ test("an unknown id is visible and named from the data", () => {
   // An id nobody has ever seen still shows as itself; no id at all is Unattributed.
   assert.equal(nameOf(people, "zz"), "zz");
   assert.equal(nameOf(people, ""), "Unattributed");
+});
+
+test("a driver key is named the way its bar is", () => {
+  // attemptRecords.js keys: a roster id, "name:<feed name>", or "unassigned".
+  const people = personIndex({ drivers, incidents, history });
+  assert.equal(nameOfKey(people, "d1"), "Ann Able");
+  assert.equal(nameOfKey(people, "name:Kobe Boakye"), "Kobe Boakye");
+  assert.equal(nameOfKey(people, "unassigned"), "Unassigned");
+  assert.equal(nameOfKey(people, ""), "Unassigned");
+  assert.equal(nameOfKey(people, "d5"), "ZED ZULU", "an id with no roster row is named from the data");
 });
 
 test("the roster wins for names, roles and status", () => {

@@ -19,7 +19,7 @@ import { loadHistoryChecked, onHistoryWritten, historyWriteSeq } from "./firebas
 import { buildBlend } from "./blend.js";
 import { personIndex } from "./people.js";
 import { hiddenDriverIds } from "./drivers.js";
-import { drillStamp } from "./drill.js";
+import { dataStamp as stampOf } from "./drill.js";
 import { historyLoadState, initialLoadState, isStale } from "./loadState.js";
 
 // Today's Driver-fault rule (blend.js): under Driver-fault scope a month qualifies on
@@ -127,16 +127,32 @@ export function AnalyticsProvider({
   const hidden = React.useMemo(() => hiddenDriverIds(drivers), [drivers]);
   const roleOf = React.useCallback((id) => people.get(id)?.role || "driver", [people]);
 
+  // The attempt records the Attempts tab has loaded (attemptRecords.js), so a drawer
+  // opened from one of its tiles counts the very same orders. Only that tab can load
+  // them — they come from the dispatch feed a period at a time — so it publishes them
+  // once its period is in, and takes them back (null) when it closes.
+  //
+  // `error` is set when the feed couldn't be reached for the period: the records are
+  // then the hand-logged attempts alone, and a drawer says so rather than waiting for
+  // orders that aren't coming.
+  const [published, setPublished] = React.useState({ records: null, error: null });
+  const publishAttempts = React.useCallback(
+    (recs, { error = null } = {}) => setPublished({ records: recs || null, error: recs ? error : null }),
+    [],
+  );
+  const attemptRecords = published.records;
+
   // What resolveDrill (drill.js) needs.
   const drillCtx = React.useMemo(
-    () => ({ blend, history: records, incidents, roleOf }),
-    [blend, records, incidents, roleOf],
+    () => ({ blend, history: records, incidents, roleOf, attemptRecords }),
+    [blend, records, incidents, roleOf, attemptRecords],
   );
   // The data every drill-down counts from, as a stamp: a drawer checks the number that
-  // was clicked only against a count from the same data (drill.js drillStamp).
+  // was clicked only against a count from the same data (drill.js dataStamp), the
+  // loaded attempt orders included.
   const dataStamp = React.useMemo(
-    () => drillStamp({ incidents, history: records, drivers }),
-    [incidents, records, drivers],
+    () => stampOf({ incidents, history: records, drivers, attemptRecords }),
+    [incidents, records, drivers, attemptRecords],
   );
 
   // A read that failed with nothing earlier to fall back on: the numbers built on it
@@ -173,6 +189,8 @@ export function AnalyticsProvider({
     roleOf,
     drillCtx,
     dataStamp,
+    publishAttempts,
+    attemptsError: published.error,
     refreshHistory,
     reload,
   };
