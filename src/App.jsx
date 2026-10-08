@@ -32,7 +32,7 @@ import { migrateBlobsToFirestore } from "./data/migrateFromBlobs.js";
 import { rescueLocalEntries } from "./data/rescueLocal.js";
 import { useHashState, writeHash } from "./data/hashState.js";
 
-export const APP_VERSION = "0.21.0";
+export const APP_VERSION = "0.21.1";
 // Host the app is actually served from — shown in the footer so two people can
 // instantly confirm they're on the SAME deploy/store (a mismatch is a common
 // reason one person's entries never reach another's view).

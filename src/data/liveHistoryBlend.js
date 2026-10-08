@@ -1,15 +1,17 @@
 // The rule for blending LIVE incidents with ROLLED-UP history.
 //
 // Recent months are read from the live incident set; older months, whose incidents
-// have been rolled up and purged, come from dds_history. A month is served by one or
-// the other, never both — "live supersedes" — because counting both would double
-// every incident in a month that has been partly rolled up.
+// have been rolled up and purged, come from dds_history. Each category of each month is
+// served by one or the other, never both — "live supersedes" — because counting both
+// would double every incident in a month that has been partly rolled up.
 //
 // The subtlety that broke it: a month qualifies for live ONLY if it contains an
 // incident that actually gets counted. Deciding by "are there any live rows this
 // month" meant a single row contributing nothing — a compliment, an unable-to-track
 // entry, a no-fault row, or (with the driver-fault filter on) somebody else's fault —
 // replaced that month's whole history with nothing, and the month rendered as zero.
+// Since v0.21.1 the blend qualifies each category of a month on its own (blend.js), so a
+// counted row hides only its own category's history, never the rest of the month's.
 //
 // The rule lived inline in both Trends and the Scorecard and had already drifted
 // between them, so it lives here now, and blend.js — the one blend every screen counts
@@ -19,7 +21,7 @@
 //
 // `categoryIds` is the caller's own chart vocabulary: the views each chart a subset
 // of the categories, and a category nobody charts (return, trace, unable_to_track)
-// must not qualify a month either.
+// must not make anything live either.
 export function countsTowardCharts(inc, { categoryIds, faultFilter = null } = {}) {
   if (!inc || !inc.driver_id) return false;
   if (inc.no_fault) return false;

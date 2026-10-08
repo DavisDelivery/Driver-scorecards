@@ -2,7 +2,7 @@ import React from "react";
 import { CategoryLeaderboard, LeaderRow } from "./leaderboard.jsx";
 import { historyCoverage } from "../data/liveHistoryBlend.js";
 import { useAnalytics } from "../data/AnalyticsProvider.jsx";
-import { blendCube, tally, tallyTotal } from "../data/blend.js";
+import { blendCube, tally, tallyTotal, sourceLabel } from "../data/blend.js";
 import { monthsOfYear } from "../data/scorecardDetail.js";
 import { driverDrill } from "../data/drill.js";
 import { nameOf } from "../data/people.js";
@@ -41,8 +41,9 @@ export default function Trends() {
   const setYear = (y) => setYearParam(String(y));
   const [driverQuery, setDriverQuery] = React.useState("");
 
-  // Blended cube: ym -> Map("driverId|cat" -> count), from the shared blend. Live
-  // months win over history; a month qualifies as live on the Scorecard's rule.
+  // Blended cube: ym -> Map("driverId|cat" -> count), from the shared blend. A category
+  // with live entries in a month is counted from them, every other one from history, on
+  // the Scorecard's rule (blend.js).
   const blend = data.blend(null);
   const cube = React.useMemo(
     () => ({ ...blendCube(blend, CAT_IDS), tracked: historyCoverage(history, CAT_IDS) }),
@@ -72,15 +73,16 @@ export default function Trends() {
       row.total = total;
       // A month neither live nor in history is a gap in the chart and "—" in its table.
       if (row.source === "none") for (const c of CATS) row[c.id] = null;
-      // So is a category a history month never tracked (2023 holds lost/missing only):
-      // its 0 would read as "none happened".
-      if (row.source === "history") {
+      // So is a category history serves but never tracked (2023 holds lost/missing only):
+      // its 0 would read as "none happened". In a month that is part live, part history
+      // (Jan 2026), that is a category with no live entries the history didn't track.
+      if (row.source === "history" || row.source === "mixed") {
         const tracked = cube.tracked(ym);
-        for (const c of CATS) if (!tracked.has(c.id)) row[c.id] = null;
+        for (const c of CATS) if (!blend.isLive(ym, c.id) && !tracked.has(c.id)) row[c.id] = null;
       }
       return row;
     });
-  }, [cube, year]);
+  }, [cube, blend, year]);
 
   // ---- YoY: per-year stacked totals ----
   const yoy = React.useMemo(() => {
@@ -90,7 +92,10 @@ export default function Trends() {
     for (const [ym, cell] of Object.entries(cube.cells)) {
       const y = ym.slice(0, 4);
       byYear[y] = byYear[y] || Object.fromEntries(CATS.map((c) => [c.id, 0]));
-      (srcByYear[y] = srcByYear[y] || new Set()).add(cube.sourceByYm[ym]);
+      // A month that is part live, part history is both, for the year's source.
+      const src = cube.sourceByYm[ym];
+      const sources = (srcByYear[y] = srcByYear[y] || new Set());
+      for (const s of src === "mixed" ? ["live", "history"] : [src]) sources.add(s);
       const tracked = (trackedByYear[y] = trackedByYear[y] || new Set());
       for (const c of cube.tracked(ym)) tracked.add(c);
       for (const [k, n] of cell) {
@@ -237,7 +242,7 @@ export default function Trends() {
               x: { key: "month", label: "Month" },
               series: SERIES,
               total: true,
-              source: (r) => r.source,
+              source: (r) => sourceLabel(r.source),
             })}
             csv={csvName("Trends monthly", year)}
             height={300}
@@ -326,7 +331,7 @@ export default function Trends() {
                       rows: perDriver.byMonth,
                       x: { key: "month", label: "Month" },
                       series: [{ id: "count", label: "Incidents" }],
-                      source: (r) => r.source,
+                      source: (r) => sourceLabel(r.source),
                     })}
                     csv={csvName(perDriverName, "monthly", year)}
                     height={220}

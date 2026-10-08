@@ -2,7 +2,7 @@ import React, { useMemo } from "react";
 import { CategoryLeaderboard } from "./leaderboard.jsx";
 import AttemptsScorecardCard from "./AttemptsScorecardCard.jsx";
 import { useAnalytics } from "../data/AnalyticsProvider.jsx";
-import { driverBuckets } from "../data/blend.js";
+import { driverBuckets, monthParts } from "../data/blend.js";
 import { monthsOfYear } from "../data/scorecardDetail.js";
 import { driverDrill } from "../data/drill.js";
 import { nameOf } from "../data/people.js";
@@ -64,26 +64,11 @@ export default function Dashboard() {
     return Array.from(set).sort().reverse();
   }, [incidents, history, selectedMonth]);
 
-  // Live incidents that fall in the selected month.
-  const monthIncidents = useMemo(
-    () =>
-      incidents.filter((inc) => incidentDateStr(inc).startsWith(selectedMonth)),
-    [incidents, selectedMonth],
-  );
-
-  // If no live incidents exist for this month, fall back to historical rollup.
-  const isHistorical = monthIncidents.length === 0;
-
-  // Historical rollup records for the selected month.
-  const monthHistory = useMemo(() => {
-    const [yr, mo] = selectedMonth.split("-").map(Number);
-    return history.filter((r) => r.year === yr && r.month === mo);
-  }, [history, selectedMonth]);
-
-  // Per-driver tallies from the blend (blend.js): for every month, live incidents win
-  // when any that count exist; otherwise the historical rollup fills in. Under
-  // Driver-fault scope the blend applies today's rule — a month qualifies on driver-fault
-  // rows — and the leaderboards and every drill-down get it from the same blend.
+  // Per-driver tallies from the blend (blend.js): for every category of every month, live
+  // incidents win when any that count exist; otherwise the historical rollup fills in.
+  // Under Driver-fault scope the blend applies today's rule — a category with no live
+  // entries still reads its all-fault history — and the leaderboards and every
+  // drill-down get it from the same blend.
   const blend = data.blend(faultFilter === "driver" ? "driver" : null);
   const scorecardData = useMemo(() => {
     // The period still counts back from THIS month, not the picked one, exactly as
@@ -198,18 +183,36 @@ export default function Dashboard() {
     );
   };
 
-  // KPI: total incidents this month.
-  const totalThisMonth = useMemo(
-    () =>
-      isHistorical
-        ? monthHistory.reduce((sum, r) => sum + (r.count || 0), 0)
-        : incidents.filter(
-            (inc) =>
-              incidentDateStr(inc).startsWith(selectedMonth) &&
-              (faultFilter !== "driver" || inc.fault === "driver"),
-          ).length,
-    [isHistorical, monthHistory, incidents, selectedMonth, faultFilter],
+  // The selected month cell by cell, as the blend serves it (blend.js monthParts): its
+  // live rows, and the history of each category no live entry covers. History has no
+  // fault field: with no live rows there is no fault to count or filter by.
+  const monthPart = useMemo(
+    () => monthParts(blend, incidents, selectedMonth, CHART_CAT_IDS),
+    [blend, incidents, selectedMonth],
   );
+  const monthIncidents = monthPart.rows;
+  const noLiveRows = monthIncidents.length === 0;
+
+  // KPI: total incidents this month: the live rows (raw, as this tile always has counted
+  // them; it comes onto the blend's counts with the KPI fix) plus the history the month
+  // serves — Jan 2026's 19 back-dated forgotten freight beside 17 imported damage,
+  // lost/missing and misdeliveries.
+  const thisMonth = useMemo(() => {
+    const live = monthIncidents.filter((inc) => faultFilter !== "driver" || inc.fault === "driver").length;
+    return { live, fromHistory: monthPart.fromHistory, total: live + monthPart.fromHistory };
+  }, [monthIncidents, monthPart, faultFilter]);
+  // A month that is both says so. History records no fault, so under Driver-fault scope
+  // its part is marked fault unknown: the Driver Fault tile beside it counts live rows.
+  const bothParts = !noLiveRows && thisMonth.fromHistory > 0;
+  const thisMonthSub = !bothParts
+    ? "Total incidents"
+    : faultFilter === "driver"
+      ? `${thisMonth.live} driver · ${thisMonth.fromHistory} history, fault unknown`
+      : `${thisMonth.live} live · ${thisMonth.fromHistory} history`;
+  const thisMonthTitle = bothParts
+    ? `${thisMonth.live} live ${faultFilter === "driver" ? "driver-fault " : ""}entries, and ${thisMonth.fromHistory} ` +
+      "from imported history for the categories nobody logged this month. History records no fault."
+    : undefined;
 
   // KPI: YTD total across all categories.
   const totalYtd = useMemo(() => {
@@ -219,19 +222,19 @@ export default function Dashboard() {
     return sum;
   }, [driverTotals]);
 
-  // KPI: driver-fault incidents this month (null when historical).
+  // KPI: driver-fault incidents this month (null with no live rows to read a fault from).
   const driverFaultCount = useMemo(
     () =>
-      isHistorical
+      noLiveRows
         ? null
         : monthIncidents.filter((inc) => inc.fault === "driver" && !inc.no_fault).length,
-    [isHistorical, monthIncidents],
+    [noLiveRows, monthIncidents],
   );
 
-  // KPI: exonerated incidents this month (null when historical).
+  // KPI: exonerated incidents this month (null with no live rows to read a fault from).
   const exoneratedCount = useMemo(
     () =>
-      isHistorical
+      noLiveRows
         ? null
         : monthIncidents.filter(
             (inc) =>
@@ -240,7 +243,7 @@ export default function Dashboard() {
               inc.fault === "warehouse" ||
               inc.fault === "customer",
           ).length,
-    [isHistorical, monthIncidents],
+    [noLiveRows, monthIncidents],
   );
 
   const monthLabel =
@@ -248,8 +251,10 @@ export default function Dashboard() {
     " " +
     selectedMonth.slice(0, 4);
 
-  // Nothing to badge while the numbers can't be shown (AnalyticsGate says why).
-  const dataBadge = data.blocking ? null : isHistorical ? (
+  // The badge says what the month's numbers are made of: live rows, the history of the
+  // categories no live entry covers, or both (Jan 2026). Nothing to badge while the
+  // numbers can't be shown (AnalyticsGate says why).
+  const dataBadge = data.blocking ? null : noLiveRows ? (
     <span
       style={{
         fontSize: 10,
@@ -271,14 +276,14 @@ export default function Dashboard() {
         textTransform: "uppercase",
       }}
     >
-      · live data
+      · {bothParts ? "live + history" : "live data"}
     </span>
   );
 
   return (
     <div>
       <div className="page-title">Performance Dashboard</div>
-      <h1 className="page-heading">
+      <h1 className="page-heading sc-heading">
         Driver Scorecard{" "}
         <span className="meta">· {monthLabel}</span>{" "}
         {dataBadge}
@@ -302,8 +307,8 @@ export default function Dashboard() {
           fault={{
             value: faultFilter,
             onChange: setFaultFilter,
-            disabled: isHistorical,
-            title: isHistorical ? "Fault filter unavailable for historical rollup data" : "",
+            disabled: noLiveRows,
+            title: noLiveRows ? "Fault filter unavailable for historical rollup data" : "",
           }}
         />
         <div className="toolbar-spacer" />
@@ -314,7 +319,7 @@ export default function Dashboard() {
         {/* Plain tiles: none of these numbers is a status, so none wears a status
             colour — the old amber and red rules sat beside Late's and Damage's hues. */}
         <div className="kpi-grid">
-          <StatTile label="This Month" value={totalThisMonth} sub="Total incidents" />
+          <StatTile label="This Month" value={thisMonth.total} sub={thisMonthSub} title={thisMonthTitle} />
           <StatTile label="Year to Date" value={totalYtd} sub={`${selectedYear} cumulative`} />
           <StatTile
             label="Driver Fault (Month)"

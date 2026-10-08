@@ -70,13 +70,29 @@ export function DrillHost() {
   return <DrillDrawer state={state} onChange={openDrill} onClose={closeDrill} />;
 }
 
-const SOURCE_GLYPH = { live: "●", history: "○", not_tracked: "⊘", none: "–" };
+const SOURCE_GLYPH = { live: "●", mixed: "◐", history: "○", not_tracked: "⊘", none: "–" };
 const SOURCE_TEXT = {
   live: "live entries",
+  mixed: "part live, part history",
   history: "imported history",
   not_tracked: "not tracked (history has no fault)",
   none: "no data",
 };
+
+// Where each category of a month comes from (blend.js monthCells), in words: "Forgotten
+// Freight live · Damage, Misdelivery, Lost/Missing from history".
+const cellsText = (cells) =>
+  [
+    cells.live.length && `${cells.live.map(catLabel).join(", ")} live`,
+    cells.history.length && `${cells.history.map(catLabel).join(", ")} from history`,
+    cells.not_tracked.length && `${cells.not_tracked.map(catLabel).join(", ")} not tracked`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+// A month that is part live, part history is named with its split; past this many the
+// rest are counted in one chip.
+const MIXED_CHIPS = 3;
 
 export default function DrillDrawer({ state, onChange, onClose }) {
   const a = useAnalytics();
@@ -133,7 +149,13 @@ export default function DrillDrawer({ state, onChange, onClose }) {
       for (const s of state.scopes || []) for (const ym of s.months) all.add(ym);
       const months = spanMonths([...all]);
       const d = resolveDrill({ ...spec, months }, a.drillCtx);
-      return { months, byMonth: d.byMonth, inScope: new Set(spanMonths(spec.months)), sourceOf: d.sourceOf };
+      return {
+        months,
+        byMonth: d.byMonth,
+        inScope: new Set(spanMonths(spec.months)),
+        sourceOf: d.sourceOf,
+        cellsOf: d.cellsOf,
+      };
     }
     const d = resolveDrill(spec, a.drillCtx);
     // An attempts window covers its months whether or not each one had an order.
@@ -141,7 +163,7 @@ export default function DrillDrawer({ state, onChange, onClose }) {
       spec.kind === "attempts" && spec.start && spec.end
         ? spanMonths([...d.months, spec.start.slice(0, 7), spec.end.slice(0, 7)])
         : spanMonths(d.months);
-    return { months, byMonth: d.byMonth, inScope: new Set(months), sourceOf: d.sourceOf };
+    return { months, byMonth: d.byMonth, inScope: new Set(months), sourceOf: d.sourceOf, cellsOf: d.cellsOf };
   }, [ready, key, a.drillCtx]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // A clicked number checked against a count from the same data: a difference is a real
@@ -321,17 +343,21 @@ function DrawerBody({
 
   // Coverage: where this level's months come from, and what the blend can't show. A
   // month still to come is neither data nor a gap, so it isn't counted as "no data";
-  // a month inside the span with nothing on record is (spanMonths).
+  // a month inside the span with nothing on record is (spanMonths). The blend decides
+  // live or history per category, so a month can be both: each such month is named
+  // with its split.
   // Conflicts are the driver's own when the drawer is one driver's, the company's
   // otherwise; the strip marks them across all its months.
   const coverage = React.useMemo(() => {
-    const counts = { live: 0, history: 0, not_tracked: 0, none: 0 };
+    const counts = { live: 0, mixed: 0, history: 0, not_tracked: 0, none: 0 };
+    const mixed = [];
     const now = currentYmET();
     const months = spec.kind === "blend" ? spanMonths(spec.months) : detail.months;
     for (const ym of months) {
       const src = detail.sourceOf(ym);
       if (src === "none" && ym > now) continue;
       counts[src] = (counts[src] || 0) + 1;
+      if (src === "mixed" && detail.cellsOf) mixed.push({ ym, text: cellsText(detail.cellsOf(ym)) });
     }
     let all = [];
     if (spec.kind === "blend" || spec.kind === "window") {
@@ -341,7 +367,7 @@ function DrawerBody({
       );
     }
     const inMonths = new Set(months);
-    return { counts, conflicts: all.filter((c) => inMonths.has(c.ym)), all };
+    return { counts, mixed, conflicts: all.filter((c) => inMonths.has(c.ym)), all };
   }, [detail]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Rows, filtered by the search box; the photo count follows the search.
@@ -447,15 +473,22 @@ function DrawerBody({
   const stripSources = new Set(strip.months.map((ym) => strip.sourceOf(ym)));
   const conflictMonths = new Set(coverage.all.map((c) => c.ym));
   const { counts } = coverage;
+  const moreMixed = coverage.mixed.length - MIXED_CHIPS;
   const unsplittable = detail.unsplittable || [];
   const scopeSuffix = scopeLabel ? ` · ${scopeLabel}` : "";
   // Where a month's number comes from, for the table view, the hover or focus readout
-  // and a screen reader. Every value is also on its bar and in the table.
-  const sourceText = (ym) => {
+  // and a screen reader. Every value is also on its bar and in the table. A part-live
+  // month is named with its split, except in the hover readout, which shares a line with
+  // the key and the view toggle: there it is "part live, part history", and the split is
+  // in its chip and the table.
+  const sourceText = (ym, { brief = false } = {}) => {
     const src = strip.sourceOf(ym);
-    return `${SOURCE_TEXT[src] || src}${conflictMonths.has(ym) ? " · live and history disagree" : ""}`;
+    const split = src === "mixed" && strip.cellsOf && !brief;
+    const text = split ? cellsText(strip.cellsOf(ym)) : SOURCE_TEXT[src] || src;
+    return `${text}${conflictMonths.has(ym) ? " · live and history disagree" : ""}`;
   };
-  const readout = (ym) => `${fmtMonth(ym)}: ${(strip.byMonth.get(ym) || 0).toLocaleString()} · ${sourceText(ym)}`;
+  const readout = (ym, opts) =>
+    `${fmtMonth(ym)}: ${(strip.byMonth.get(ym) || 0).toLocaleString()} · ${sourceText(ym, opts)}`;
 
   return (
     <>
@@ -523,6 +556,16 @@ function DrawerBody({
         {!detail.liveOnly && counts.live > 0 && (
           <span className="dr-chip">● {counts.live} live month{counts.live === 1 ? "" : "s"}</span>
         )}
+        {coverage.mixed.slice(0, MIXED_CHIPS).map((m) => (
+          <span key={m.ym} className="dr-chip">
+            ◐ {fmtMonth(m.ym)}: {m.text}
+          </span>
+        ))}
+        {moreMixed > 0 && (
+          <span className="dr-chip">
+            ◐ {moreMixed} more month{moreMixed === 1 ? "" : "s"} part live, part history
+          </span>
+        )}
         {counts.history > 0 && (
           <span className="dr-chip">
             ○ {counts.history} history month{counts.history === 1 ? "" : "s"} · monthly totals only
@@ -537,7 +580,7 @@ function DrawerBody({
           <span className="dr-chip">– {counts.none} month{counts.none === 1 ? "" : "s"} with no data</span>
         )}
         {coverage.conflicts.map((c) => (
-          <span key={`${c.ym}-${c.category}`} className="dr-chip warn" title="Today's rule shows a live month's live entries; the history that month also holds is not added.">
+          <span key={`${c.ym}-${c.category}`} className="dr-chip warn" title="A category with live entries in a month is counted from them; the history that month also holds for it is not added.">
             ⚠ {fmtMonth(c.ym)} {catLabel(c.category)}: live {c.live}, history {c.history} — live shown
           </span>
         ))}
@@ -620,7 +663,7 @@ function DrawerBody({
             ))}
           {stripView === "chart" && conflictMonths.size > 0 && <span>⚠ live and history disagree</span>}
           <span className="dr-peek" aria-live="polite">
-            {stripView === "chart" && peek ? readout(peek) : ""}
+            {stripView === "chart" && peek ? readout(peek, { brief: true }) : ""}
           </span>
           <span className="cc-view" role="group" aria-label="Months as">
             {["chart", "table"].map((v) => (

@@ -18,6 +18,7 @@ import {
 } from "../data/analytics.js";
 import { OTHER_COLOR, categoriesFor } from "../data/categories.js";
 import { historyCoverage } from "../data/liveHistoryBlend.js";
+import { sourceLabel } from "../data/blend.js";
 import { reportSpanLabel, reportStartLabel } from "../reports/reportNaming.js";
 import { useHashState } from "../data/hashState.js";
 import { csvName } from "../data/csv.js";
@@ -272,13 +273,17 @@ export default function Reports({
       const prior = prevMonthly[m.month - 1];
       const ghost = !prior || prior.source === "none" ? null : prior.total;
       const row = { name: m.monthName, ghost, source: m.source };
-      const has = m.source === "history" ? tracked(ymOf(selectedYear, m.month)) : null;
+      // A category history serves but never tracked reads "—": in a month that is part
+      // live, part history (Jan 2026), one with no live entries the history didn't track.
+      const ym = ymOf(selectedYear, m.month);
+      const has = m.source === "history" || m.source === "mixed" ? tracked(ym) : null;
       for (const c of ANALYTICS_CATEGORIES) {
-        row[c.id] = m.source === "none" || (has && !has.has(c.id)) ? null : m.byCat[c.id] || 0;
+        const untracked = has && !has.has(c.id) && !blend.isLive(ym, c.id);
+        row[c.id] = m.source === "none" || untracked ? null : m.byCat[c.id] || 0;
       }
       return row;
     });
-  }, [monthly, prevMonthly, tracked, selectedYear]);
+  }, [monthly, prevMonthly, tracked, blend, selectedYear]);
 
   const yearly = useMemo(() => buildYearlyTotals(years, blend), [years, blend]);
   const yearlyRows = useMemo(() => {
@@ -655,7 +660,7 @@ function MonthlyView({ year, rows, chart, expandedKey, setExpandedKey, reportsIn
           series: SERIES,
           lines: [priorLine],
           total: true,
-          source: (r) => r.source,
+          source: (r) => sourceLabel(r.source),
         })}
         csv={csvName("Reports monthly", year)}
         height={280}
@@ -698,7 +703,7 @@ function MonthlyView({ year, rows, chart, expandedKey, setExpandedKey, reportsIn
                           {ANALYTICS_CATEGORIES.map((c) => (
                             <td key={c.id} className="num">{m.byCat[c.id] || "·"}</td>
                           ))}
-                          <td><span className={`src-badge ${m.source}`}>{m.source}</span></td>
+                          <td><span className={`src-badge ${m.source}`}>{sourceLabel(m.source)}</span></td>
                         </tr>
                         {open && (
                           <tr className="expander-row">

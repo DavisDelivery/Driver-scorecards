@@ -83,6 +83,7 @@ import {
   monthSpark,
   sparkSource,
   liveMonthCounts,
+  historyOnlyMonths,
   weekSpark,
   dayDiff,
   printPeriodLabel,
@@ -868,13 +869,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   // understating them. Unable to Track isn't in history, so it never has any.
   const historyOnly = React.useMemo(() => {
     if (!COUNTED8.includes(config.category) || analytics.historyLoading || analytics.historyError) return [];
-    const blend = analytics.blend(null);
-    const out = [];
-    for (let ym = logPeriod.win.start.slice(0, 7); ym <= logPeriod.win.end.slice(0, 7); ym = shiftYm(ym, 1)) {
-      const n = blend.isLive(ym) ? 0 : blend.companyCell(ym, config.category);
-      if (n > 0) out.push({ ym, n });
-    }
-    return out;
+    return historyOnlyMonths(analytics.blend(null), config.category, logPeriod.win);
   }, [config.category, analytics, logPeriod.win]);
 
   const historyMonths = React.useMemo(() => new Map(historyOnly.map((m) => [m.ym, m.n])), [historyOnly]);
@@ -2865,7 +2860,7 @@ function ChipRow({ chips, onClear, lead = "Showing", count = null, children }) {
 
 // "Nov–Dec 2025 and Feb–Mar 2026 exist only as monthly totals…": the months of the
 // window this tab can't list, said in one line rather than understated in silence.
-// Back-to-back months run together; a live month between them splits the run.
+// Back-to-back months run together; a month this tab has entries for splits the run.
 function historyOnlyNotice(months, noun) {
   if (!months.length) return null;
   const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];

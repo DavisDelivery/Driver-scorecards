@@ -5,7 +5,8 @@
 // qualifies months on as a parameter: the Scorecard qualified on eight categories,
 // Trends and Reports on six, and v0.20.1 moves the latter two to eight. Passing the
 // eight here is the "everything else unchanged" baseline; passing the six is what
-// shipped.
+// shipped. All three decide per MONTH; v0.21.1 decides per category of a month, and
+// blend.test.mjs pins the cells that moves against these.
 import { countsTowardCharts } from "../src/data/liveHistoryBlend.js";
 import { incidentDateStr } from "../src/data/incidentDate.js";
 

@@ -1,12 +1,13 @@
 // What a drill-down shows, computed from the SAME inputs the cards are.
 //
-// The cards count from a month-by-month blend: a month with any live incident that
-// counts is served from live incidents, every other month from the rolled-up history
-// (see blend.js). A drill-down that recomputed its numbers another way would show a
-// different figure from the one you clicked — which is exactly what the driver popup
-// did, because it was never given the history at all. So the drill-down walks the same
-// months with the same rule, and returns both the incidents to list and the totals, so
-// the list and its numbers come from one pass. drill.js is the only caller on screen.
+// The cards count from the blend, one category in one month at a time: a cell with a
+// live incident that counts is served from live incidents, every other cell from the
+// rolled-up history (see blend.js). A drill-down that recomputed its numbers another way
+// would show a different figure from the one you clicked — which is exactly what the
+// driver popup did, because it was never given the history at all. So the drill-down
+// walks the same cells with the same rule, and returns both the incidents to list and
+// the totals, so the list and its numbers come from one pass. drill.js is the only
+// caller on screen.
 import { incidentDateStr } from "./incidentDate.js";
 import { shiftYm } from "./period.js";
 
@@ -72,14 +73,19 @@ function finish(out) {
   return out;
 }
 
-// The months' default live test: a month is live when liveByYm holds rows for it. Pass
-// the blend's own isLive instead, so a live month whose rows the fault filter removed
-// reads 0 rather than falling back to history.
-const defaultIsLive = (liveByYm) => (ym) => (liveByYm[ym] || []).length > 0;
+// The default live test: a (month, category) cell is live when liveByYm holds a row of
+// that category in that month. Pass the blend's own isLive instead, so a live cell whose
+// rows the fault filter removed reads 0 rather than falling back to history.
+function defaultIsLive(liveByYm) {
+  const live = new Set();
+  for (const [ym, list] of Object.entries(liveByYm)) for (const inc of list) live.add(`${ym}|${inc.category}`);
+  return (ym, cat) => live.has(`${ym}|${cat}`);
+}
 
 // scopeMonths : the YYYY-MM months to cover (the period, the year, or one month)
 // liveByYm    : { ym: [incident] } — ONLY incidents that count, as the blend built it
-// isLive      : ym => boolean, the blend's month rule (defaults to "liveByYm has rows")
+// isLive      : (ym, cat) => boolean, the blend's cell rule (defaults to "liveByYm has
+//               rows of that category that month")
 // history     : [{ year, month, driver_id, driver_name, category, count }]
 // categoryId  : one category, or null for every category in `categoryIds`
 // categoryIds : the charted categories (used when categoryId is null)
@@ -102,19 +108,18 @@ export function buildCategoryDetail({
   const out = collector();
 
   for (const ym of new Set(scopeMonths)) {
-    if (isLive(ym)) {
-      // A live month: its incidents ARE the count. History for this month is not
-      // consulted, exactly as the cards don't — counting both would double it.
-      for (const inc of liveByYm[ym] || []) {
-        if (!keep(inc.category, inc.driver_id)) continue;
-        out.incidents.push(inc);
-        out.bump(inc.driver_id, inc.driver_name || inc.driver_raw, inc.category, ym, 1);
-      }
-    } else {
-      for (const row of historyRowsFor(history, ym, keep, unattributed)) {
-        out.historyRows.push(row);
-        out.bump(row.driver_id, row.driver_name, row.category, ym, row.count);
-      }
+    // A live cell: its incidents ARE the count. History for that category this month is
+    // not consulted, exactly as the cards don't — counting both would double it.
+    for (const inc of liveByYm[ym] || []) {
+      if (!isLive(ym, inc.category) || !keep(inc.category, inc.driver_id)) continue;
+      out.incidents.push(inc);
+      out.bump(inc.driver_id, inc.driver_name || inc.driver_raw, inc.category, ym, 1);
+    }
+    // Every other cell of the month is history's.
+    const fromHistory = (c, d) => !isLive(ym, c) && keep(c, d);
+    for (const row of historyRowsFor(history, ym, fromHistory, unattributed)) {
+      out.historyRows.push(row);
+      out.bump(row.driver_id, row.driver_name, row.category, ym, row.count);
     }
   }
   return finish(out);
@@ -123,11 +128,11 @@ export function buildCategoryDetail({
 const daysInMonth = (ym) => new Date(Date.UTC(Number(ym.slice(0, 4)), Number(ym.slice(5, 7)), 0)).getUTCDate();
 
 // The same detail for a window of days (start..end, inclusive YYYY-MM-DD) that still
-// obeys the month rule:
-//   - a live month contributes the incidents dated inside the window (incidentDateStr)
-//   - a history month wholly inside the window is added whole
-//   - a history month only partly inside is listed in `unsplittable` with the count it
-//     holds, and added to nothing: history has no days, and prorating would invent them
+// obeys the cell rule:
+//   - a live cell contributes the incidents dated inside the window (incidentDateStr)
+//   - a month's history cells are added whole when the month is wholly inside the window
+//   - when it is only partly inside, the count they hold is listed in `unsplittable` and
+//     added to nothing: history has no days, and prorating would invent them
 // byDay counts the live rows per day, so the live part of the total is Σ byDay.
 export function buildWindowDetail({
   start,
@@ -150,17 +155,15 @@ export function buildWindowDetail({
   if (!ok(start) || !ok(end) || start > end) return finish(out);
 
   for (let ym = start.slice(0, 7); ym <= end.slice(0, 7); ym = shiftYm(ym, 1)) {
-    if (isLive(ym)) {
-      for (const inc of liveByYm[ym] || []) {
-        const day = incidentDateStr(inc).slice(0, 10);
-        if (day < start || day > end || !keep(inc.category, inc.driver_id)) continue;
-        out.incidents.push(inc);
-        out.byDay.set(day, (out.byDay.get(day) || 0) + 1);
-        out.bump(inc.driver_id, inc.driver_name || inc.driver_raw, inc.category, ym, 1);
-      }
-      continue;
+    for (const inc of liveByYm[ym] || []) {
+      if (!isLive(ym, inc.category)) continue;
+      const day = incidentDateStr(inc).slice(0, 10);
+      if (day < start || day > end || !keep(inc.category, inc.driver_id)) continue;
+      out.incidents.push(inc);
+      out.byDay.set(day, (out.byDay.get(day) || 0) + 1);
+      out.bump(inc.driver_id, inc.driver_name || inc.driver_raw, inc.category, ym, 1);
     }
-    const rows = historyRowsFor(history, ym, keep, unattributed);
+    const rows = historyRowsFor(history, ym, (c, d) => !isLive(ym, c) && keep(c, d), unattributed);
     const whole = start <= `${ym}-01` && end >= `${ym}-${String(daysInMonth(ym)).padStart(2, "0")}`;
     if (!whole) {
       const count = rows.reduce((a, r) => a + r.count, 0);

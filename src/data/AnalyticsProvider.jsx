@@ -22,12 +22,12 @@ import { hiddenDriverIds } from "./drivers.js";
 import { dataStamp as stampOf } from "./drill.js";
 import { historyLoadState, initialLoadState, isStale } from "./loadState.js";
 
-// Today's Driver-fault rule (blend.js): under Driver-fault scope a month qualifies on
-// driver-fault rows, and a month with none falls back to all-fault history. Flipping it
-// here moves everything that reads the blend together — the Scorecard's YTD tile, its
-// leaderboards and every drill-down. The Scorecard's three month tiles (This Month,
-// Driver Fault, Exonerated) still count raw incidents with their own rule and would not
-// move with it; they come onto the blend with the KPI fix.
+// Today's Driver-fault rule (blend.js): under Driver-fault scope a category in a month
+// with no live entries still reads its all-fault history. Flipping it here moves
+// everything that reads the blend together — the Scorecard's YTD tile, its leaderboards
+// and every drill-down. The Scorecard's three month tiles (This Month, Driver Fault,
+// Exonerated) still count raw live incidents with their own rule, This Month adding only
+// the history the blend serves beside them; they come onto the blend with the KPI fix.
 const LEGACY_DRIVER_SCOPE = true;
 
 const AnalyticsContext = React.createContext(null);
@@ -111,7 +111,7 @@ export function AnalyticsProvider({
             incidents,
             history: records,
             faultFilter: key === "driver" ? "driver" : null,
-            legacyQualifyWithFault: LEGACY_DRIVER_SCOPE,
+            legacyDriverScope: LEGACY_DRIVER_SCOPE,
           }),
         );
       }

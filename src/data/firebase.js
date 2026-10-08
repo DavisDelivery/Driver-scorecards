@@ -779,7 +779,7 @@ export async function deleteReport(id) {
 // contribution snapshots) behaves identically. Stored as ONE doc, app_meta/history.
 
 // The eight categories the rollup tracks — the registry's COUNTED8, so the screens that
-// decide which months are live can never disagree with what the rollup wrote.
+// decide which months' categories are live can never disagree with what the rollup wrote.
 const TRACKED = new Set(COUNTED8);
 
 const compositeKey = (year, month, driverId, category) =>

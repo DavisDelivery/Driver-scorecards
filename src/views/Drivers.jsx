@@ -34,11 +34,11 @@ export default function Drivers({ drivers, incidents, onUpdate }) {
   const [formError, setFormError] = React.useState("");
   const [savingRoster, setSavingRoster] = React.useState(false);
 
-  // The cards count from the shared blend (blend.js), the same month-by-month rule as
-  // the Scorecard, so a card and the drawer it opens can't disagree. Each card used to
-  // run its own per-driver version of the rule: a month counted live for a driver as
-  // soon as they had ANY live row in it — a compliment, a no-fault row — and that
-  // driver's history for the month vanished.
+  // The cards count from the shared blend (blend.js), the same rule as the Scorecard,
+  // so a card and the drawer it opens can't disagree. Each card used to run its own
+  // per-driver version of the rule: a month counted live for a driver as soon as they
+  // had ANY live row in it — a compliment, a no-fault row — and that driver's history
+  // for the month vanished.
   const blend = data.blend(null);
   const curMonth = currentYmET();
   const curYear = curMonth.slice(0, 4);

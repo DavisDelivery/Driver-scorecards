@@ -44,6 +44,7 @@ import {
   sortOrders,
   monthSpark,
   sparkSource,
+  historyOnlyMonths,
   liveMonthCounts,
   weekSpark,
   dayDiff,
@@ -52,6 +53,7 @@ import {
   NOT_SET,
 } from "../src/data/manualAnalytics.js";
 import { buildAttemptRecords } from "../src/data/attemptRecords.js";
+import { buildBlend } from "../src/data/blend.js";
 import { resolveDrill } from "../src/data/drill.js";
 import { periodWindow, toYMD, mondayOf, weekdayOfYmd, addDays } from "../src/data/period.js";
 import { hiddenDriverIds } from "../src/data/drivers.js";
@@ -652,15 +654,24 @@ test("sparklines: twelve months from the blend, weeks from the feed", () => {
 });
 
 test("a driver-card month that never captured the category draws no bar", () => {
-  // A stand-in blend: Jan 2026 is live with FF back-dated into it, Feb is history
-  // holding damage only, Apr is live with no FF logged, Jul is live after logging began.
+  // A stand-in blend: Jan 2026 has FF back-dated into it beside imported misdeliveries,
+  // Feb is history holding damage only, Apr has live entries but no FF, Jul has live
+  // entries after logging began but no FF.
+  const cells = {
+    "2026-01|forgotten_freight": "live",
+    "2026-01|misdelivery": "history",
+    "2026-02|damage": "history",
+  };
+  // monthSource is only asked about an empty cell here: in Jan 2026, part history, it
+  // reads as history's (blend.js); in Apr and Jul, live throughout, as a live zero.
   const blend = {
-    monthSource: (ym) => ({ "2026-01": "live", "2026-02": "history", "2026-04": "live", "2026-07": "live" })[ym] || "none",
-    historyCategories: (ym) => new Set(ym === "2026-02" ? ["damage"] : []),
-    companyCell: (ym, cat) => (ym === "2026-01" && cat === "forgotten_freight" ? 19 : 0),
+    cellSource: (ym, cat) => cells[`${ym}|${cat}`] || "none",
+    monthSource: (ym) => ({ "2026-01": "history", "2026-02": "history", "2026-04": "live", "2026-07": "live" })[ym] || "none",
   };
   const src = (ym) => sparkSource(blend, ym, "forgotten_freight");
   assert.equal(src("2026-01"), "live", "back-dated entries are counted, as the Scorecard counts them");
+  assert.equal(sparkSource(blend, "2026-01", "misdelivery"), "history", "and so is the history beside them");
+  assert.equal(sparkSource(blend, "2026-01", "late"), "not_tracked", "before logging began, nothing of it on record");
   assert.equal(src("2026-02"), "not_tracked", "history that holds none of it");
   assert.equal(src("2026-04"), "not_tracked", "a live month before logging began, with none logged");
   assert.equal(src("2026-07"), "live", "after logging began, none is a real zero");
@@ -668,6 +679,26 @@ test("a driver-card month that never captured the category draws no bar", () => 
   assert.equal(sparkSource(blend, "2026-02", "damage"), "history");
   const s = monthSpark({ endYm: "2026-07", months: 7, cellOf: () => 0, sourceOf: src });
   assert.deepEqual(s.map((m) => m.n), [0, null, null, null, null, null, 0]);
+});
+
+test("a tab's history-only months are the cells history serves, beside live entries of another category", () => {
+  // Jan 2026's shape: forgotten freight logged live, misdeliveries only in imported
+  // history. The Mis-Deliveries tab can list none of January's; Forgotten Freight can.
+  const blend = buildBlend({
+    incidents: [{ id: "x", driver_id: "d1", category: "forgotten_freight", fault: "driver", delivered_date: "2026-01-12" }],
+    history: [
+      { year: 2026, month: 1, driver_id: "d1", category: "forgotten_freight", count: 5 },
+      { year: 2026, month: 1, driver_id: "d2", category: "misdelivery", count: 2 },
+      { year: 2025, month: 12, driver_id: "d2", category: "misdelivery", count: 3 },
+    ],
+  });
+  const win = { start: "2025-12-01", end: "2026-01-31" };
+  assert.deepEqual(historyOnlyMonths(blend, "misdelivery", win), [
+    { ym: "2025-12", n: 3 },
+    { ym: "2026-01", n: 2 },
+  ]);
+  assert.deepEqual(historyOnlyMonths(blend, "forgotten_freight", win), []);
+  assert.deepEqual(historyOnlyMonths(null, "misdelivery", win), []);
 });
 
 test("the default window is the one the panel and the log share", () => {

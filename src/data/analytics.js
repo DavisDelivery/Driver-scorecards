@@ -3,8 +3,9 @@
 // RECONCILIATION CONTRACT (do not drift):
 //   Monthly and yearly totals here come from the one live/history blend (blend.js), the
 //   same blend the Scorecard and Trends count from, so the three can't disagree about a
-//   month. A month is live when it holds a live incident that counts; otherwise it is
-//   served from the history rollup. They used to carry three inline copies of that rule.
+//   month. A category in a month is live when it holds a live incident that counts;
+//   otherwise it is served from the history rollup. They used to carry three inline
+//   copies of that rule.
 //
 //   The category set is the registry's CHARTED6 — the same six Trends charts.
 //   Returns/Traces/Complaints/Compliments are intentionally excluded from these
@@ -43,16 +44,19 @@ export function availableYears(incidents, history) {
 
 // Per-month category totals for a year, from the blend.
 // Returns [{ month, monthName, byCat, total, source }] for months 1..12.
-//   source  "live" | "history" | "none" — a month with history for none of the six is
-//           "none", so a chart draws it as a gap
+//   source  "live" | "history" | "mixed" | "none" — "mixed" when some of the six come
+//           from live entries and the rest from history (blend.js monthSource); a month
+//           with history for none of the six and no live entries is "none", so a chart
+//           draws it as a gap
 export function buildMonthlyTotals(year, blend) {
   const rows = [];
   for (let m = 1; m <= 12; m++) {
     const ym = `${year}-${String(m).padStart(2, "0")}`;
     const byCat = blankByCat();
+    const src = blend.monthSource(ym, ANALYTICS_CATEGORY_IDS);
     let source = "none";
-    if (blend.isLive(ym)) {
-      source = "live";
+    if (src === "live" || src === "mixed") {
+      source = src;
     } else if ([...blend.historyCategories(ym, { attributedOnly: false })].some((c) => TRACKED.has(c))) {
       source = "history";
     }
@@ -71,7 +75,7 @@ export function buildYearlyTotals(years, blend) {
     let total = 0;
     let anyLive = false;
     for (const mo of months) {
-      if (mo.source === "live") anyLive = true;
+      if (mo.source === "live" || mo.source === "mixed") anyLive = true;
       for (const id of ANALYTICS_CATEGORY_IDS) byCat[id] += mo.byCat[id];
       total += mo.total;
     }
