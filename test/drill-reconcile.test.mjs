@@ -696,3 +696,193 @@ test("a tile clicked before its period's orders were published reads as moved, n
   // A state no screen stamped was opened just now, from the data on screen.
   assert.equal(drillVerdict({ expected: 7, total, at: null, stamp: ready }), "mismatch");
 });
+
+// ── Company History ──────────────────────────────────────────────────────────
+// Every number Company History draws and lets you click, on a store shaped like
+// production's coverage (coverage-fixture.mjs): the hero (the full covered total), every
+// segment and column of the monthly chart in both measures, each compared row on both
+// sides, every coverage cell, the unattributed counts and a week of attempted orders.
+import * as fx from "./coverage-fixture.mjs";
+import { ulineCoverage, buildCoverage, unattributedByMonth } from "../src/data/coverage.js";
+import {
+  companyWindow,
+  comparisonMonths,
+  basketCategories,
+  monthlySeries,
+  compareWindows,
+  companyDrill,
+  incidentsDrill,
+  weekDrill,
+  weeklyAttempts,
+  overviewTiles,
+} from "../src/data/companyMetrics.js";
+
+const companyCov = (blend) =>
+  buildCoverage({
+    blend,
+    historyMonthIds: fx.monthIds,
+    uline: ulineCoverage(fx.reports, fx.incidents),
+    today: fx.TODAY,
+    incidents: fx.incidents,
+  });
+
+test("Company History: the hero, every column and segment, the compared rows and the coverage cells drill to what they show", () => {
+  const blend = buildBlend({ incidents: fx.incidents, history: fx.history });
+  const cov = companyCov(blend);
+  const ctx = { blend: () => blend, history: fx.history, incidents: fx.incidents, roleOf: () => "driver" };
+  const total = (state) => {
+    const levels = drillLevels(state);
+    const level = levels[levels.length - 1];
+    return { got: resolveDrill(level.spec, ctx).total, want: level.expected };
+  };
+  const cats = basketCategories();
+  let marks = 0;
+  for (const range of ["12", "24", "ytd", "ly", "all"]) {
+    const P = companyWindow(range, { through: "2026-09" }).months;
+    for (const cmp of ["yoy", "prior"]) {
+      const r = compareWindows(cov, P, comparisonMonths(P, cmp), cats, { today: fx.TODAY });
+      const hero = total(companyDrill(cats, P, r.A, range, { title: "Counted failures" }));
+      assert.equal(hero.got, hero.want, `hero ${range}`);
+      for (const b of r.byCat) {
+        const x = total(companyDrill([b.cat], b.months, b.X, "compared"));
+        const c = total(companyDrill([b.cat], b.cmpMonths, b.Cmp, "comparison"));
+        assert.equal(x.got, x.want, `${range} ${cmp} ${b.cat} this period`);
+        assert.equal(c.got, c.want, `${range} ${cmp} ${b.cat} comparison`);
+        marks += 2;
+      }
+    }
+    for (const measure of ["count", "workday"]) {
+      const rows = monthlySeries(cov, P, cats, { measure, today: fx.TODAY });
+      // The columns add up to the hero.
+      assert.equal(
+        rows.reduce((t, row) => t + (row.count || 0), 0),
+        compareWindows(cov, P, P, cats, { today: fx.TODAY }).A,
+      );
+      for (const row of rows) {
+        if (row.count !== null) {
+          const col = total(companyDrill(cats, [row.ym], row.count, row.ym));
+          assert.equal(col.got, col.want, `${row.ym} column`);
+          marks++;
+        }
+        for (const c of cats) {
+          if (row.counts[c] === null) continue;
+          const seg = total(companyDrill([c], [row.ym], row.counts[c], row.ym));
+          assert.equal(seg.got, seg.want, `${row.ym} ${c}`);
+          marks++;
+        }
+      }
+    }
+  }
+  // Every coverage cell that holds a number, attempts and compliments included.
+  for (const ym of companyWindow("all", { through: "2026-10" }).months) {
+    for (const c of [...cats, "attempts", "compliment"]) {
+      const cell = cov.cell(ym, c);
+      if (cell.value === null) continue;
+      const t = total(companyDrill([c], [ym], cell.value, ym));
+      assert.equal(t.got, t.want, `cell ${ym} ${c}`);
+      marks++;
+    }
+  }
+  // Unattributed: the tile's counted rows, and each month's every row.
+  const P = companyWindow("24", { through: "2026-09" }).months;
+  const un = unattributedByMonth(fx.incidents, P, cats);
+  const tile = total(incidentsDrill(un.flatMap((m) => m.countedIds), { categoryIds: cats, months: P, title: "Unattributed failures", label: "24M" }));
+  assert.equal(tile.got, 2);
+  assert.equal(tile.got, tile.want);
+  for (const m of un) {
+    const t = total(incidentsDrill(m.ids, { months: [m.ym], title: "Unattributed failures", label: m.ym }));
+    assert.equal(t.got, m.total);
+  }
+  assert.ok(marks > 300, `${marks} marks checked`);
+});
+
+// A driver opened from inside any Company History drawer — its By-driver list, a name
+// in its entry list, or either after narrowing to a month — shows the count on the row
+// clicked, of the same categories. The compliments and logged-attempts drawers once
+// opened a driver on their failures: 1 compliment opened a drawer of 4 failures, with
+// nothing flagged.
+test("Company History: a driver opened inside a drawer shows the count on the row clicked", () => {
+  const blend = buildBlend({ incidents: fx.incidents, history: fx.history });
+  const cov = companyCov(blend);
+  const ctx = { blend: () => blend, history: fx.history, incidents: fx.incidents, roleOf: () => "driver" };
+  const cats = basketCategories();
+  let opened = 0;
+  const fromDrawer = (state, what) => {
+    const level = drillLevels(state).at(-1);
+    const detail = resolveDrill(level.spec, ctx);
+    for (const [id, e] of detail.byDriver) {
+      if (!id) continue;
+      const next = driverFromDrawer(state, id, e.count);
+      assertReconciles(next, ctx, `${what} › ${id}`);
+      const last = drillLevels(next).at(-1);
+      assert.equal(last.expected, e.count, `${what} › ${id}: the count clicked comes along`);
+      assert.equal(resolveDrill(last.spec, ctx).total, e.count, `${what} › ${id}: the driver's drawer shows it`);
+      assert.deepEqual([...last.spec.categoryIds].sort(), [...level.spec.categoryIds].sort(), `${what} › ${id}: same categories`);
+      // The name in the entry list carries no count, but opens on the same rows.
+      assert.equal(resolveDrill(drillLevels(driverFromDrawer(state, id)).at(-1).spec, ctx).total, e.count, `${what} › ${id} name`);
+      opened++;
+    }
+    return detail;
+  };
+  const walk = (state, what) => {
+    const detail = fromDrawer(state, what);
+    for (const [ym, n] of detail.byMonth) fromDrawer(pushStep(state, { month: ym, x: n }), `${what} › ${ym}`);
+  };
+  for (const range of ["12", "24", "ytd", "ly", "all"]) {
+    const w = companyWindow(range, { through: "2026-09" });
+    const t = overviewTiles({ cov, blend, incidents: fx.incidents, months: w.months, cats, today: fx.TODAY, label: w.label });
+    walk(t.counted.drill, `${range} hero`);
+    for (const name of ["compliments", "attempts"]) {
+      if (!t[name].drill) continue;
+      walk(t[name].drill, `${range} ${name}`);
+      assert.deepEqual(t[name].drill.vocab, [name === "compliments" ? "compliment" : "attempts"]);
+      // Handed the failure basket as its vocabulary (how it shipped), the drawer still
+      // opens its drivers on what it counted.
+      walk({ ...t[name].drill, vocab: cats }, `${range} ${name} with the failure vocabulary`);
+      // The driver opens on that one category, with the count on their own crumb — no
+      // second crumb repeating the category.
+      const [id, e] = [...resolveDrill(drillLevels(t[name].drill)[0].spec, ctx).byDriver].find(([k]) => k);
+      const levels = drillLevels(driverFromDrawer(t[name].drill, id, e.count));
+      assert.equal(levels.length, 1, `${range} ${name}`);
+      assert.equal(levels[0].expected, e.count);
+    }
+    for (const cmp of ["yoy", "prior"]) {
+      const r = compareWindows(cov, w.months, comparisonMonths(w.months, cmp), cats, { today: fx.TODAY });
+      for (const b of r.byCat) {
+        walk(companyDrill([b.cat], b.months, b.X, "compared", { vocab: cats }), `${range} ${cmp} ${b.cat}`);
+        walk(companyDrill([b.cat], b.cmpMonths, b.Cmp, "comparison", { vocab: cats }), `${range} ${cmp} ${b.cat} cmp`);
+      }
+    }
+    for (const row of monthlySeries(cov, w.months, cats, { today: fx.TODAY })) {
+      if (row.count === null) continue;
+      fromDrawer(companyDrill(cats, [row.ym], row.count, row.ym, { title: "Counted failures", vocab: cats }), `${row.ym} column`);
+      for (const c of cats) {
+        if (row.counts[c]) fromDrawer(companyDrill([c], [row.ym], row.counts[c], row.ym, { vocab: cats }), `${row.ym} ${c}`);
+      }
+    }
+  }
+  assert.ok(opened > 200, `${opened} drivers opened`);
+  // A drawer over failures still opens its drivers on every failure, for the breadcrumb.
+  const seg = companyDrill(["late"], ["2026-07"], 2, "Jul 2026", { vocab: cats });
+  assert.deepEqual(seg.vocab, cats);
+  assert.deepEqual(drillLevels(driverFromDrawer(seg, "d1", 1))[0].spec.categoryIds, cats);
+});
+
+test("Company History: a week of attempted orders drills to the orders its column counted", () => {
+  const feedDays = new Map([
+    ["2026-09-01", { status: "ok", rows: [{ stopNbr: "007100001", shipmentNbr: "ATT007100001", originalDriverName: "Ann Able", date: "2026-09-01" }] }],
+    ["2026-09-02", { status: "no_manifest", rows: [] }],
+    ["2026-09-08", { status: "ok", rows: [{ stopNbr: "007100002", shipmentNbr: "ATT007100002", originalDriverName: "", date: "2026-09-08" }] }],
+  ]);
+  const { records } = buildAttemptRecords({ feedDays, incidents, drivers });
+  const ctx = { ...ctxFor(), attemptRecords: records };
+  const weeks = weeklyAttempts(records, feedDays, { start: "2026-09-01", end: "2026-09-09" });
+  assert.deepEqual(
+    weeks.map((w) => w.n),
+    [1, 1],
+  );
+  for (const w of weeks) {
+    const state = weekDrill(w);
+    assert.equal(resolveDrill(state.spec, ctx).total, state.expected);
+  }
+});

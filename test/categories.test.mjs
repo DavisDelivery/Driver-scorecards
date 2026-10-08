@@ -23,6 +23,7 @@ import {
   categoriesFor,
 } from "../src/data/categories.js";
 import { INCIDENT_CATEGORIES } from "../src/data/drivers.js";
+import { computeContribution } from "../src/data/rollup.js";
 import { ANALYTICS_CATEGORIES, ANALYTICS_CATEGORY_IDS } from "../src/data/analytics.js";
 
 test("failures are pinned in the validated stack order and colours", () => {
@@ -61,10 +62,14 @@ test("COUNTED8 is the rollup's TRACKED set", () => {
     [...COUNTED8].sort(),
     ["attempts", "complaint", "compliment", "damage", "forgotten_freight", "late", "misdelivery", "missing"],
   );
-  // firebase.js can't be imported here (it starts the SDK), so check its source: the
-  // rollup must build TRACKED from COUNTED8, not from a list of its own.
+  // The rollup's counting lives in rollup.js (firebase.js imports it), so it can be
+  // run here: it rolls up exactly the COUNTED8 categories, and nothing else.
+  const rows = CATEGORIES.map((c, i) => ({ id: `r${i}`, driver_id: "d1", category: c.id, delivered_date: "2026-07-02" }));
+  const rolled = Object.keys(computeContribution(rows).cat).map((k) => k.split(":")[3]);
+  assert.deepEqual(rolled.sort(), [...COUNTED8].sort());
   const src = readFileSync(new URL("../src/data/firebase.js", import.meta.url), "utf8");
-  assert.match(src, /const TRACKED = new Set\(COUNTED8\);/);
+  assert.match(src, /import \{ computeContribution[^}]*\} from "\.\/rollup\.js";/);
+  assert.doesNotMatch(src, /function computeContribution/);
 });
 
 test("every category has a polarity, and polarities partition the registry", () => {

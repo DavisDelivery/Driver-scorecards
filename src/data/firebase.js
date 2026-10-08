@@ -35,7 +35,7 @@ import {
 import { db } from "./firebaseApp.js";
 import { reportDateBounds, reportSpanLabel } from "../reports/reportNaming.js";
 import { slimPhotoMeta, approxDocBytes } from "./photoDocs.js";
-import { COUNTED8 } from "./categories.js";
+import { computeContribution, compositeKey, parseCatKey, parseSrcKey } from "./rollup.js";
 import { readResult, SERVER_UNREACHABLE } from "./loadState.js";
 
 // All collections are dds_-prefixed: davismarginiq is a shared Davis Firebase
@@ -778,56 +778,9 @@ export async function deleteReport(id) {
 // (per driver/month/category counts, per-source counts, and idempotent per-report
 // contribution snapshots) behaves identically. Stored as ONE doc, app_meta/history.
 
-// The eight categories the rollup tracks — the registry's COUNTED8, so the screens that
-// decide which months' categories are live can never disagree with what the rollup wrote.
-const TRACKED = new Set(COUNTED8);
-
-const compositeKey = (year, month, driverId, category) =>
-  `${year}:${String(month).padStart(2, "0")}:${driverId}:${category}`;
-const srcKey = (year, month, driverId, source) =>
-  `${year}:${String(month).padStart(2, "0")}:${driverId}:${source}`;
-
-function incidentYearMonth(inc) {
-  const d =
-    inc.delivered_date ||
-    inc.actual_delivery ||
-    inc.return_date ||
-    inc.trace_date ||
-    inc.ship_date ||
-    inc.week_ending ||
-    inc.ingested_at ||
-    "";
-  if (!d || d.length < 7) return null;
-  return { year: Number(d.slice(0, 4)), month: Number(d.slice(5, 7)) };
-}
-
-function computeContribution(incidents) {
-  const cat = {};
-  const src = {};
-  for (const inc of incidents) {
-    if (!inc.driver_id || inc.no_fault) continue;
-    const ym = incidentYearMonth(inc);
-    if (!ym) continue;
-    if (TRACKED.has(inc.category)) {
-      const k = compositeKey(ym.year, ym.month, inc.driver_id, inc.category);
-      cat[k] = (cat[k] || 0) + 1;
-    }
-    for (const s of Array.isArray(inc.sources) ? inc.sources : []) {
-      const k = srcKey(ym.year, ym.month, inc.driver_id, s);
-      src[k] = (src[k] || 0) + 1;
-    }
-  }
-  return { cat, src };
-}
-
-const parseCatKey = (k) => {
-  const [year, month, driver_id, category] = k.split(":");
-  return { year: Number(year), month: Number(month), driver_id, category };
-};
-const parseSrcKey = (k) => {
-  const [year, month, driver_id, source] = k.split(":");
-  return { year: Number(year), month: Number(month), driver_id, source };
-};
+// The counting itself — which rows a report adds to which month, driver and category —
+// is in rollup.js, pure, so the Data Coverage page can recompute a report's
+// contribution and compare it with its snapshot.
 
 function applyContribution(data, contrib, sign, meta = {}) {
   const stamp = nowISO();
@@ -989,6 +942,23 @@ export async function loadHistoryChecked() {
 
 const newest = (records) =>
   records.reduce((max, r) => (r && r.updated_at && r.updated_at > max ? r.updated_at : max), "") || null;
+
+// Every report's rollup snapshot ({ report_id, cat, src, updated_at }), read-only, as
+// { data, error }. Data Coverage compares each with what the report's rows would roll up
+// today (coverage.js rollupStatus) to name the stale rollups and the reports never
+// rolled up. One small document per report; nothing here writes.
+export async function loadReportContribsChecked() {
+  try {
+    const snap = await getDocs(collection(db, REPORT_CONTRIB));
+    return checked(
+      "loading report rollup snapshots",
+      snap.docs.map((d) => ({ ...d.data(), report_id: d.data().report_id || d.id })),
+      snap.metadata.fromCache,
+    );
+  } catch (err) {
+    return failure("loading report rollup snapshots", err);
+  }
+}
 
 // History written from THIS browser — a report rollup, a re-sync, an import, a delete —
 // tells the screens to re-read it. History is read once per session, so without this a

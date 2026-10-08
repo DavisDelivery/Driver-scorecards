@@ -187,6 +187,12 @@ export function buildBlend({
     return historyServed ? histCompany.get(ym)?.get(cat) || 0 : 0;
   };
 
+  // The two sides of one company cell, whichever of them serves it: the live rows that
+  // count there with the fault filter off (what the rollup would hold) and what history
+  // holds. Data Coverage shows both beside the number served (coverage.js).
+  const liveCount = (ym, cat) => allFault.get(ym)?.get(cat) || 0;
+  const historyCount = (ym, cat) => histCompany.get(ym)?.get(cat) || 0;
+
   // Every attributed (driver, category, count) the month serves, zeros included where a
   // history record holds one.
   const entries = (ym) =>
@@ -250,6 +256,8 @@ export function buildBlend({
     monthSource,
     cell,
     companyCell,
+    liveCount,
+    historyCount,
     entries,
     driverIds,
     historyCategories,

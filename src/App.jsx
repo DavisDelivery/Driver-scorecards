@@ -20,6 +20,7 @@ import Reports from "./views/Reports.jsx";
 import Incidents from "./views/Incidents.jsx";
 import Drivers from "./views/Drivers.jsx";
 import Trends from "./views/Trends.jsx";
+import CompanyHistory from "./views/CompanyHistory.jsx";
 import History from "./views/History.jsx";
 import Reviews from "./views/Reviews.jsx";
 import ManualEntry, {
@@ -32,20 +33,22 @@ import { migrateBlobsToFirestore } from "./data/migrateFromBlobs.js";
 import { rescueLocalEntries } from "./data/rescueLocal.js";
 import { useHashState, writeHash } from "./data/hashState.js";
 
-export const APP_VERSION = "0.22.0";
+export const APP_VERSION = "0.23.0";
 // Host the app is actually served from — shown in the footer so two people can
 // instantly confirm they're on the SAME deploy/store (a mismatch is a common
 // reason one person's entries never reach another's view).
 const APP_HOST =
   typeof window !== "undefined" && window.location ? window.location.host : "";
 
-// Sidebar order, top to bottom: the day-to-day entry screens first, then the
+// Sidebar order, top to bottom: the Scorecard and Reports, Company History third (the
+// whole company over every month on file), the day-to-day entry screens, then the other
 // analysis screens, and the roster last — it's set up once and rarely revisited.
 // "New Report" is deliberately NOT here: it lives on the Reports tab, and listing
 // it twice made one screen look like two places. `n` still jumps straight to it.
 const TABS = [
   { id: "dashboard", label: "Scorecard", icon: "◫", shortcut: "d" },
   { id: "reports", label: "Reports", icon: "▦", shortcut: "r" },
+  { id: "company", label: "Company History", icon: "▤", shortcut: "o" },
   { id: "ff", label: "Forgotten Freight", icon: "▣", shortcut: "f" },
   { id: "misdeliveries", label: "Mis-Deliveries", icon: "⇄", shortcut: "m" },
   { id: "attempts", label: "Attempts", icon: "↻", shortcut: "a" },
@@ -481,6 +484,14 @@ export default function App() {
                 />
               )}
               {tab === "trends" && <Trends />}
+              {tab === "company" && (
+                <CompanyHistory
+                  onOpenReport={(id) => {
+                    setInitialReportId(id);
+                    setTab("reports");
+                  }}
+                />
+              )}
               {tab === "ff" && (
                 <ForgottenFreightTabs
                   drivers={drivers}

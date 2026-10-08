@@ -2,6 +2,7 @@ import React, { useState, useRef } from "react";
 import { catColor, catLabel } from "../data/categories.js";
 import { saveHistoryBatch, deleteAllHistory } from "../data/firebase.js";
 import { useAnalytics } from "../data/AnalyticsProvider.jsx";
+import { writeHash } from "../data/hashState.js";
 import {
   parseHistoryFiles,
   matchHistoricalDriver,
@@ -103,10 +104,15 @@ export default function History({ drivers, onReportCreated }) {
       alert("Nothing to save — all rows are unmatched.");
       return;
     }
+    // An import replaces history wholesale (saveHistoryBatch replace): every month's
+    // records are cleared, the report rollups included, and only these files' records
+    // are written. The confirm used to say it overwrote matching records only.
     if (
       !confirm(`Import ${matchedRows.length} monthly rollup records into History?
 
-This OVERWRITES any existing rollup record for the same (driver × year × month × category).`)
+This REPLACES all imported history: every month's records are cleared — every year, including the counts weekly reports rolled up — and only the records in these files are written. Months these files don't cover are left empty.
+
+To put a report's counts back afterwards, open it in Reports and press Re-sync totals.`)
     )
       return;
 
@@ -424,6 +430,22 @@ This OVERWRITES any existing rollup record for the same (driver × year × month
     <div>
       <div className="page-title">Import History</div>
       <h1 className="page-heading">Backfill Historical Driver Performance</h1>
+
+      <div className="card co-link-card" style={{ marginBottom: 16 }}>
+        <div className="card-body">
+          <span>
+            What history holds now — which months and categories each spreadsheet covered, the months with no data,
+            and where it disagrees with live entries — is in <b>Company History › Data Coverage</b>.
+          </span>
+          <button
+            type="button"
+            className="btn ghost sm"
+            onClick={() => writeHash({ tab: "company", drill: null, "co.sub": "coverage", "co.cell": null, "co.sec": null }, { push: true })}
+          >
+            Open Data Coverage →
+          </button>
+        </div>
+      </div>
 
       <div className="card" style={{ marginBottom: 16 }}>
         <div

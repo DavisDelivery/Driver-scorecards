@@ -15,6 +15,9 @@ import { downloadCsv } from "../../data/csv.js";
 //   csv      file name for the export (off when absent)
 //   height   plot height, INCLUDING the x-axis band, so the card never scrolls inside
 //   inset    no card chrome: for a chart that sits inside an existing card
+//   onLegend (id) => void — legend entries become buttons that isolate a series (the
+//            chart grays the rest); `focus` is the isolated id, pressed
+//   note     a line under the legend: what the chart leaves out, in words
 export default function ChartCard({
   title,
   count = null,
@@ -24,6 +27,9 @@ export default function ChartCard({
   height = 260,
   inset = false,
   className = "",
+  onLegend = null,
+  focus = null,
+  note = null,
   children,
 }) {
   const [view, setView] = React.useState("chart");
@@ -68,14 +74,29 @@ export default function ChartCard({
       </div>
       {legend && legend.length >= 2 && !showTable && (
         <div className="cc-legend">
-          {legend.map((s) => (
-            <span key={s.id} className="cc-legend-item">
-              <i className={s.line ? "line" : ""} style={{ background: s.color }} aria-hidden="true" />
-              {s.label}
-            </span>
-          ))}
+          {legend.map((s) =>
+            onLegend && !s.line ? (
+              <button
+                key={s.id}
+                type="button"
+                className={`cc-legend-item cc-legend-btn ${focus && focus !== s.id ? "off" : ""}`}
+                aria-pressed={focus === s.id}
+                onClick={() => onLegend(s.id)}
+                title={focus === s.id ? "Show every category" : `Only ${s.label} in colour`}
+              >
+                <i style={{ background: s.color }} aria-hidden="true" />
+                {s.label}
+              </button>
+            ) : (
+              <span key={s.id} className="cc-legend-item">
+                <i className={s.line ? "line" : ""} style={{ background: s.color }} aria-hidden="true" />
+                {s.label}
+              </span>
+            ),
+          )}
         </div>
       )}
+      {note && !showTable && <div className="cc-note">{note}</div>}
       {showTable ? (
         <DataTable columns={table.columns} rows={table.rows} />
       ) : (
@@ -87,7 +108,8 @@ export default function ChartCard({
   );
 }
 
-// A chart's numbers as a table. Missing values read "—": a gap is never shown as 0.
+// A chart's numbers as a table. Missing values read "—": a gap is never shown as 0. A
+// column marked `wrap` (a long source) wraps rather than widening the table.
 export function DataTable({ columns, rows }) {
   if (!rows.length) return <div className="empty-state">Nothing to show.</div>;
   const cell = (v) => (v === null || v === undefined || v === "" ? "—" : typeof v === "number" ? v.toLocaleString() : v);
@@ -107,7 +129,7 @@ export function DataTable({ columns, rows }) {
           {rows.map((r, i) => (
             <tr key={i}>
               {columns.map((c) => (
-                <td key={c.key} className={c.num ? "num" : undefined}>
+                <td key={c.key} className={c.num ? "num" : c.wrap ? "wrap" : undefined}>
                   {cell(r[c.key])}
                 </td>
               ))}
