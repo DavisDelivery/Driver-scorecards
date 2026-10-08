@@ -39,6 +39,8 @@ import {
 } from "../src/data/manualAnalytics.js";
 import { buildAttemptRecords } from "../src/data/attemptRecords.js";
 import { weekdayOfYmd } from "../src/data/period.js";
+import { scorecardWindows, scorecardKpis, kpiDrills } from "../src/data/scorecardKpis.js";
+import { FAULT_GROUP_ORDER } from "../src/data/faultGroups.js";
 import { drivers, incidents, history } from "./blend-fixture.mjs";
 
 const roleOf = (id) => drivers.find((d) => d.id === id)?.role || "driver";
@@ -72,40 +74,45 @@ const sumCats = (counts) => Object.values(counts).reduce((a, n) => a + n, 0);
 const inGroup = (role, group) => (group === "loader" ? role === "loader" : role !== "loader");
 
 // ── Scorecard ────────────────────────────────────────────────────────────────
+// The windows and buckets Dashboard.jsx builds: the period and the year to date count
+// back from the month picker (scorecardWindows), and a row is listed over both
+// (`scope`). Both fault scopes, under the rule the screen builds (history not tracked
+// under Driver-fault scope).
 
-for (const [fault, legacy] of [[null, true], ["driver", true], ["driver", false]]) {
-  test(`Scorecard leaderboards reconcile — fault ${fault || "all"}${legacy ? "" : ", newer rule"}`, () => {
-    const ctx = ctxFor({ legacyDriverScope: legacy });
+const SCORECARD_WINDOWS = [
+  ["this", "2026-04"],
+  ["3", "2026-01"], // crosses Jan 1
+  ["6", "2026-06"],
+  ["12", "2026-03"], // crosses Jan 1, the year to date inside it
+  ["custom", "2026-06", "2025-11", "2026-02"], // partly outside the year to date
+];
+
+for (const fault of [null, "driver"]) {
+  test(`Scorecard leaderboards reconcile — fault ${fault || "all"}`, () => {
+    const ctx = ctxFor();
     const blend = ctx.blend(fault);
-    for (const [selectedMonth, periodMonths] of [
-      ["2026-04", ["2026-04"]],
-      ["2026-01", ["2025-11", "2025-12", "2026-01"]], // crosses Jan 1
-      ["2026-06", monthsOfYear(2026).slice(0, 6)],
-    ]) {
-      const ytdMonths = monthsOfYear(Number(selectedMonth.slice(0, 4)));
+    for (const [preset, anchor, from, to] of SCORECARD_WINDOWS) {
+      const win = scorecardWindows({ preset, anchor, from, to });
       const rows = driverBuckets({
         blend,
         drivers,
-        buckets: { month: [selectedMonth], period: periodMonths, ytd: ytdMonths },
+        buckets: { period: win.periodMonths, ytd: win.ytdMonths, scope: win.scopeMonths },
         categoryIds: COUNTED8,
       });
+      const scopesFor = (period, ytd) => [
+        { label: "period", months: win.periodMonths, expected: period },
+        { label: "ytd", months: win.ytdMonths, expected: ytd },
+      ];
       for (const r of rows) {
         // A row: the driver's drawer, opened on the category clicked, period and YTD.
         for (const cat of COUNTED8) {
-          if (!r.period[cat] && !r.ytd[cat]) continue;
+          if (!r.scope[cat]) continue;
           const state = driverDrill(
             r.driver.id,
-            {
-              categoryIds: COUNTED8,
-              fault,
-              scopes: [
-                { label: "period", months: periodMonths, expected: sumCats(r.period) },
-                { label: "ytd", months: ytdMonths, expected: sumCats(r.ytd) },
-              ],
-            },
+            { categoryIds: COUNTED8, fault, scopes: scopesFor(sumCats(r.period), sumCats(r.ytd)) },
             { category: cat, x: [r.period[cat], r.ytd[cat]] },
           );
-          assertReconciles(state, ctx, `${selectedMonth} ${r.driver.id} ${cat}`);
+          assertReconciles(state, ctx, `${preset} ${anchor} ${r.driver.id} ${cat}`);
         }
       }
       // A card's totals: everyone in the role group, inactive drivers included.
@@ -114,21 +121,36 @@ for (const [fault, legacy] of [[null, true], ["driver", true], ["driver", false]
           const members = rows.filter((r) => inGroup(r.driver.role || "driver", group));
           const total = (b) => members.reduce((a, r) => a + (r[b][cat] || 0), 0);
           assertReconciles(
-            {
-              spec: { kind: "blend", categoryIds: [cat], roleGroup: group, fault },
-              scopes: [
-                { label: "period", months: periodMonths, expected: total("period") },
-                { label: "ytd", months: ytdMonths, expected: total("ytd") },
-              ],
-            },
+            { spec: { kind: "blend", categoryIds: [cat], roleGroup: group, fault }, scopes: scopesFor(total("period"), total("ytd")) },
             ctx,
-            `${selectedMonth} ${group} ${cat} card`,
+            `${preset} ${anchor} ${group} ${cat} card`,
           );
         }
       }
     }
   });
 }
+
+// The rule before v0.22.0 (Driver-fault scope reading history's all-fault counts) is
+// no longer built by any screen, but the drawers must still follow whichever rule a
+// blend is built with.
+test("a blend built with the legacy Driver-fault rule still drills to its own cells", () => {
+  const ctx = ctxFor({ legacyDriverScope: true });
+  const blend = ctx.blend("driver");
+  const periodMonths = ["2025-11", "2025-12", "2026-01"];
+  const rows = driverBuckets({ blend, drivers, buckets: { period: periodMonths }, categoryIds: COUNTED8 });
+  for (const r of rows) {
+    for (const cat of COUNTED8) {
+      if (!r.period[cat]) continue;
+      const state = driverDrill(
+        r.driver.id,
+        { categoryIds: COUNTED8, fault: "driver", scopes: [{ label: "period", months: periodMonths, expected: sumCats(r.period) }] },
+        { category: cat, x: [r.period[cat]] },
+      );
+      assertReconciles(state, ctx, `legacy ${r.driver.id} ${cat}`);
+    }
+  }
+});
 
 // ── Inside the drawer ────────────────────────────────────────────────────────
 // A driver opened from a chart's drawer — from its By-driver list, from a row's name, or
@@ -217,6 +239,96 @@ test("the inactive driver's counts stay in the card total the drawer shows", () 
   // Di Dean (inactive) logged one of January's three.
   assert.equal(d.byDriver.get("d4").count, 1);
   assert.equal(d.total, 3);
+});
+
+// The Scorecard's KPI tiles: each number against the drawer it opens, under both
+// fault scopes (the app's rule: history not tracked under Driver-fault scope), for a
+// month, a half year, a period crossing Jan 1 and a history-only month.
+test("Scorecard KPI tiles reconcile with the drawers they open", () => {
+  const withReason = [
+    ...incidents,
+    { id: "lr", driver_id: "d2", category: "late", fault: "unknown", late_reason: "holiday", actual_delivery: "2026-04-20" },
+    { id: "nr", driver_id: "d1", category: "late", fault: "unknown", actual_delivery: "2026-04-21" },
+  ];
+  const cache = new Map();
+  const ctx = {
+    blend: (fault) => {
+      const k = fault || "all";
+      if (!cache.has(k)) cache.set(k, buildBlend({ incidents: withReason, history, faultFilter: fault }));
+      return cache.get(k);
+    },
+    history,
+    incidents: withReason,
+    roleOf,
+  };
+  // A driver opened from inside a tile's drawer — its By-driver list, or a name in its
+  // entry list — shows the count on the row clicked, under every scope the drawer has.
+  // The Driver fault drawer once opened every driver on an empty record: its spec
+  // carried its own months and no scopes, and the driver's drawer takes its months
+  // from the scopes. A failure tile's drawer counts six of the screen's eight
+  // categories, so the driver opens on those six, not with attempts added in.
+  let opened = 0;
+  const driversFrom = (state, what) => {
+    for (let scope = 0; scope < (state.scopes?.length || 1); scope++) {
+      const at = { ...state, scope };
+      const detail = resolveDrill(drillLevels(at).at(-1).spec, ctx);
+      for (const [id, e] of detail.byDriver) {
+        if (!id) continue;
+        const next = driverFromDrawer(at, id, e.count);
+        assertReconciles(next, ctx, `${what} ${id} list`);
+        const last = drillLevels(next).at(-1);
+        assert.equal(last.expected, e.count, `${what} ${id}: the count clicked comes along`);
+        assert.equal(resolveDrill(last.spec, ctx).total, e.count, `${what} ${id}: the driver's drawer shows it`);
+        // The name in the entry list carries no count, but opens on the same rows.
+        assert.equal(resolveDrill(drillLevels(driverFromDrawer(at, id)).at(-1).spec, ctx).total, e.count, `${what} ${id} name`);
+        opened++;
+      }
+    }
+  };
+  let checked = 0;
+  for (const fault of [null, "driver"]) {
+    for (const [preset, anchor, from, to] of [
+      ["this", "2026-04"],
+      ["6", "2026-06"],
+      ["3", "2026-01"],
+      ["this", "2025-11"],
+      ["12", "2026-03"],
+      ["custom", "2026-06", "2025-11", "2026-02"],
+    ]) {
+      const windows = scorecardWindows({ preset, anchor, from, to });
+      const kpis = scorecardKpis({ blend: ctx.blend(fault), plain: ctx.blend(null), windows, incidents: withReason });
+      const d = kpiDrills({ kpis, windows, fault, periodLabel: "period", vocab: COUNTED8 });
+      for (const [what, state] of Object.entries(d)) {
+        if (typeof state === "function") continue;
+        assertReconciles(state, ctx, `${fault} ${preset} ${anchor} ${what}`);
+        driversFrom(state, `${fault} ${preset} ${anchor} ${what}`);
+        checked++;
+      }
+      for (const g of FAULT_GROUP_ORDER) {
+        assertReconciles(d.group(g), ctx, `${fault} ${preset} ${anchor} ${g}`);
+        driversFrom(d.group(g), `${fault} ${preset} ${anchor} ${g}`);
+        checked++;
+      }
+      // The Driver fault tile's drawer is the Driver-fault blend over the period, and
+      // shows the tile's number.
+      const driverGroup = d.group("driver");
+      assert.equal(drillLevels(driverGroup)[0].expected, kpis.fault.groups.driver.n);
+      assert.deepEqual(drillLevels(driverGroup)[0].spec.months, windows.periodMonths);
+      // The tiles show exactly what the drawers start from.
+      assert.equal(drillLevels(d.failures)[0].expected, kpis.failures.period);
+      assert.equal(drillLevels(d.failuresYtd)[0].expected, kpis.failures.ytd);
+    }
+  }
+  assert.ok(checked > 40);
+  assert.ok(opened > 40, `opened ${opened} drivers from the tiles' drawers`);
+  // April under both scopes: the late row with a reason is its own group, and the one
+  // with none is not reviewed.
+  const april = scorecardKpis({ blend: ctx.blend(null), windows: scorecardWindows({ preset: "this", anchor: "2026-04" }) });
+  assert.deepEqual(april.fault.groups.late_reason.ids, ["lr"]);
+  assert.deepEqual(april.fault.groups.not_reviewed.ids, ["nr"]);
+  // February's no-fault misdelivery counts against nobody, and is listed as such.
+  const feb = scorecardKpis({ blend: ctx.blend(null), windows: scorecardWindows({ preset: "this", anchor: "2026-02" }), incidents: withReason });
+  assert.deepEqual(feb.noFault, { n: 1, ids: ["i5"] });
 });
 
 // ── Trends ───────────────────────────────────────────────────────────────────

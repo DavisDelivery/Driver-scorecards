@@ -11,6 +11,7 @@ import {
 } from "./photoEncoding.js";
 import { getIncidentPhotosBatch } from "../data/firebase.js";
 import { catRgb } from "../data/categories.js";
+import { faultGroup } from "../data/faultGroups.js";
 
 // Print palette (RGB triples) matching the app theme. These are the brand, ink and
 // fault-status colours; CATEGORY colours are not here — they come from categories.js,
@@ -26,6 +27,9 @@ export const TEXT_MUTED = [107, 114, 128];
 export const LINE = [229, 231, 235];
 
 const categoryColor = (cat) => catRgb(cat);
+
+// Charged to the driver: fault set to the driver, and not marked "do not fault driver".
+const isDriverFault = (i) => faultGroup(i.fault) === "driver" && !i.no_fault;
 
 function faultColor(fault) {
   return (
@@ -348,19 +352,17 @@ function drawCover(doc, incidents, meta, logo) {
   const cardsTop = y;
   const cardW = (pageW - 2 * margin - 30) / 3;
   const cardH = 70;
-  const driverFault = incidents.filter((i) => i.fault === "driver" && !i.no_fault).length;
-  const exonerated = incidents.filter(
-    (i) =>
-      i.fault === "exonerated" ||
-      i.fault === "preload" ||
-      i.fault === "warehouse" ||
-      i.fault === "vendor",
-  ).length;
+  // Fault groups from faultGroups.js, the Scorecard's own: the cover's "Exonerated"
+  // took vendor but not customer while the Scorecard took customer but not vendor, so
+  // one report exonerated different entries on screen and in print. Both now count
+  // exonerated, preload, warehouse, customer and vendor as not the driver's fault.
+  const driverFault = incidents.filter(isDriverFault).length;
+  const notDriver = incidents.filter((i) => faultGroup(i.fault) === "not_driver").length;
 
   [
     { label: "TOTAL INCIDENTS", value: String(incidents.length), color: DAVIS_BLUE },
     { label: "DRIVER FAULT", value: String(driverFault), color: RED },
-    { label: "EXONERATED", value: String(exonerated), color: GREEN },
+    { label: "NOT DRIVER'S FAULT", value: String(notDriver), color: GREEN },
   ].forEach((kpi, i) => {
     const x = margin + i * (cardW + 15);
     setColor(doc, LINE, "draw");
@@ -417,7 +419,7 @@ function drawCover(doc, incidents, meta, logo) {
   setColor(doc, LINE, "draw");
   doc.line(offX, y + 4, offX + colW, y + 4);
   const offenders = {};
-  for (const inc of incidents.filter((i) => i.fault === "driver" && !i.no_fault)) {
+  for (const inc of incidents.filter(isDriverFault)) {
     const name = inc.driver_name || inc.driver_raw || "Unknown";
     offenders[name] = (offenders[name] || 0) + 1;
   }

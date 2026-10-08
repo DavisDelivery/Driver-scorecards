@@ -190,18 +190,22 @@ export default function DrillDrawer({ state, onChange, onClose }) {
   };
   const person = (id) => nameOf(a.people, id);
   // An attempts drawer can be one driver KEY (attemptRecords.js): Unassigned, or a feed
-  // name the roster doesn't match. An incidents list can name its own heading (`who`).
+  // name the roster doesn't match. A spec can name its own heading: `who` when it is
+  // one driver's list, `title` when it is a group of entries (a Scorecard tile's) — a
+  // title gives way to the category once the drawer is narrowed to one.
   const who = root.driverId
     ? person(root.driverId)
     : root.driverKey
       ? nameOfKey(a.people, root.driverKey)
       : root.who
         ? root.who
-        : root.roleGroup === "loader"
-          ? "Loaders"
-          : root.roleGroup === "driver"
-            ? "Drivers"
-            : "Company";
+        : root.title
+          ? root.title
+          : root.roleGroup === "loader"
+            ? "Loaders"
+            : root.roleGroup === "driver"
+              ? "Drivers"
+              : "Company";
   const crumbs = [
     {
       label: root.categoryIds?.length === 1 && root.kind !== "attempts" ? `${who} › ${catLabel(root.categoryIds[0])}` : who,
@@ -209,11 +213,13 @@ export default function DrillDrawer({ state, onChange, onClose }) {
     ...path.map((op) => ({
       label: op.category
         ? catLabel(op.category)
-        : op.driverId
-          ? person(op.driverId)
-          : op.driverKey
-            ? nameOfKey(a.people, op.driverKey)
-            : fmtMonth(op.month),
+        : op.categories
+          ? op.label || `${op.categories.length} categories`
+          : op.driverId
+            ? person(op.driverId)
+            : op.driverKey
+              ? nameOfKey(a.people, op.driverKey)
+              : fmtMonth(op.month),
     })),
   ];
   const cats = level.spec.categoryIds || [];
@@ -225,9 +231,11 @@ export default function DrillDrawer({ state, onChange, onClose }) {
         ? level.spec.who
         : cats.length === 1
           ? catTitle(cats[0])
-          : level.spec.kind === "attempts"
-            ? "Attempted orders"
-            : "All categories";
+          : level.spec.title
+            ? level.spec.title
+            : level.spec.kind === "attempts"
+              ? "Attempted orders"
+              : "All categories";
   const inactive = level.spec.driverId && a.people.get(level.spec.driverId)?.active === false;
   const scopeLabel = monthOp
     ? fmtMonth(monthOp.month)

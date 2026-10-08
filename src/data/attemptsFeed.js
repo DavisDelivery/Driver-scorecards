@@ -458,6 +458,50 @@ export async function fetchAttemptsRange(
   };
 }
 
+// One feed day, from the shared cache when it holds it: the same { status, rows,
+// counts, fill } a period load keeps, and the same caching rules. A failed request
+// comes back as a "failed" day (with the error) rather than throwing, so a caller can
+// say the feed couldn't be reached for that day.
+export async function loadFeedDay(date, { signal, cache = dayCache, today = todayET(), now = Date.now() } = {}) {
+  if (date < FEED_EPOCH) return BEFORE_FEED;
+  const hit = cache?.get(date, { today, now });
+  if (hit) return hit;
+  try {
+    const entry = dayEntry(date, await fetchAttempts(date, { signal }), today);
+    cache?.set(date, entry, { today, now });
+    return entry;
+  } catch (err) {
+    if (err?.name === "AbortError") throw err;
+    return { status: "failed", rows: [], counts: null, fill: null, error: err?.message || "" };
+  }
+}
+
+// The latest of `candidates` (newest first) whose evening scan ran: one request per
+// day, newest first, stopping at the first day with a manifest — so the Scorecard can
+// open on the last day there is something to show without loading a whole period. On
+// a Monday, yesterday is a Sunday with nothing on it; before 8 PM, today has no scan.
+// A request that fails stops the walk: the feed being unreachable is the answer, not a
+// reason to try older days.
+//
+// A weekday holiday's scan runs as usual and finds nothing (Labor Day 09/07: a plan of
+// 21 stops, 0 attempts), and there is no holiday calendar (period.js). So a scanned day
+// with no orders doesn't stop the walk while older candidates remain; it is the answer
+// only when none of them has orders either. A real weekday can scan none too (10/05:
+// a plan of 610, 0 attempts), so `tried` keeps each day's count and the card names the
+// days it stepped over.
+// → { day, entry, tried: [{ day, status, n }] } (day null when no candidate had a scan)
+export async function lastScannedDay(candidates, opts = {}) {
+  const tried = [];
+  let empty = null;
+  for (const day of candidates || []) {
+    const entry = await loadFeedDay(day, opts);
+    tried.push({ day, status: entry.status, n: entry.rows.length });
+    if (entry.status === "failed" || (entry.status === "ok" && entry.rows.length)) return { day, entry, tried };
+    if (entry.status === "ok" && !empty) empty = { day, entry };
+  }
+  return { ...(empty || { day: null, entry: null }), tried };
+}
+
 // The feed's days inside [start, end], summed up for one line of status text:
 //   of          days the feed should cover (from FEED_EPOCH; today only once scanned)
 //   loaded      of those, the ones with data

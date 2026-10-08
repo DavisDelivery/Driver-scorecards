@@ -52,6 +52,8 @@ seeding), catch it there deliberately and say why in a comment.
   part history (Jan 2026: forgotten freight live, the rest from history). The Scorecard,
   Trends, Reports, the roster cards and the entry tabs' history-only months all count from
   it; don't write another copy, and never decide live or history for a whole month.
+  Under Driver-fault scope a cell history serves is "not tracked" and counts nothing —
+  history has no fault field — and every screen and drawer says so rather than showing 0.
   History is read once, in `src/data/AnalyticsProvider.jsx` — screens get it, the blend
   and the people index from `useAnalytics()`, and anything that writes history from this
   browser must leave it re-read (`refreshHistory`; firebase.js also announces every
@@ -63,9 +65,10 @@ seeding), catch it there deliberately and say why in a comment.
   drill-down — the driver popup once disagreed with its own row because it was never
   given the history. `test/drill-reconcile.test.mjs` checks each screen's marks, and the
   drivers opened from inside a drawer (`driverFromDrawer` carries only the count on the
-  row clicked, never the chart's totals). The clicked number is only checked against the
-  data it was counted from (`drillStamp`); a link opened after the data moved says so
-  plainly instead of raising the alarm.
+  row clicked, never the chart's totals, and opens the driver on that drawer's months and
+  categories). The clicked number is only checked against the data it was counted from
+  (`drillStamp`); a link opened after the data moved says so plainly instead of raising
+  the alarm.
 - **A failed read is never zero.** Incidents, the roster, reports and history are read with
   the checked loaders in firebase.js (`{ data, error }`); a screen whose numbers depend on
   a failed read shows the failure (`kit/LoadState.jsx`), not an empty chart. With the
@@ -74,6 +77,16 @@ seeding), catch it there deliberately and say why in a comment.
   `loadState.js`), showing a cached copy only as an old one. Anything that splits by role
   or hides inactive drivers waits for the roster (`RosterGate`). Startup only seeds the
   roster when the roster read succeeded and came back empty.
+- **Whose fault it was comes from `src/data/faultGroups.js`**: driver, not the driver's
+  (exonerated, preload, warehouse, customer, vendor), not reviewed, or typed in — and a
+  late row with a late reason but no fault is reviewed, in a group of its own (All
+  Incidents gives late rows a reason dropdown, not a fault one). The Scorecard and the
+  weekly PDF cover both count by it; don't list fault codes anywhere else.
+- The Scorecard's tiles count the same cells as its leaderboards (`scorecardKpis.js`):
+  failures are `FAILURES` only, attempts and compliments have tiles of their own, and the
+  period and year to date count back from the month picker. Its dispatch-feed count is
+  read from the shared feed cache only — landing on the Scorecard never loads a period
+  from the feed.
 - File an incident under a month with `incidentYm()` / `incidentDateStr()` from
   `src/data/incidentDate.js`. Hand-copied date precedences drifted apart before.
 - The manual-entry tabs (Forgotten Freight, Unable to Track, Mis-Deliveries, Compliments,

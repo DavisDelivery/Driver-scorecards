@@ -9,6 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { countsTowardCharts, historyCoverage } from "../src/data/liveHistoryBlend.js";
+import { buildBlend } from "../src/data/blend.js";
 
 const CHARTED = ["damage", "late", "missing", "misdelivery", "attempts", "forgotten_freight"];
 const inc = (over = {}) => ({ driver_id: "d1", category: "damage", fault: "driver", ...over });
@@ -29,15 +30,29 @@ test("rows that contribute nothing can never claim a month", () => {
   );
 });
 
-test("the driver-fault filter is part of the rule", () => {
-  // With the filter on, a vendor-fault row counts for nothing and so must not
-  // qualify the month either.
+test("the driver-fault filter decides what counts, never which cells are live", () => {
+  // With the filter on, a vendor-fault row counts for nothing.
   assert.equal(
     countsTowardCharts(inc({ fault: "vendor" }), { categoryIds: CHARTED, faultFilter: "driver" }),
     false,
   );
   // With no filter, the same row counts.
   assert.equal(countsTowardCharts(inc({ fault: "vendor" }), { categoryIds: CHARTED }), true);
+  // Which cells are live is decided without the filter (blend.js), so under
+  // Driver-fault scope the vendor row's cell is live and reads 0 — it doesn't fall back
+  // to its all-fault history. A cell no live row covers is history's, and history has
+  // no fault: under Driver-fault scope it is "not tracked" and counts nothing (v0.22.0;
+  // before, it read its all-fault history).
+  const incidents = [{ ...inc({ fault: "vendor" }), delivered_date: "2026-05-06" }];
+  const history = [
+    { year: 2026, month: 5, driver_id: "d1", category: "damage", count: 3 },
+    { year: 2026, month: 5, driver_id: "d1", category: "late", count: 2 },
+  ];
+  const blend = buildBlend({ incidents, history, faultFilter: "driver" });
+  assert.equal(blend.cellSource("2026-05", "damage"), "live");
+  assert.equal(blend.cell("2026-05", "d1", "damage"), 0);
+  assert.equal(blend.cellSource("2026-05", "late"), "not_tracked");
+  assert.equal(blend.cell("2026-05", "d1", "late"), 0);
 });
 
 test("each view's own chart vocabulary decides", () => {

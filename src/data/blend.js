@@ -28,9 +28,12 @@
 // fault. Which cells are live never depends on the filter (a live cell with no
 // driver-fault rows reads 0, not its all-fault history); inside a live cell only
 // driver-fault rows count. For the cells live entries don't cover, two rules exist:
-//   legacyDriverScope  (today's Scorecard) they read their all-fault history, as the
-//                      all-fault view does
-//   otherwise          they are "not tracked" and count nothing
+//   (default)          they are "not tracked" and count nothing — the app's rule
+//                      from v0.22.0
+//   legacyDriverScope  (the Scorecard until v0.22.0) they read their all-fault
+//                      history, as the all-fault view does — beside live cells counting
+//                      driver fault only. Kept so the tests can measure the change
+//                      against it; nothing on screen builds it.
 // Whichever rule a blend is built with, its cells, its drill-downs (drill.js) and the
 // leaderboards built from it all follow it, so they can never disagree with each other.
 import { countsTowardCharts } from "./liveHistoryBlend.js";
@@ -54,7 +57,7 @@ const inner = (map, key) => map.get(key) || map.set(key, new Map()).get(key);
 // qualifyIds         the categories that count (and so decide which cells are live)
 // faultFilter        null, or "driver" for Driver-fault scope
 // legacyDriverScope  under Driver-fault scope, history still serves the cells live
-//                    entries don't (above)
+//                    entries don't (above; the rule before v0.22.0)
 export function buildBlend({
   incidents = [],
   history = [],
@@ -266,26 +269,6 @@ const SOURCE_LABELS = {
   none: "none",
 };
 export const sourceLabel = (src) => SOURCE_LABELS[src] || String(src || "");
-
-// The company count a month's history serves over a set of categories: every cell no
-// live entry covers. The Scorecard's This Month tile adds it to the month's live rows.
-export function historyTotal(blend, ym, categoryIds) {
-  let n = 0;
-  for (const cat of categoryIds) if (!blend.isLive(ym, cat)) n += blend.companyCell(ym, cat);
-  return n;
-}
-
-// What the Scorecard's month tiles are made of, cell by cell:
-//   rows         the month's live rows, raw (every category, as the tiles always have),
-//                less any in a cell history serves — such a row counts for nothing (a
-//                no-fault damage beside the month's imported damage), and that history
-//                already reports the cell, so it isn't counted twice
-//   fromHistory  the history of each category no live entry covers (historyTotal)
-// A month with no rows is all history; Jan 2026 is both.
-export function monthParts(blend, incidents, ym, categoryIds) {
-  const rows = incidents.filter((inc) => incidentYm(inc) === ym && blend.cellSource(ym, inc.category) !== "history");
-  return { rows, fromHistory: historyTotal(blend, ym, categoryIds) };
-}
 
 // Per-driver counts over a set of months: Map(driverId -> Map(category -> n)). This is
 // what every leaderboard, roster card and per-driver chart is built from, and what

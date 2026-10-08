@@ -3,6 +3,7 @@ import { getIncidentPhotos } from "../../data/firebase.js";
 import { SOURCE_LABELS, LATE_REASON_LABELS, FAULT_CODES } from "../../data/drivers.js";
 import { incidentYm, fmtIncidentDate } from "../../data/incidentDate.js";
 import { catChipStyle, catLabel } from "../../data/categories.js";
+import { isLateRow } from "../../data/faultGroups.js";
 
 // The rows behind a number: live incidents (expandable, with photos on demand) and
 // imported-history aggregates (a monthly count with no per-incident detail), grouped by
@@ -105,8 +106,15 @@ export function IncidentDetailRow({ inc, showDriver = false, onDriver, hideCateg
             <div><span className="dd-k">Driver</span><span className="dd-v">{inc.driver_name || inc.driver_raw || "—"}</span></div>
             <div><span className="dd-k">Category</span><span className="dd-v">{catLabel(inc.category)}</span></div>
             <div><span className="dd-k">Fault</span><span className="dd-v">{FAULT_LABEL[inc.fault] || inc.fault || "—"}</span></div>
-            {inc.late_reason && (
-              <div><span className="dd-k">Late Reason</span><span className="dd-v">{LATE_REASON_LABELS[inc.late_reason] || inc.late_reason}</span></div>
+            {/* A late row is reviewed by its late reason, which All Incidents sets in
+                place of a fault (faultGroups.js), so a late row always shows it. */}
+            {(inc.late_reason || isLateRow(inc)) && (
+              <div>
+                <span className="dd-k">Late Reason</span>
+                <span className="dd-v">
+                  {inc.late_reason ? LATE_REASON_LABELS[inc.late_reason] || inc.late_reason : "Not set — set it on All Incidents"}
+                </span>
+              </div>
             )}
           </div>
           {(inc.reason || inc.notes || inc.your_note) && (

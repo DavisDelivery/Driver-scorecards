@@ -22,14 +22,6 @@ import { hiddenDriverIds } from "./drivers.js";
 import { dataStamp as stampOf } from "./drill.js";
 import { historyLoadState, initialLoadState, isStale } from "./loadState.js";
 
-// Today's Driver-fault rule (blend.js): under Driver-fault scope a category in a month
-// with no live entries still reads its all-fault history. Flipping it here moves
-// everything that reads the blend together — the Scorecard's YTD tile, its leaderboards
-// and every drill-down. The Scorecard's three month tiles (This Month, Driver Fault,
-// Exonerated) still count raw live incidents with their own rule, This Month adding only
-// the history the blend serves beside them; they come onto the blend with the KPI fix.
-const LEGACY_DRIVER_SCOPE = true;
-
 const AnalyticsContext = React.createContext(null);
 
 export function useAnalytics() {
@@ -110,8 +102,12 @@ export function AnalyticsProvider({
           buildBlend({
             incidents,
             history: records,
+            // Driver-fault scope (blend.js): history has no fault field, so a cell
+            // history serves is "not tracked" and counts nothing. Until v0.22.0 it
+            // read its all-fault history, beside live cells counting driver fault
+            // only. The Scorecard's tiles, its leaderboards and every drill-down
+            // read this one blend, so they moved together.
             faultFilter: key === "driver" ? "driver" : null,
-            legacyDriverScope: LEGACY_DRIVER_SCOPE,
           }),
         );
       }

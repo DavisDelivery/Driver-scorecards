@@ -78,3 +78,18 @@ export function chartTable({ rows, x, series = [], lines = [], total = false, so
   });
   return { columns, rows: out };
 }
+
+// One leaderboard row's bar, drawn to match the numbers beside it:
+//   nested  the period lies inside the total (This Mo inside the year to date, Trends'
+//           year inside all time): "3 / 12", a solid period inside a faded whole
+//   not     a period reaching back over Jan 1 (12M in September, a custom range): it
+//           isn't part of the year to date, so the row reads "5 · YTD 2", two counts
+//           side by side, and the bar is the period alone. It used to be clamped to the
+//           year to date and drawn as a full bar labelled "5 / 0"; a bar spanning both
+//           would be a length no number on the row states.
+//   → { solid, faded, whole }   whole = solid + faded, what the card's bars scale to
+export function leaderBar({ month = 0, ytd = 0 } = {}, { nested = true } = {}) {
+  const solid = Math.max(0, Number(month) || 0);
+  const whole = nested ? Math.max(solid, Number(ytd) || 0) : solid;
+  return { solid, faded: whole - solid, whole };
+}

@@ -19,8 +19,6 @@ import {
   driverBuckets,
   blendCube,
   historyYm,
-  historyTotal,
-  monthParts,
   sourceLabel,
 } from "../src/data/blend.js";
 import { buildMonthlyTotals, buildYearlyTotals, availableYears } from "../src/data/analytics.js";
@@ -402,9 +400,10 @@ test("the Jan 2026 shape: 19 back-dated forgotten freight beside the month's imp
   const month = (cats) => cats.reduce((a, c) => a + blend.companyCell("2026-01", c), 0);
   // The month rule read 19; per cell it reads 36.
   assert.equal(month(COUNTED8), 36);
-  // The Scorecard's This Month tile: the 19 live rows, and the 17 history serves.
-  assert.equal(historyTotal(blend, "2026-01", COUNTED8), 17);
-  assert.equal(historyTotal(blend, "2026-02", COUNTED8), 0);
+  // The 19 live rows, and the 17 history serves beside them.
+  const fromHistory = (ym) => COUNTED8.filter((c) => !blend.isLive(ym, c)).reduce((a, c) => a + blend.companyCell(ym, c), 0);
+  assert.equal(fromHistory("2026-01"), 17);
+  assert.equal(fromHistory("2026-02"), 0);
   assert.equal(blend.companyCell("2026-01", "forgotten_freight"), 19);
   assert.equal(blend.companyCell("2026-01", "damage"), 9);
   assert.equal(blend.companyCell("2026-01", "missing"), 6);
@@ -412,36 +411,6 @@ test("the Jan 2026 shape: 19 back-dated forgotten freight beside the month's imp
   assert.equal(blend.monthSource("2026-01"), "mixed");
   // Only the forgotten freight disagrees with history; the rest IS history.
   assert.deepEqual(blend.conflicts, [{ ym: "2026-01", category: "forgotten_freight", live: 19, history: 28 }]);
-});
-
-test("the Scorecard's month tile is made cell by cell, never counting a cell twice", () => {
-  const tile = (blend, incs, ym) => {
-    const p = monthParts(blend, incs, ym, COUNTED8);
-    return { rows: p.rows.map((i) => i.id), fromHistory: p.fromHistory, total: p.rows.length + p.fromHistory };
-  };
-  const hist = [
-    { year: 2026, month: 2, driver_id: "d1", category: "damage", count: 4 },
-    { year: 2026, month: 2, driver_id: "d2", category: "misdelivery", count: 3 },
-  ];
-  const month = (blend) => COUNTED8.reduce((a, c) => a + blend.companyCell("2026-02", c), 0);
-  // A no-fault damage back-dated into a history month counts for nothing, and the
-  // month's imported damage already reports that cell: the tile is the blend's month.
-  const noFault = [{ id: "nf", driver_id: "d1", category: "damage", no_fault: true, delivered_date: "2026-02-03" }];
-  let blend = buildBlend({ incidents: noFault, history: hist });
-  assert.deepEqual(tile(blend, noFault, "2026-02"), { rows: [], fromHistory: 7, total: 7 });
-  assert.equal(month(blend), 7);
-  // An unable-to-track entry has no history cell to double: it is a live row (the tile
-  // counts every category raw), beside the month's history.
-  const utt = [{ id: "u", driver_id: "d1", category: "unable_to_track", delivered_date: "2026-02-03" }];
-  blend = buildBlend({ incidents: utt, history: hist });
-  assert.deepEqual(tile(blend, utt, "2026-02"), { rows: ["u"], fromHistory: 7, total: 8 });
-  // Jan 2026: the live forgotten freight, and the history of the rest.
-  blend = buildBlend({ incidents, history });
-  assert.deepEqual(tile(blend, incidents, "2026-01"), { rows: ["i2", "i3", "i4"], fromHistory: 2, total: 5 });
-  // A month all history, and one all live (April's history is all superseded): no part
-  // of either comes from the other.
-  assert.deepEqual(tile(blend, incidents, "2025-11"), { rows: [], fromHistory: 9, total: 9 });
-  assert.equal(tile(blend, incidents, "2026-04").fromHistory, 0);
 });
 
 test("a driver's conflicts compare their own live count with their own history", () => {

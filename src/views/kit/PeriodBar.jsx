@@ -10,6 +10,9 @@ import { useHashState, writeHash } from "../../data/hashState.js";
 //   onChange  (patch) => void            a partial { p } / { from } / { to }
 //   anchor    { value, options, onChange, label }   month grain: the month select
 //   fault     { value, onChange, disabled, title }  "all" | "driver"
+//   day       { value, min, max, onChange, label }  the Scorecard's Attempts day: a
+//             day of the anchor month, so it sits beside the month picker it belongs
+//             to rather than inside the card it scopes
 //   max       latest pickable date for a custom range (YYYY-MM-DD or YYYY-MM)
 export default function PeriodBar({
   grain = "day",
@@ -18,6 +21,7 @@ export default function PeriodBar({
   onChange,
   anchor = null,
   fault = null,
+  day = null,
   max,
   className = "",
 }) {
@@ -70,6 +74,18 @@ export default function PeriodBar({
             aria-label="To"
           />
         </div>
+      )}
+      {day && (
+        <label className="period-day" title={day.title}>
+          <span className="period-day-lbl">{day.label || "Day"}</span>
+          <input
+            type="date"
+            value={day.value || ""}
+            min={day.min}
+            max={day.max}
+            onChange={(e) => day.onChange(e.target.value)}
+          />
+        </label>
       )}
       {fault && (
         <div className="month-picker" role="group" aria-label="Fault scope">
