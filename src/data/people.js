@@ -75,6 +75,14 @@ export function nameOf(index, id) {
   return index?.get(id)?.name || id;
 }
 
+// The name for a driver KEY (attemptRecords.js driverKey): a roster id's name, the name
+// a "name:" key carries, or "Unassigned".
+export function nameOfKey(index, key) {
+  if (!key || key === "unassigned") return "Unassigned";
+  if (key.startsWith("name:")) return key.slice(5);
+  return nameOf(index, key);
+}
+
 // The ids a benchmark compares against: active roster rows in the role group, plus every
 // id seen in scope that has no roster row (unknown is never invisible). Role groups are
 // the Scorecard's: "loader" is loaders; "driver" is everyone else (drivers and

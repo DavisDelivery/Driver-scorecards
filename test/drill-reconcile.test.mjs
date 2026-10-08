@@ -4,7 +4,8 @@
 // the drawer resolves the spec the click hands it through drill.js. This walks every
 // mark each screen's builder produces on the fixture — Scorecard leaderboard rows and
 // card totals, Trends leaderboards and per-driver months, Reports month cells, the
-// roster card — and checks that the drill-down of each resolves to the value drawn.
+// roster card, the manual-entry tabs' tiles and driver card — and checks that the
+// drill-down of each resolves to the value drawn.
 // It covers the Jan 2026 conflict month, a period and a window crossing Jan 1, and both
 // driver-fault rules.
 import { test } from "node:test";
@@ -12,9 +13,32 @@ import assert from "node:assert/strict";
 import { buildBlend, tally, tallyTotal, driverBuckets, blendCube } from "../src/data/blend.js";
 import { buildMonthlyTotals } from "../src/data/analytics.js";
 import { monthsOfYear } from "../src/data/scorecardDetail.js";
-import { resolveDrill, driverDrill, drillLevels, driverFromDrawer, pushStep, popTo } from "../src/data/drill.js";
+import {
+  resolveDrill,
+  driverDrill,
+  drillLevels,
+  driverFromDrawer,
+  pushStep,
+  popTo,
+  dataStamp,
+  drillVerdict,
+} from "../src/data/drill.js";
 import { incidentDateStr } from "../src/data/incidentDate.js";
 import { COUNTED8, CHARTED6 } from "../src/data/categories.js";
+import {
+  inWindow,
+  recordDate,
+  keyOf,
+  focusOptions,
+  weekdaySeries,
+  busiest,
+  entriesDrill,
+  attemptTiles,
+  monthSpark,
+  sparkSource,
+} from "../src/data/manualAnalytics.js";
+import { buildAttemptRecords } from "../src/data/attemptRecords.js";
+import { weekdayOfYmd } from "../src/data/period.js";
 import { drivers, incidents, history } from "./blend-fixture.mjs";
 
 const roleOf = (id) => drivers.find((d) => d.id === id)?.role || "driver";
@@ -326,14 +350,211 @@ test("an incidents spec counts exactly the rows it names", () => {
 });
 
 test("an attempts spec counts orders in its window", () => {
+  // `key` is the driver key attemptRecords.js gives every record.
   const attemptRecords = [
-    { key: "a", date: "2026-09-01", driver_id: "d1", driver_name: "Ann Able" },
-    { key: "b", date: "2026-09-02", driver_id: "d2", driver_name: "Bo Baker" },
-    { key: "c", date: "2026-10-01", driver_id: "d1", driver_name: "Ann Able" },
+    { id: "a", key: "d1", date: "2026-09-01", driver_id: "d1", driver_name: "Ann Able" },
+    { id: "b", key: "d2", date: "2026-09-02", driver_id: "d2", driver_name: "Bo Baker" },
+    { id: "c", key: "d1", date: "2026-10-01", driver_id: "d1", driver_name: "Ann Able" },
+    { id: "d", key: "unassigned", date: "2026-09-03", driver_id: null, driver_name: "" },
   ];
   const ctx = { ...ctxFor(), attemptRecords };
   const d = resolveDrill({ kind: "attempts", start: "2026-09-01", end: "2026-09-30" }, ctx);
-  assert.equal(d.total, 2);
-  assert.equal(d.byCategory.get("attempts"), 2);
+  assert.equal(d.total, 3);
+  assert.equal(d.byCategory.get("attempts"), 3);
+  assert.equal(d.byDriver.get("unassigned").count, 1, "Unassigned is a row of its own");
   assert.equal(resolveDrill({ kind: "attempts", driverId: "d1" }, ctx).total, 2);
+  assert.equal(resolveDrill({ kind: "attempts", driverKey: "unassigned" }, ctx).total, 1);
+});
+
+// ── Manual-entry tabs ────────────────────────────────────────────────────────
+// Forgotten Freight, Unable to Track, Mis-Deliveries, Compliments and Attempts draw
+// their tiles from manualAnalytics.js. Every tile that opens a drawer, and "Driver
+// detail" on the driver card, must open on its own number — with no driver picked and
+// with each one the picker offers.
+
+test("the manual-entry tabs' tiles and Driver detail reconcile, for every driver", () => {
+  const ctx = ctxFor();
+  const hidden = new Set(drivers.filter((d) => d.active === false).map((d) => d.id));
+  for (const win of [
+    { start: "2026-04-01", end: "2026-04-30", bucket: "day", months: ["2026-04"] },
+    { start: "2025-12-15", end: "2026-01-31", bucket: "week", months: ["2025-12", "2026-01"] }, // crosses Jan 1
+  ]) {
+    for (const category of ["forgotten_freight", "unable_to_track", "misdelivery", "compliment"]) {
+      const rows = inWindow(incidents.filter((i) => i.category === category), win);
+      const focuses = [null, ...focusOptions(rows, { drivers }).map((o) => o.key)];
+      for (const focus of focuses) {
+        const what = `${category} ${win.start} ${focus}`;
+        const mine = focus ? rows.filter((r) => keyOf(r) === focus) : rows;
+        // Total, and Driver detail: the same list.
+        const total = entriesDrill(rows, focus, { category });
+        assert.equal(total.expected, mine.length, what);
+        assert.equal(resolveDrill(total.spec, ctx).total, total.expected, `${what}: total`);
+        // Busiest workday: the weekday's own entries.
+        const top = busiest(weekdaySeries(rows, focus));
+        if (top) {
+          const wd = entriesDrill(
+            rows.filter((r) => weekdayOfYmd(recordDate(r)) === top.wd),
+            focus,
+            { category },
+          );
+          assert.equal(resolveDrill(wd.spec, ctx).total, top.count, `${what}: busiest`);
+        }
+      }
+    }
+  }
+  // Attempts: hand-logged rows here (the feed's orders are tested in manual-analytics).
+  const { records } = buildAttemptRecords({ feedDays: new Map(), incidents, drivers });
+  const win = { start: "2026-06-01", end: "2026-06-30", bucket: "day", months: ["2026-06"] };
+  const rows = inWindow(records, win);
+  assert.equal(rows.length, 2, "the June 30 timestamp is filed on June 30");
+  for (const focus of [null, "d1", "d3"]) {
+    const t = attemptTiles({ rows, win, focus, hidden });
+    for (const name of ["orders", "rank", "busiest", "perDay", "repeat", "open"]) {
+      if (!t[name]) continue;
+      assert.equal(resolveDrill(t[name].drill, { ...ctx, attemptRecords: records }).total, t[name].expected, `attempts ${focus} ${name}`);
+    }
+  }
+});
+
+test("the driver card's months are the Scorecard's own cells", () => {
+  // The sparkline says "as the Scorecard counts them": each month it draws is blend.cell,
+  // which is what the Scorecard's drill-down for that driver, month and category
+  // resolves to. A month that never captured the category draws no bar at all (n null):
+  // the drill-down has nothing in it either, but that's not a zero to draw.
+  const ctx = ctxFor();
+  const blend = ctx.blend(null);
+  for (const [driverId, category] of [["d1", "forgotten_freight"], ["d3", "compliment"], ["d2", "damage"]]) {
+    const spark = monthSpark({
+      endYm: "2026-06",
+      cellOf: (ym) => blend.cell(ym, driverId, category),
+      sourceOf: (ym) => sparkSource(blend, ym, category),
+    });
+    for (const m of spark) {
+      const d = resolveDrill({ kind: "blend", months: [m.ym], categoryIds: [category], driverId }, ctx);
+      if (m.n === null) {
+        assert.ok(["not_tracked", "none"].includes(m.source), `${driverId} ${category} ${m.ym}: ${m.source}`);
+        assert.equal(d.total, 0, `${driverId} ${category} ${m.ym}: nothing to count`);
+      } else {
+        assert.equal(d.total, m.n, `${driverId} ${category} ${m.ym}`);
+      }
+    }
+  }
+  // Jan 2026 is live: Ann's FF is the 2 live entries, not history's 5.
+  const jan = monthSpark({ endYm: "2026-01", months: 1, cellOf: (ym) => blend.cell(ym, "d1", "forgotten_freight"), sourceOf: blend.monthSource });
+  assert.deepEqual([jan[0].n, jan[0].source], [2, "live"]);
+});
+
+// ── Inside an attempts drawer ────────────────────────────────────────────────
+// A drawer opened from an Attempts tile lists its orders by driver and by month, and
+// each of those counts narrows the drawer when clicked. Every narrowed level must
+// show the count that was clicked — for every tile, with no driver picked and with
+// each one. "Repeat customer" is the one that can't be worked out again inside the
+// narrowed list: an order whose customer recurs elsewhere in the tile's list is a
+// repeat even once the drawer is down to its own driver or month.
+
+// Two months of feed orders. ACME recurs across drivers, so Bo's single ACME order
+// and the Unassigned one are repeats only against the fleet; ZETA recurs inside Ann's
+// own orders but across two months.
+const attRec = (() => {
+  let n = 0;
+  const who = { d1: "Ann Able", d2: "Bo Baker", d3: "Cy Cole" };
+  return (date, key, customerKey, extra = {}) => {
+    n++;
+    const id = key in who ? key : null;
+    return {
+      id: `feed:${date}:${n}`,
+      pro_number: `ATT00${7170000 + n}`,
+      date,
+      delivered_date: date,
+      driver_id: id,
+      driver_name: id ? who[id] : key.startsWith("name:") ? key.slice(5) : "",
+      key,
+      customer: customerKey.split("|")[0],
+      customerKey,
+      outcome: "delivered",
+      from_feed: true,
+      order: { stopNbr: `00${7170000 + n}` },
+      ...extra,
+    };
+  };
+})();
+const attemptOrders = [
+  attRec("2026-08-28", "d1", "ZETA|30302"),
+  attRec("2026-09-03", "d1", "ZETA|30302", { outcome: "unplanned" }),
+  attRec("2026-09-03", "d1", "ACME|30301"),
+  attRec("2026-09-04", "d2", "ACME|30301", { outcome: "rescheduled" }),
+  attRec("2026-09-10", "unassigned", "ACME|30301", { outcome: "unplanned" }),
+  attRec("2026-09-11", "name:ZED ZULU", "BETA|30303"),
+  attRec("2026-09-11", "d3", "BETA|30303"), // deactivated
+  attRec("2026-08-21", "d2", "GAMMA|30304"),
+];
+
+// Every level the drawer offers from one state: each By-driver row (when the level
+// isn't one driver's already), then each month of each of those, and each month of the
+// level itself — the click's number checked against the narrowed count each time.
+function walkAttemptDrawer(state, ctx, what) {
+  let checked = 0;
+  const levels = drillLevels(state);
+  const level = levels[levels.length - 1];
+  const d = resolveDrill(level.spec, ctx);
+  if (typeof level.expected === "number") {
+    assert.equal(d.total, level.expected, `${what}: as clicked`);
+    checked++;
+  }
+  if (!level.spec.driverKey && !level.spec.driverId) {
+    for (const [key, e] of d.byDriver) checked += walkAttemptDrawer(pushStep(state, { driverKey: key, x: e.count }), ctx, `${what} › ${key}`);
+  }
+  if (!(state.path || []).some((op) => op.month)) {
+    for (const [ym, n] of d.byMonth) checked += walkAttemptDrawer(pushStep(state, { month: ym, x: n }), ctx, `${what} › ${ym}`);
+  }
+  return checked;
+}
+
+test("an attempts drawer narrowed to a driver or a month shows the number clicked", () => {
+  const ctx = { ...ctxFor(), attemptRecords: attemptOrders };
+  const hidden = new Set(drivers.filter((d) => d.active === false).map((d) => d.id));
+  const win = { start: "2026-08-15", end: "2026-09-14", bucket: "day", months: ["2026-08", "2026-09"] };
+  const rows = inWindow(attemptOrders, win);
+  let checked = 0;
+  for (const focus of [null, "d1", "d2", "unassigned", "name:ZED ZULU"]) {
+    const t = attemptTiles({ rows, win, focus, hidden });
+    for (const name of ["orders", "rank", "busiest", "perDay", "repeat", "open"]) {
+      if (!t[name]) continue;
+      checked += walkAttemptDrawer({ spec: t[name].drill, expected: t[name].expected }, ctx, `${focus} ${name}`);
+    }
+  }
+  assert.ok(checked > 60, `walked ${checked} levels`);
+  // The case that disagreed: the fleet's repeat customers, narrowed to Bo, keep his one
+  // ACME order — ACME recurs across the fleet, not in his own list.
+  const repeat = attemptTiles({ rows, win, hidden }).repeat;
+  assert.equal(repeat.expected, 7, "ACME ×3 (Unassigned's included), ZETA ×2 (August's too), BETA ×2; GAMMA once");
+  const bo = drillLevels(pushStep({ spec: repeat.drill, expected: repeat.expected }, { driverKey: "d2", x: 1 }));
+  assert.equal(resolveDrill(bo[bo.length - 1].spec, ctx).total, 1);
+  // Ann's own repeats are found in her own list: ZETA twice, across August and September.
+  const ann = attemptTiles({ rows, win, focus: "d1", hidden }).repeat;
+  assert.equal(ann.expected, 2);
+  const sep = drillLevels(pushStep({ spec: ann.drill, expected: 2 }, { month: "2026-09", x: 1 }));
+  assert.equal(resolveDrill(sep[sep.length - 1].spec, ctx).total, 1, "her September ZETA order is still a repeat");
+});
+
+test("a tile clicked before its period's orders were published reads as moved, not as a disagreement", () => {
+  // The Attempts tab draws tiles from what it has while the period loads; the drawer
+  // counts the orders the tab publishes once it's in. The click is stamped with the
+  // data on screen then — before publication — so the later count is the data moving.
+  const base = { incidents, history, drivers };
+  const win = { start: "2026-08-15", end: "2026-09-14", bucket: "day", months: ["2026-08", "2026-09"] };
+  const whileLoading = attemptTiles({ rows: [], win });
+  const atClick = dataStamp({ ...base, attemptRecords: null });
+  const ready = dataStamp({ ...base, attemptRecords: attemptOrders });
+  assert.notEqual(atClick, ready);
+  const total = resolveDrill(whileLoading.orders.drill, { attemptRecords: attemptOrders }).total;
+  assert.equal(total, 8);
+  assert.equal(drillVerdict({ expected: whileLoading.orders.expected, total, at: atClick, stamp: ready }), "moved");
+  // Clicked once the orders were in, the same count is checked — and agrees.
+  const loaded = attemptTiles({ rows: inWindow(attemptOrders, win), win });
+  assert.equal(drillVerdict({ expected: loaded.orders.expected, total, at: ready, stamp: ready }), null);
+  // A real difference on the same data is still the alarm.
+  assert.equal(drillVerdict({ expected: 7, total, at: ready, stamp: ready }), "mismatch");
+  // A state no screen stamped was opened just now, from the data on screen.
+  assert.equal(drillVerdict({ expected: 7, total, at: null, stamp: ready }), "mismatch");
 });

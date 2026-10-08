@@ -1,4 +1,5 @@
 import React from "react";
+import { createPortal } from "react-dom";
 import { useAnalytics } from "../../data/AnalyticsProvider.jsx";
 import { useHashState } from "../../data/hashState.js";
 import {
@@ -10,9 +11,11 @@ import {
   decodeDrill,
   driverFromDrawer,
   spanMonths,
+  drillVerdict,
 } from "../../data/drill.js";
 import { CATEGORIES, catLabel, catTitle, catColor } from "../../data/categories.js";
-import { nameOf } from "../../data/people.js";
+import { nameOf, nameOfKey } from "../../data/people.js";
+import { rankable } from "../../data/manualAnalytics.js";
 import { incidentDateStr } from "../../data/incidentDate.js";
 import { currentYmET } from "../../data/period.js";
 import { downloadCsv, csvName } from "../../data/csv.js";
@@ -20,6 +23,8 @@ import { BRAND } from "./chartTheme.js";
 import EntryList, { fmtMonth } from "./EntryList.jsx";
 import { DataTable } from "./ChartCard.jsx";
 import DriverLink from "./DriverLink.jsx";
+import AttemptOrdersTable from "./AttemptOrdersTable.jsx";
+import StopDetailModal from "../StopDetailModal.jsx";
 import { LoadError } from "./LoadState.jsx";
 import { DRILL_KEY, openDrill, closeDrill, stampDrill } from "./drillNav.js";
 
@@ -41,12 +46,21 @@ import { DRILL_KEY, openDrill, closeDrill, stampDrill } from "./drillNav.js";
 
 const ORDER = new Map(CATEGORIES.map((c) => [c.id, c.order]));
 
+// An attempts drill-down counts the orders the Attempts tab has loaded from the
+// dispatch feed (AnalyticsProvider publishAttempts); until they're in, it waits.
+const attemptsPending = (spec, a) => spec?.kind === "attempts" && !a.drillCtx.attemptRecords;
+
+const fmtDay = (s) => {
+  const m = String(s || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[2]}/${m[3]}/${m[1]}` : "";
+};
+
 // Rendered once, by App: shows whatever drill the hash holds.
 export function DrillHost() {
   const a = useAnalytics();
   const [raw] = useHashState(DRILL_KEY, "");
   const state = React.useMemo(() => decodeDrill(raw), [raw]);
-  const ready = !a.historyLoading && !a.blocking;
+  const ready = !a.historyLoading && !a.blocking && !attemptsPending(state?.spec, a);
   // A drawer just opened by a click carries no stamp yet: it was counted from the data
   // on screen now, so it gets this data's stamp (in place, without a history entry).
   React.useEffect(() => {
@@ -89,7 +103,8 @@ export default function DrillDrawer({ state, onChange, onClose }) {
   // A Drivers or Loaders split needs the roster's roles; without it everyone reads as a
   // driver, and the split would be wrong rather than missing.
   const blockedBy = a.blocking || (state.spec.roleGroup ? a.rosterBlocking : null);
-  const ready = !a.historyLoading && !blockedBy;
+  const waitingForOrders = attemptsPending(level.spec, a);
+  const ready = !a.historyLoading && !blockedBy && !waitingForOrders;
   const detail = React.useMemo(
     () => (ready ? resolveDrill(level.spec, a.drillCtx) : null),
     [ready, key, a.drillCtx], // eslint-disable-line react-hooks/exhaustive-deps
@@ -121,17 +136,23 @@ export default function DrillDrawer({ state, onChange, onClose }) {
       return { months, byMonth: d.byMonth, inScope: new Set(spanMonths(spec.months)), sourceOf: d.sourceOf };
     }
     const d = resolveDrill(spec, a.drillCtx);
-    const months = spanMonths(d.months);
+    // An attempts window covers its months whether or not each one had an order.
+    const months =
+      spec.kind === "attempts" && spec.start && spec.end
+        ? spanMonths([...d.months, spec.start.slice(0, 7), spec.end.slice(0, 7)])
+        : spanMonths(d.months);
     return { months, byMonth: d.byMonth, inScope: new Set(months), sourceOf: d.sourceOf };
   }, [ready, key, a.drillCtx]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // A clicked number checked against a count from the same data: a difference is a real
-  // disagreement. Against data that has moved since (a link, a Back, a refresh), it is
-  // only a change, and is said as one. A state not stamped yet was opened just now.
-  const differs = !!detail && typeof level.expected === "number" && detail.total !== level.expected;
-  const sameData = !state.at || state.at === a.dataStamp;
-  const mismatch = differs && sameData;
-  const moved = differs && !sameData;
+  // disagreement. Against data that has moved since (a link, a Back, a refresh, the
+  // Attempts period finishing loading after the click), it is only a change, and is
+  // said as one (drill.js drillVerdict).
+  const verdict = detail
+    ? drillVerdict({ expected: level.expected, total: detail.total, at: state.at, stamp: a.dataStamp })
+    : null;
+  const mismatch = verdict === "mismatch";
+  const moved = verdict === "moved";
   React.useEffect(() => {
     if (mismatch) {
       console.error(
@@ -146,40 +167,58 @@ export default function DrillDrawer({ state, onChange, onClose }) {
     onChange(next);
   };
   const person = (id) => nameOf(a.people, id);
+  // An attempts drawer can be one driver KEY (attemptRecords.js): Unassigned, or a feed
+  // name the roster doesn't match. An incidents list can name its own heading (`who`).
   const who = root.driverId
     ? person(root.driverId)
-    : root.roleGroup === "loader"
-      ? "Loaders"
-      : root.roleGroup === "driver"
-        ? "Drivers"
-        : "Company";
+    : root.driverKey
+      ? nameOfKey(a.people, root.driverKey)
+      : root.who
+        ? root.who
+        : root.roleGroup === "loader"
+          ? "Loaders"
+          : root.roleGroup === "driver"
+            ? "Drivers"
+            : "Company";
   const crumbs = [
     {
       label: root.categoryIds?.length === 1 && root.kind !== "attempts" ? `${who} › ${catLabel(root.categoryIds[0])}` : who,
     },
     ...path.map((op) => ({
-      label: op.category ? catLabel(op.category) : op.driverId ? person(op.driverId) : fmtMonth(op.month),
+      label: op.category
+        ? catLabel(op.category)
+        : op.driverId
+          ? person(op.driverId)
+          : op.driverKey
+            ? nameOfKey(a.people, op.driverKey)
+            : fmtMonth(op.month),
     })),
   ];
   const cats = level.spec.categoryIds || [];
   const title = level.spec.driverId
     ? person(level.spec.driverId)
-    : cats.length === 1
-      ? catTitle(cats[0])
-      : level.spec.kind === "attempts"
-        ? "Attempted orders"
-        : "All categories";
+    : level.spec.driverKey
+      ? nameOfKey(a.people, level.spec.driverKey)
+      : level.spec.who
+        ? level.spec.who
+        : cats.length === 1
+          ? catTitle(cats[0])
+          : level.spec.kind === "attempts"
+            ? "Attempted orders"
+            : "All categories";
   const inactive = level.spec.driverId && a.people.get(level.spec.driverId)?.active === false;
   const scopeLabel = monthOp
     ? fmtMonth(monthOp.month)
     : state.scopes?.[scope]?.label ||
-      (level.spec.start ? `${level.spec.start} – ${level.spec.end}` : "");
+      (level.spec.start ? `${fmtDay(level.spec.start)} – ${fmtDay(level.spec.end)}` : "");
   const sub = [
     level.spec.driverId ? (a.people.get(level.spec.driverId)?.role || "driver").toUpperCase() : null,
     inactive ? "INACTIVE" : null,
     root.roleGroup && !level.spec.driverId ? (root.roleGroup === "loader" ? "LOADERS" : "DRIVERS") : null,
     level.spec.fault === "driver" ? "DRIVER FAULT ONLY" : null,
+    level.spec.kind === "attempts" && (level.spec.driverId || level.spec.driverKey) ? "ATTEMPTED ORDERS" : null,
     scopeLabel,
+    level.spec.label || null,
   ].filter(Boolean);
 
   return (
@@ -226,6 +265,11 @@ export default function DrillDrawer({ state, onChange, onClose }) {
           {!ready ? (
             blockedBy ? (
               <LoadError what={blockedBy.what} message={blockedBy.message} retry={blockedBy.retry} />
+            ) : waitingForOrders ? (
+              <div className="empty-state">
+                Loading the attempted orders from the dispatch feed… They come from the Attempts tab&apos;s
+                period; open that tab if this doesn&apos;t finish.
+              </div>
             ) : (
               <div className="empty-state">Loading history…</div>
             )
@@ -272,6 +316,8 @@ function DrawerBody({
   const spec = level.spec;
   const cats = spec.categoryIds || [];
   const person = (id) => (id ? nameOf(a.people, id) : "Unattributed");
+  // One driver's list, whether named by id, by an attempt's driver key, or by `who`.
+  const oneDriver = !!(spec.driverId || spec.driverKey || spec.who);
 
   // Coverage: where this level's months come from, and what the blend can't show. A
   // month still to come is neither data nor a gap, so it isn't counted as "no data";
@@ -305,10 +351,14 @@ function DrawerBody({
     hit(i.pro_number, i.driver_name, i.driver_raw, i.customer, i.to_name, i.notes, i.reason),
   );
   const historyRows = detail.historyRows.filter((r) => hit(r.driver_name, person(r.driver_id), catLabel(r.category)));
-  const orders = detail.orders.filter((o) => hit(o.driver_name, o.pro, o.order?.stopNbr));
   const withPhotos = incidents.filter((i) => i.has_photos).length;
+  // The order a row of the attempts list opens, over the drawer.
+  const [stop, setStop] = React.useState(null);
 
   // By driver: inactive drivers stay in every total but leave the list, said as a count.
+  // An attempts list is keyed like the Attempts tab's bars (a driver key), so Unassigned
+  // and a feed name the roster doesn't match are rows of their own.
+  const attempts = spec.kind === "attempts";
   const drivers = React.useMemo(() => {
     const rows = [];
     let hiddenCount = 0;
@@ -317,11 +367,12 @@ function DrawerBody({
         hiddenCount += e.count;
         continue;
       }
-      rows.push({ id, name: id ? nameOf(a.people, id) : "Unattributed", count: e.count });
+      const name = attempts ? nameOfKey(a.people, id) : id ? nameOf(a.people, id) : "Unattributed";
+      rows.push({ id, name, count: e.count, linkable: !!id && (!attempts || a.people.has(id)) });
     }
     rows.sort((x, y) => y.count - x.count || x.name.localeCompare(y.name));
     return { rows, hiddenCount };
-  }, [detail, a.hidden, a.people]);
+  }, [detail, a.hidden, a.people, attempts]);
 
   const byCategory = [...detail.byCategory]
     .filter(([, n]) => n > 0)
@@ -391,7 +442,7 @@ function DrawerBody({
       ],
     );
 
-  const color = cats.length === 1 ? catColor(cats[0]) : BRAND;
+  const color = attempts ? catColor("attempts") : cats.length === 1 ? catColor(cats[0]) : BRAND;
   const stripMax = Math.max(1, ...strip.months.map((ym) => strip.byMonth.get(ym) || 0));
   const stripSources = new Set(strip.months.map((ym) => strip.sourceOf(ym)));
   const conflictMonths = new Set(coverage.all.map((c) => c.ym));
@@ -416,8 +467,14 @@ function DrawerBody({
       )}
       {moved && (
         <div className="dr-moved" role="status">
-          This was {level.expected.toLocaleString()} when it was opened. The entries or history have
-          changed since, so it now counts {detail.total.toLocaleString()}.
+          This was {level.expected.toLocaleString()} when it was opened. The entries, history or loaded
+          attempts have changed since, so it now counts {detail.total.toLocaleString()}.
+        </div>
+      )}
+      {spec.kind === "attempts" && a.attemptsError && (
+        <div className="load-stale" role="status">
+          Couldn&apos;t reach the dispatch feed for this period — only hand-logged attempts are
+          listed.
         </div>
       )}
 
@@ -441,10 +498,16 @@ function DrawerBody({
             <div className="dm-stat-lbl">{scopeLabel || "Total"}</div>
           </div>
         )}
-        {!spec.driverId && (
+        {!oneDriver && (
           <div className="dm-stat">
-            <div className="dm-stat-num">{[...detail.byDriver.keys()].filter(Boolean).length}</div>
-            <div className="dm-stat-lbl">Drivers · {scopeLabel || "total"}</div>
+            {/* Attempts count roster drivers only, as the Attempts tab's tile does:
+                Unassigned and a feed name the roster doesn't match are listed, not counted. */}
+            <div className="dm-stat-num">
+              {[...detail.byDriver.keys()].filter((k) => (attempts ? rankable(k, a.hidden) : k)).length}
+            </div>
+            <div className="dm-stat-lbl">
+              {attempts ? "Roster drivers" : "Drivers"} · {scopeLabel || "total"}
+            </div>
           </div>
         )}
         {spec.kind !== "attempts" && (
@@ -575,8 +638,8 @@ function DrawerBody({
         </div>
       )}
 
-      <div className={`cd-grid ${spec.driverId && !(cats.length > 1 && byCategory.length > 0) ? "dr-one" : ""}`}>
-        {(cats.length > 1 || !spec.driverId) && (
+      <div className={`cd-grid ${oneDriver && !(cats.length > 1 && byCategory.length > 0) ? "dr-one" : ""}`}>
+        {(cats.length > 1 || !oneDriver) && (
           <section className="cd-drivers">
             {cats.length > 1 && byCategory.length > 0 && (
               <>
@@ -597,7 +660,7 @@ function DrawerBody({
                 </div>
               </>
             )}
-            {!spec.driverId && (
+            {!oneDriver && (
               <>
                 <div className="cd-h" style={cats.length > 1 ? { marginTop: 14 } : undefined}>
                   By driver{scopeSuffix}
@@ -607,7 +670,8 @@ function DrawerBody({
                   <div key={r.id || "unattributed"} className="cd-driver dr-driver">
                     <span className="lb-rank">{i + 1}</span>
                     <span className="cd-driver-name">
-                      {r.id ? (
+                      {/* An attempts list stays on attempts: a name narrows it, like the count. */}
+                      {r.linkable && !attempts ? (
                         <DriverLink id={r.id} name={r.name} drill={driverState(r.id, r.count)} />
                       ) : (
                         r.name
@@ -617,7 +681,7 @@ function DrawerBody({
                       <button
                         type="button"
                         className="dr-count"
-                        onClick={() => narrow({ driverId: r.id, x: r.count })}
+                        onClick={() => narrow(attempts ? { driverKey: r.id, x: r.count } : { driverId: r.id, x: r.count })}
                         title={`Only ${r.name}`}
                       >
                         {r.count}
@@ -640,38 +704,40 @@ function DrawerBody({
         <section className="cd-incidents">
           <div className="cd-h cd-h-row">
             <span>
-              {spec.kind === "attempts" ? "Orders" : "Entries"}{scopeSuffix} · {detail.total}
+              {attempts ? "Orders" : "Entries"}{scopeSuffix} · {detail.total}
             </span>
-            <span className="dr-row-tools">
-              <input
-                type="search"
-                className="cd-search"
-                placeholder="PRO, driver or customer"
-                aria-label="Search entries"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-              />
-              {spec.kind !== "attempts" && (
+            {!attempts && (
+              <span className="dr-row-tools">
+                <input
+                  type="search"
+                  className="cd-search"
+                  placeholder="PRO, driver or customer"
+                  aria-label="Search entries"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                />
                 <button type="button" className="cc-csv" onClick={csv} title="Download these rows as CSV">
                   CSV
                 </button>
-              )}
-            </span>
+              </span>
+            )}
           </div>
-          {spec.kind === "attempts" ? (
-            orders.length === 0 ? (
-              <div className="empty-state">No orders.</div>
-            ) : (
-              orders.map((o) => (
-                <div key={o.key} className="dd-incident">
-                  <div className="dd-incident-head" style={{ cursor: "default" }}>
-                    <span className="dd-date">{o.date}</span>
-                    <span className="pro-num">{o.pro || o.order?.stopNbr || ""}</span>
-                    <span className="dd-driver-text">{o.driver_name || "Unassigned"}</span>
-                  </div>
-                </div>
-              ))
-            )
+          {attempts ? (
+            <>
+              {/* The Attempts tab's own table, read-only: its search, sort and CSV. */}
+              <AttemptOrdersTable
+                rows={detail.orders}
+                compact
+                onOpenStop={(r) => setStop(r.order)}
+                csv={csvName("Attempted orders", spec.driverId ? person(spec.driverId) : spec.driverKey ? nameOfKey(a.people, spec.driverKey) : "", scopeLabel)}
+                empty="No orders."
+              />
+              {stop &&
+                createPortal(
+                  <StopDetailModal row={stop} legs={stop.legRows || [stop]} onClose={() => setStop(null)} />,
+                  document.body,
+                )}
+            </>
           ) : (
             <EntryList
               incidents={incidents}

@@ -13,6 +13,7 @@
 import { jsPDF } from "jspdf";
 import { getIncidentPhotosBatch } from "../data/firebase.js";
 import { catRgb } from "../data/categories.js";
+import { incidentDateStr } from "../data/incidentDate.js";
 import { resolveReportLogo, drawWordmark } from "./brandLogo.js";
 import {
   DAVIS_BLUE,
@@ -39,7 +40,8 @@ const fmtMDY = (s) => {
   return m ? `${m[2]}/${m[3]}/${m[1]}` : String(s || "").slice(0, 10) || "—";
 };
 
-const incidentDateOf = (i) => i.delivered_date || i.created_at || "";
+// The day an entry is filed under — the same date the tab and the Scorecard use.
+const incidentDateOf = (i) => incidentDateStr(i) || i.created_at || "";
 
 // Page furniture -------------------------------------------------------------
 
@@ -114,7 +116,7 @@ function drawFooter(doc, page, total, generatedOn) {
 
 // "What was forgotten" tallied across the period — the at-a-glance answer the
 // driver conversation actually starts from.
-function drawSummary(doc, { rows, itemLabel, breakdown, color }, x, y, w) {
+function drawSummary(doc, { rows, itemLabel, breakdown, color, periodTotal }, x, y, w) {
   const boxH = 62;
   setColor(doc, [249, 250, 251], "fill");
   setColor(doc, LINE, "draw");
@@ -129,8 +131,12 @@ function drawSummary(doc, { rows, itemLabel, breakdown, color }, x, y, w) {
   doc.setFont("helvetica", "normal");
   doc.setFontSize(7.5);
   setColor(doc, TEXT_MUTED, "text");
+  // A handout narrowed on screen (a weekday, a search) is a part of the driver's
+  // period, and its count says so rather than reading as their total.
   doc.text(
-    `TOTAL ${rows.length === 1 ? "ENTRY" : "ENTRIES"}`,
+    periodTotal !== null && periodTotal !== rows.length
+      ? `OF ${periodTotal} IN PERIOD`
+      : `TOTAL ${rows.length === 1 ? "ENTRY" : "ENTRIES"}`,
     x + 16,
     y + 46,
   );
@@ -172,7 +178,7 @@ function drawSummary(doc, { rows, itemLabel, breakdown, color }, x, y, w) {
 
 // Detail card ----------------------------------------------------------------
 
-async function drawEntryCard(doc, entry, photos, x, y, w, { itemLabel, color }) {
+async function drawEntryCard(doc, entry, photos, x, y, w, { itemOf, color }) {
   setColor(doc, LINE, "draw");
   doc.setLineWidth(0.6);
   doc.roundedRect(x, y, w, CARD_H, 3, 3, "S");
@@ -191,7 +197,7 @@ async function drawEntryCard(doc, entry, photos, x, y, w, { itemLabel, color }) 
   doc.text(entry.pro_number || "—", padX, y + 22);
 
   // What was forgotten, as a badge to the right of the PRO.
-  const itemValue = entry.__itemValue;
+  const itemValue = itemOf(entry);
   if (itemValue) {
     doc.setFont("helvetica", "bold");
     drawBadge(doc, String(itemValue), padX + 96, y + 22, color, { fontSize: 7.5, tinted: true });
@@ -282,6 +288,10 @@ async function drawEntryCard(doc, entry, photos, x, y, w, { itemLabel, color }) 
  *   config      – the ManualEntry tab config (category, heading, classify)
  *   periodLabel – e.g. "Last Week"
  *   rangeText   – e.g. "07/27/2026 – 07/31/2026"
+ *   breakdown   – { label, of(entry) } to tally instead of the config's classify field
+ *                 (Attempts: what happened after each attempt)
+ *   periodTotal – the driver's whole count for the period, when `entries` is only part
+ *                 of it (the screen was narrowed); the summary then says "of N"
  */
 // Pass `doc` to APPEND this driver's report to an existing document instead of
 // starting a new one — that's how the all-drivers pack is built. Each driver still
@@ -294,6 +304,8 @@ export async function generateDriverReport({
   config,
   periodLabel,
   rangeText,
+  breakdown: tallyBy = null,
+  periodTotal = null,
   onProgress,
   doc: existingDoc,
 }) {
@@ -304,27 +316,30 @@ export async function generateDriverReport({
   const contentW = pageW - PAGE_MARGIN * 2;
   const color = config.category ? catRgb(config.category) : DAVIS_BLUE;
   const itemField = config.classify?.field;
-  const itemLabel = config.classify?.label || "Breakdown";
+  const itemLabel = tallyBy?.label || config.classify?.label || "Breakdown";
+  // The value each card's badge shows and the summary tallies. Read, never written onto
+  // the entries: they are the screen's own records.
+  const itemOf = tallyBy?.of || ((r) => (itemField ? r[itemField] : ""));
 
   // Newest first — the most recent conversation starter goes on top.
   const rows = [...entries].sort((a, b) =>
     String(incidentDateOf(b)).localeCompare(String(incidentDateOf(a))),
   );
-  for (const r of rows) r.__itemValue = itemField ? r[itemField] : "";
 
   // Tally what was forgotten.
   const tally = new Map();
   for (const r of rows) {
-    const k = (r.__itemValue || "Unspecified").toString();
+    const k = (itemOf(r) || "Unspecified").toString();
     tally.set(k, (tally.get(k) || 0) + 1);
   }
   const breakdown = [...tally.entries()]
     .map(([label, count]) => ({ label, count }))
     .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
 
-  // Hydrate photos up front (they live in their own documents).
+  // Hydrate photos up front (they live in their own documents). An order from the
+  // dispatch feed isn't an incident and has no photo documents to ask for.
   let photoMap = new Map();
-  const ids = rows.map((r) => r.id).filter(Boolean);
+  const ids = rows.filter((r) => !r.from_feed).map((r) => r.id).filter(Boolean);
   if (ids.length) {
     try {
       photoMap = await getIncidentPhotosBatch(ids, onProgress);
@@ -384,7 +399,7 @@ export async function generateDriverReport({
       drawTitleBanner(doc, bannerCtx);
       drawSummary(
         doc,
-        { rows, itemLabel, breakdown, color },
+        { rows, itemLabel, breakdown, color, periodTotal },
         PAGE_MARGIN,
         HEADER_H + 20,
         contentW,
@@ -411,7 +426,7 @@ export async function generateDriverReport({
         PAGE_MARGIN,
         item.y,
         contentW,
-        { itemLabel, color },
+        { itemOf, color },
       );
     }
     if (p === signoffPage && rows.length) {
