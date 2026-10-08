@@ -16,6 +16,8 @@ import {
   deleteAttempt,
   feedCoverage,
   fetchAttemptsRange,
+  loadFeedDay,
+  lastScannedDay,
   noDataRuns,
   NO_DATA_STATUSES,
 } from "../src/data/attemptsFeed.js";
@@ -39,6 +41,8 @@ const RESPONSES = {
   "2026-09-13": { ok: true, manifest: { fetchOk: true, planMissing: true, counts: { attempts: 0, candidates: 0 } }, attempts: [] },
   // A Monday whose manifest lost its counts and lists nothing.
   "2026-10-05": { ok: true, manifest: { fetchOk: true, planMissing: false, holder: "read" }, attempts: [] },
+  // Labor Day: the scan ran on a 21-stop plan and found nothing.
+  "2026-09-07": { ok: true, manifest: { fetchOk: true, planMissing: false, counts: { attempts: 0, candidates: 21 } }, attempts: [] },
 };
 // Today, once its 8 PM scan has run (tests that want it add it to RESPONSES).
 const TODAY_SCANNED = { ok: true, manifest: { fetchOk: true, planMissing: false, counts: { attempts: 1 } }, attempts: [att("007187109")] };
@@ -314,4 +318,72 @@ test("coverage names the no-data days and counts the rest", async () => {
     beforeFeed: 1,
   });
   assert.equal(feedCoverage(m, "2026-10-06", "2026-10-06", { today: TODAY }).pending, false);
+});
+
+// ── One day at a time: the Scorecard's Attempts card ─────────────────────────
+
+test("the card's day is the newest one whose scan ran, found one request at a time", async () => {
+  // Before 8 PM today has no manifest: the walk steps back to yesterday.
+  RESPONSES[TODAY] = { ok: true, manifest: null, attempts: [] };
+  RESPONSES["2026-10-06"] = { ok: true, manifest: { fetchOk: true, planMissing: false }, attempts: [att("007187644")] };
+  try {
+    const r = await lastScannedDay([TODAY, "2026-10-06", "2026-10-05"], { today: TODAY, now: 0 });
+    assert.equal(r.day, "2026-10-06");
+    assert.equal(r.entry.status, "ok");
+    assert.deepEqual(fetchedDays(), [TODAY, "2026-10-06"], "stops at the first day with a scan");
+    assert.deepEqual(r.tried, [
+      { day: TODAY, status: "pending", n: 0 },
+      { day: "2026-10-06", status: "ok", n: 1 },
+    ]);
+  } finally {
+    delete RESPONSES[TODAY];
+    delete RESPONSES["2026-10-06"];
+  }
+  calls = [];
+  // A night with no scan, and one the scan couldn't read NuVizz, are stepped over.
+  assert.equal((await lastScannedDay(["2026-09-02", "2026-09-01"], { today: TODAY })).day, "2026-09-01");
+  assert.equal((await lastScannedDay(["2026-09-08", "2026-09-04"], { today: TODAY })).day, "2026-09-04");
+  // Nothing to try, or nothing with a scan.
+  assert.deepEqual(await lastScannedDay([], { today: TODAY }), { day: null, entry: null, tried: [] });
+  assert.equal((await lastScannedDay(["2026-09-02"], { today: TODAY })).day, null);
+});
+
+test("a weekday holiday's empty scan is stepped over while an older day has orders", async () => {
+  // Wed 09/09: Tuesday's scan couldn't read NuVizz, Labor Day scanned none, Friday had
+  // orders.
+  const r = await lastScannedDay(["2026-09-08", "2026-09-07", "2026-09-04"], { today: "2026-09-09" });
+  assert.equal(r.day, "2026-09-04");
+  assert.equal(r.entry.rows.length, 2);
+  assert.deepEqual(r.tried.map((t) => [t.day, t.status, t.n]), [
+    ["2026-09-08", "fetch_not_ok", 0],
+    ["2026-09-07", "ok", 0],
+    ["2026-09-04", "ok", 2],
+  ]);
+  // Nothing older with orders: the empty scan is the answer after all — a real zero.
+  assert.equal((await lastScannedDay(["2026-09-07", "2026-09-02"], { today: TODAY })).day, "2026-09-07");
+  // An unreachable day still stops the walk, empty scan or not.
+  failing.add("2026-09-03");
+  const f = await lastScannedDay(["2026-09-07", "2026-09-03", "2026-09-01"], { today: TODAY });
+  assert.equal(f.day, "2026-09-03");
+  assert.equal(f.entry.status, "failed");
+});
+
+test("an unreachable feed stops the walk and says so", async () => {
+  failing.add("2026-09-03");
+  const r = await lastScannedDay(["2026-09-03", "2026-09-01"], { today: TODAY });
+  assert.equal(r.day, "2026-09-03");
+  assert.equal(r.entry.status, "failed");
+  assert.deepEqual(fetchedDays(), ["2026-09-03"]);
+  assert.equal(dayCache.has("2026-09-03"), false);
+});
+
+test("a day comes from the shared cache, and a day before the feed is never asked for", async () => {
+  await loadFeedDay("2026-09-04", { today: TODAY, now: 0 });
+  // The Attempts tab's period load finds it already in.
+  const r = await fetchAttemptsRange("2026-09-04", "2026-09-04", { today: TODAY, now: 1 });
+  assert.equal(r.days.get("2026-09-04").rows.length, 2);
+  assert.deepEqual(fetchedDays(), ["2026-09-04"]);
+  assert.equal((await loadFeedDay("2026-06-10", { today: TODAY })).status, "before_feed");
+  assert.deepEqual(fetchedDays(), ["2026-09-04"]);
+  for (const c of calls) assert.ok(c.url.startsWith(`${ATTEMPTS_FEED_URL}?date=`), c.url);
 });

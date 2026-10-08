@@ -12,7 +12,10 @@
 //              `unattributed` adds history records that carry no driver (a company
 //              total, as the Reports analytics counts it)
 //   window     { start, end, categoryIds, driverId?, roleGroup?, fault? } day grain, same rule
-//   incidents  { ids, months?, categoryIds?, driverId? }                 an explicit live list
+//   incidents  { ids, months?, categoryIds?, driverId?, who? }           an explicit live list;
+//              `who` heads one driver's list
+// Any spec may carry a `title` for the drawer's heading (a Scorecard tile: "Driver
+// fault") and a `label` for its sub-line; neither changes what it counts.
 //   attempts   { start, end, driverId?, driverKey?, filter?, label? }      attempt orders
 //              driverKey is attemptRecords.js's key, so Unassigned and a feed name the
 //              roster doesn't match can be drilled into too; filter narrows the way the
@@ -174,9 +177,11 @@ function monthsOfWindow(start, end) {
 //             Scorecard's period and YTD, Trends' year and all time). The spec's months
 //             come from the selected scope.
 //   expected  the number that was clicked, when there are no scopes
-//   path      narrowing steps taken inside the drawer: { category } | { driverId } |
-//             { month }, each with the number that was clicked (x: a number, or one per
-//             scope), so every level is checked, not just the first
+//   path      narrowing steps taken inside the drawer: { category } | { categories,
+//             label } | { driverId } | { month }, each with the number that was clicked
+//             (x: a number, or one per scope), so every level is checked, not just the
+//             first. `categories` is a set narrower than the screen's (a Scorecard tile
+//             counts the six failures), `label` its crumb
 //   vocab     the screen's whole category set, when the spec is narrower (a Scorecard
 //             chart is one category): a driver opened from it gets all of them
 //   at        the data stamp (drillStamp) the clicked numbers were counted under; the
@@ -186,6 +191,7 @@ function monthsOfWindow(start, end) {
 export function narrowSpec(spec, op) {
   if (!op) return spec;
   if (op.category) return { ...spec, categoryIds: [op.category] };
+  if (op.categories) return { ...spec, categoryIds: op.categories };
   if (op.driverId) return { ...spec, driverId: op.driverId };
   if (op.driverKey) return { ...spec, driverKey: op.driverKey };
   if (op.month) {
@@ -237,8 +243,11 @@ export function driverDrill(driverId, base = {}, then = null) {
 }
 
 // A driver opened from inside a drawer (its By-driver list, or a row's name): their
-// record over the same scopes, on this category and month when the drawer is narrowed
-// to them, carrying the count that was clicked.
+// record over the same scopes, on this drawer's categories and month when it is
+// narrower than the screen's, carrying the count that was clicked. A drawer over a set
+// of categories (the Scorecard's failure tiles: six of its eight) opens the driver on
+// that set, so the count clicked is the count shown — not the driver's attempts and
+// compliments added in.
 //
 // The drawer's own scope totals are left behind. They are the whole chart's (every
 // driver in the category), never this driver's, and carried over they checked the
@@ -253,14 +262,27 @@ export function driverFromDrawer(state, driverId, x) {
   const cats = level.spec.categoryIds || [];
   const monthOp = [...(state.path || [])].reverse().find((op) => op.month);
   const scope = state.scopes?.length ? Math.min(Math.max(0, state.scope || 0), state.scopes.length - 1) : 0;
+  // A drawer opened on its own months, with no scopes, hands them on as the driver's one
+  // scope: a driver's drawer takes its months from its scopes, and without them it
+  // counted nothing.
+  const scopes = state.scopes?.length
+    ? state.scopes
+    : root.months
+      ? [{ label: root.label || "", months: root.months }]
+      : [];
   const base = {
     // The screen's whole vocabulary, so the breadcrumb can pop back out to every category.
     categoryIds: state.vocab?.length ? state.vocab : root.categoryIds || [],
-    scopes: (state.scopes || []).map(({ expected, ...s }) => s), // eslint-disable-line no-unused-vars
+    scopes: scopes.map(({ expected, ...s }) => s), // eslint-disable-line no-unused-vars
     scope,
     fault: root.fault || null,
   };
   let next = driverDrill(driverId, base, cats.length === 1 ? { category: cats[0], x: monthOp ? undefined : x } : null);
+  const vocab = new Set(base.categoryIds);
+  if (cats.length > 1 && (cats.length !== vocab.size || cats.some((c) => !vocab.has(c)))) {
+    const label = level.spec.title || root.title || `${cats.length} categories`;
+    next = pushStep(next, { categories: cats, label, x: monthOp ? undefined : x });
+  }
   if (monthOp) next = pushStep(next, { month: monthOp.month, x });
   return next;
 }
