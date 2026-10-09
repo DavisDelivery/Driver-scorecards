@@ -208,6 +208,19 @@ export async function fetchDerivedAttempts(date, { signal } = {}) {
 //
 // `derive`: true forces detection, false never detects, "auto" detects only when the
 // settled list is empty for a day recent enough for the index to still hold it.
+// Whether to detect the day's attempts from the live board on top of the settled list.
+//
+// "auto" detects when the settled list is empty — or when the day's evening scan has not run yet
+// (no manifest). The second half exists because the dispatch app's Mark-as-attempt button writes a
+// row straight onto the settled list during the day: with only "empty", one marked order before
+// 8 PM would hide every other ATT order the board already shows. Settled rows still win on stopNbr,
+// so a marked order is never listed twice.
+export function shouldDetect(derive, rows, manifest, date) {
+  if (derive === true) return true;
+  if (derive !== "auto" || !isRecentDay(date)) return false;
+  return (rows?.length ?? 0) === 0 || !manifest;
+}
+
 export async function fetchAttemptsForDay(
   date,
   { derive = false, notes = false, signal } = {},
@@ -218,8 +231,7 @@ export async function fetchAttemptsForDay(
     ...a,
     planMissing,
   }));
-  const wantDerive =
-    derive === true || (derive === "auto" && rows.length === 0 && isRecentDay(date));
+  const wantDerive = shouldDetect(derive, rows, settled.manifest, date);
   // The index is one fetch that serves BOTH detection and notes, so asking for notes
   // on a day we were already going to detect on costs nothing extra.
   if (!wantDerive && !notes) {
