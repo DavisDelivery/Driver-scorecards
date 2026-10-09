@@ -127,7 +127,7 @@ export default function WhatChanged({ cov, months, label, cmpMonths, cmpLabel, c
               ))}
             </ul>
             {out.caveats.length > CAVEATS_SHOWN && (
-              <button type="button" className="kpi-note-n" onClick={() => setShowAll((v) => !v)}>
+              <button type="button" className="text-link" onClick={() => setShowAll((v) => !v)} aria-expanded={showAll}>
                 {showAll ? "Show fewer" : `+${out.caveats.length - CAVEATS_SHOWN} more`}
               </button>
             )}

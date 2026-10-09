@@ -258,8 +258,10 @@ export function driverDrill(driverId, base = {}, then = null) {
     scopes: base.scopes || [],
     scope,
   };
+  // `o` marks the step as the one the drawer was opened on (display only: the drawer
+  // titles it "Name · Category" and shows no breadcrumb until a step is taken from it).
   if (then && then.category && (base.categoryIds || []).includes(then.category)) {
-    state.path = [{ category: then.category, x: then.x, s: scope }];
+    state.path = [{ category: then.category, x: then.x, s: scope, o: 1 }];
   }
   return state;
 }

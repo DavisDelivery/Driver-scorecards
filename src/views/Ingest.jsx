@@ -12,7 +12,7 @@ import {
 } from "../data/firebase.js";
 import { parseExcelFiles, buildIncidents, dedupeIncidents, resolveDriverId } from "../parsers/excelParser.js";
 import { fetchPhotosForProsBatch } from "../parsers/nuvizzClient.js";
-import { reportDateBounds, suggestReportName, reportSpanLabel } from "../reports/reportNaming.js";
+import { reportDateBounds, suggestReportName, storedRangeLabel } from "../reports/reportNaming.js";
 import { catChipStyle } from "../data/categories.js";
 import { useAnalytics } from "../data/AnalyticsProvider.jsx";
 
@@ -215,7 +215,7 @@ export default function Ingest({ drivers, onReportCreated, onNavigateToReport })
         ...(pendingReport || {}),
         name: pendingReport?.name || suggestion,
         suggested_name: suggestion,
-        range_label: reportSpanLabel({ starts_at, ends_at, week_ending: weekEnding }),
+        range_label: storedRangeLabel({ starts_at, ends_at, week_ending: weekEnding }),
         starts_at,
         ends_at,
         week_ending: weekEnding,
@@ -255,7 +255,7 @@ export default function Ingest({ drivers, onReportCreated, onNavigateToReport })
         name: finalName,
         starts_at,
         ends_at,
-        range_label: reportSpanLabel({ starts_at, ends_at, week_ending: weekEnding }),
+        range_label: storedRangeLabel({ starts_at, ends_at, week_ending: weekEnding }),
         incident_count: incidents.length,
       });
       const tagged = incidents.map((inc) => ({ ...inc, report_id: report.id }));
@@ -419,7 +419,7 @@ export default function Ingest({ drivers, onReportCreated, onNavigateToReport })
 
     return (
       <div>
-        <div className="page-title">New Weekly Report · Preview</div>
+        <div className="page-title">New weekly report · preview</div>
         <h1 className="page-heading">
           {reportName.trim() || pendingReport.name}
           <span className="meta">
@@ -690,8 +690,8 @@ export default function Ingest({ drivers, onReportCreated, onNavigateToReport })
 
   return (
     <div className="form-constrained">
-      <div className="page-title">New Weekly Report</div>
-      <h1 className="page-heading">Start a New Report</h1>
+      <div className="page-title">New weekly report</div>
+      <h1 className="page-heading">Start a new report</h1>
 
       {resumable.length > 0 && (
         <div className="card" style={{ marginBottom: 16, borderColor: "#f0c36d" }}>

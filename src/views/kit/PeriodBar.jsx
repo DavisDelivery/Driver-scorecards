@@ -1,6 +1,18 @@
 import React from "react";
 import { useHashState, writeHash } from "../../data/hashState.js";
 
+// What a preset's button says: sentence case, spelled out. The period's own label
+// (period.js, "Last 30 days") still heads the log and the printout.
+export const PRESET_TEXT = {
+  thisWeek: "This week",
+  lastWeek: "Last week",
+  "30d": "30 days",
+  this: "This month",
+  last: "Last month",
+  custom: "Custom",
+  range: "Range",
+};
+
 // The one filter row: period presets, a custom range, and — on the Scorecard — the
 // month picker and the fault scope, all above the charts they scope and never inside a
 // chart card. Day grain (the manual-entry tabs) uses period.js PERIODS and a date range;
@@ -14,6 +26,24 @@ import { useHashState, writeHash } from "../../data/hashState.js";
 //             day of the anchor month, so it sits beside the month picker it belongs
 //             to rather than inside the card it scopes
 //   max       latest pickable date for a custom range (YYYY-MM-DD or YYYY-MM)
+// On a phone a row of presets scrolls sideways: the picked one (.month-btn.active) is
+// scrolled into view on mount and on every change, so "12M" is never off the edge with
+// nothing showing which is active. Every such row uses it (PeriodBar, Reviews).
+//   → a callback ref for the scrolling row (a row that mounts later — after a screen's
+//     loading state — is scrolled as soon as it appears)
+export function useActiveInView(dep) {
+  const [el, setEl] = React.useState(null);
+  React.useLayoutEffect(() => {
+    const on = el?.querySelector(".month-btn.active");
+    if (!el || !on || el.scrollWidth <= el.clientWidth) return;
+    const left = on.offsetLeft - el.offsetLeft;
+    if (left < el.scrollLeft || left + on.offsetWidth > el.scrollLeft + el.clientWidth) {
+      el.scrollLeft = Math.max(0, left - (el.clientWidth - on.offsetWidth) / 2);
+    }
+  }, [el, dep]);
+  return setEl;
+}
+
 export default function PeriodBar({
   grain = "day",
   presets,
@@ -27,6 +57,7 @@ export default function PeriodBar({
 }) {
   const customId = grain === "month" ? "custom" : "range";
   const inputType = grain === "month" ? "month" : "date";
+  const picker = useActiveInView(value.p);
   return (
     <div className={`period-bar ${className}`.trim()}>
       {anchor && (
@@ -43,7 +74,7 @@ export default function PeriodBar({
           ))}
         </select>
       )}
-      <div className="month-picker" role="group" aria-label="Period">
+      <div className="month-picker" role="group" aria-label="Period" ref={picker}>
         {presets.map(([v, label]) => (
           <button
             key={v}
@@ -52,7 +83,7 @@ export default function PeriodBar({
             aria-pressed={value.p === v}
             onClick={() => onChange({ p: v })}
           >
-            {label}
+            {PRESET_TEXT[v] || label}
           </button>
         ))}
       </div>
@@ -95,7 +126,7 @@ export default function PeriodBar({
             aria-pressed={fault.value === "all"}
             onClick={() => fault.onChange("all")}
           >
-            All Incidents
+            All incidents
           </button>
           <button
             type="button"
@@ -105,7 +136,7 @@ export default function PeriodBar({
             disabled={fault.disabled}
             title={fault.title}
           >
-            Driver Fault Only
+            Driver fault only
           </button>
         </div>
       )}

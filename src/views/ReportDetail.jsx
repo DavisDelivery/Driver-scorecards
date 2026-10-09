@@ -11,10 +11,12 @@ import {
 } from "../data/firebase.js";
 import { fetchPhotosForProsBatch } from "../parsers/nuvizzClient.js";
 import { generatePhotoReport, downloadPdf } from "../reports/pdfGenerator.js";
-import { reportSpanLabel } from "../reports/reportNaming.js";
+import { reportSpanLabel, reportWeekName } from "../reports/reportNaming.js";
 import { useAnalytics } from "../data/AnalyticsProvider.jsx";
 import IncidentTable from "./IncidentTable.jsx";
 import IncidentEditor from "./IncidentEditor.jsx";
+import Icon from "./kit/Icon.jsx";
+import StatTile, { TileStrip } from "./kit/StatTile.jsx";
 
 export default function ReportDetail({
   report,
@@ -288,7 +290,7 @@ export default function ReportDetail({
           ← Back to Reports
         </button>
       )}
-      <div className="page-title">Report Detail</div>
+      <div className="page-title">Report detail</div>
       <div className="page-heading">
         {renaming ? (
           <>
@@ -323,58 +325,40 @@ export default function ReportDetail({
           </>
         ) : (
           <>
-            {report.name}
+            {/* The name as a person reads it ("Week of Sep 14, 2026"); the raw name is
+                in its hover and in the rename field. */}
+            <span title={report.name || undefined}>{reportWeekName(report)}</span>
             <button
-              className="btn ghost sm"
+              className="btn ghost sm icon-only"
               onClick={() => setRenaming(true)}
               title="Rename"
+              aria-label="Rename the report"
               style={{ marginLeft: 8 }}
             >
-              ✎
+              <Icon name="pencil" />
             </button>
-            <span className="meta">· {reportSpanLabel(report)}</span>
+            <span className="meta"><span className="meta-sep">· </span>{reportSpanLabel(report)}</span>
           </>
         )}
       </div>
 
-      {/* Counts, not statuses, so no status-coloured rule (red beside Damage's red). */}
-      <div className="kpi-grid">
-        <div className="kpi">
-          <div className="kpi-label">Total Incidents</div>
-          <div className="kpi-value">{incidents.length}</div>
-        </div>
-        <div className="kpi">
-          <div className="kpi-label">Driver Fault</div>
-          <div className="kpi-value">{driverFault}</div>
-        </div>
-        <div className="kpi">
-          <div className="kpi-label">With Photos</div>
-          <div className="kpi-value">{withPhotos}</div>
-        </div>
-      </div>
-
-      <div className="kpi-grid" style={{ marginTop: 8 }}>
-        <div className="kpi">
-          <div className="kpi-label">Traces (Uline vol.)</div>
-          <div className="kpi-value">{srcVol.traces}</div>
-        </div>
-        <div className="kpi">
-          <div className="kpi-label">Returns (Uline vol.)</div>
-          <div className="kpi-value">{srcVol.returns}</div>
-        </div>
-        <div className="kpi">
-          <div className="kpi-label">Lates (Uline vol.)</div>
-          <div className="kpi-value">{srcVol.laters}</div>
-        </div>
-      </div>
-      <div className="meta" style={{ marginTop: 4 }}>
-        Uline source volumes count each report a PRO came in on, so they can sum
-        to more than total incidents.
-      </div>
+      {/* One tile strip (kit/StatTile), full width: counts, in ink. */}
+      <TileStrip className="card-strip rd-tiles">
+        <StatTile label="Total incidents" value={incidents.length} />
+        <StatTile label="Driver fault" value={driverFault} />
+        <StatTile label="With photos" value={withPhotos} />
+        <StatTile label="Traces (Uline vol.)" value={srcVol.traces} />
+        <StatTile label="Returns (Uline vol.)" value={srcVol.returns} />
+        <StatTile label="Lates (Uline vol.)" value={srcVol.laters} />
+      </TileStrip>
+      <p className="rd-note">
+        Uline source volumes count each report a PRO came in on, so they can sum to more than total incidents.
+      </p>
 
       <div className="toolbar">
         <button className="btn" onClick={generatePdf} disabled={generating}>
-          {generating ? "Generating..." : "📄 Generate PDF"}
+          <Icon name="printer" />
+          {generating ? "Generating…" : "Generate PDF"}
         </button>
         {report.pdf_data !== undefined && (
           <button
@@ -386,20 +370,26 @@ export default function ReportDetail({
                 : "Download the stored PDF"
             }
           >
-            ↓ Download Last PDF{report.pdf_stale ? " (out of date)" : ""}
+            <Icon name="download" />
+            Download last PDF{report.pdf_stale ? " (out of date)" : ""}
           </button>
         )}
-        <button className="btn secondary" onClick={pullMissingPhotos} disabled={pulling}>
-          {pulling
-            ? `Fetching ${progress.done}/${progress.total}...`
-            : `📸 Pull Missing Photos (${incidents.length - withPhotos})`}
+        <button
+          className="btn secondary"
+          onClick={pullMissingPhotos}
+          disabled={pulling}
+          title={`Fetch the photos missing from ${incidents.length - withPhotos} incident${incidents.length - withPhotos === 1 ? "" : "s"}`}
+        >
+          <Icon name="camera" />
+          {pulling ? `Fetching ${progress.done}/${progress.total}…` : `Pull photos (${incidents.length - withPhotos})`}
         </button>
         <button
           className="btn secondary"
           onClick={() => setAdding(true)}
           title="Add an incident to this report — it counts in the report's totals and history like any ingested row"
         >
-          ＋ Add Incident
+          <Icon name="plus" />
+          Add incident
         </button>
         <button
           className="btn secondary"
@@ -407,15 +397,17 @@ export default function ReportDetail({
           disabled={resyncing}
           title="Re-derive history totals, counts and date range from this report's current incidents"
         >
-          {resyncing ? "Re-syncing..." : "↻ Re-sync totals"}
+          <Icon name="refresh-cw" />
+          {resyncing ? "Re-syncing…" : "Re-sync totals"}
         </button>
         <div className="toolbar-spacer" />
         <button className="btn danger" onClick={handleDelete} disabled={deleting}>
-          {deleting ? "Deleting..." : "Delete Report"}
+          <Icon name="trash-2" />
+          {deleting ? "Deleting…" : "Delete report"}
         </button>
       </div>
 
-      <div className="section-divider">Incidents</div>
+      <div className="section-head rd-section">Incidents</div>
       {loading ? (
         <div className="empty-state">Loading incidents...</div>
       ) : (

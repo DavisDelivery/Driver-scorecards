@@ -1,9 +1,11 @@
 import React from "react";
 import { getIncidentPhotos } from "../../data/firebase.js";
 import { SOURCE_LABELS, LATE_REASON_LABELS, FAULT_CODES } from "../../data/drivers.js";
-import { incidentYm, fmtIncidentDate } from "../../data/incidentDate.js";
+import { incidentYm, incidentDateStr } from "../../data/incidentDate.js";
+import { fmtDate } from "../../data/period.js";
 import { catChipStyle, catLabel } from "../../data/categories.js";
 import { isLateRow } from "../../data/faultGroups.js";
+import Icon from "./Icon.jsx";
 
 // The rows behind a number: live incidents (expandable, with photos on demand) and
 // imported-history aggregates (a monthly count with no per-incident detail), grouped by
@@ -67,7 +69,7 @@ export function IncidentDetailRow({ inc, showDriver = false, onDriver, hideCateg
         }}
       >
         <span className="row-caret">{open ? "▾" : "▸"}</span>
-        <span className="dd-date">{fmtIncidentDate(inc)}</span>
+        <span className="dd-date">{/^\d{4}-\d{2}-\d{2}/.test(incidentDateStr(inc)) ? fmtDate(incidentDateStr(inc)) : "—"}</span>
         <span className="pro-num">{inc.pro_number}</span>
         {showDriver &&
           (inc.driver_id && onDriver ? (
@@ -96,7 +98,11 @@ export function IncidentDetailRow({ inc, showDriver = false, onDriver, hideCateg
           ))}
         {inc.no_fault && <span className="src-badge nofault">No Fault</span>}
         {customer && <span className="dd-cust" title={customer}>{customer}</span>}
-        {inc.has_photos && <span className="dd-photo-flag">📸 {inc.photo_count || ""}</span>}
+        {inc.has_photos && (
+          <span className="dd-photo-flag" title="Has photos">
+            <Icon name="camera" /> {inc.photo_count || ""}
+          </span>
+        )}
       </div>
       {open && (
         <div className="dd-incident-body">

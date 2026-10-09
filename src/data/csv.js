@@ -2,7 +2,8 @@
 // spreadsheet. Each table carries a Source column (live entries, imported history,
 // a Uline report …), so the export says where every figure came from.
 //
-// columns: [{ key, label, value? }] — `value(row)` overrides `row[key]`.
+// columns: [{ key, label, value?, csvLabel? }] — `value(row)` overrides `row[key]`, and
+// `csvLabel` the header, where an export keeps a name the screen has since shortened.
 
 // RFC 4180 quoting: a field with a comma, quote or line break is wrapped in quotes and
 // its quotes doubled. A text field that opens like a formula (= + - @) is prefixed with
@@ -16,7 +17,7 @@ function field(v) {
 }
 
 export function toCsv(rows, columns) {
-  const head = columns.map((c) => field(c.label ?? c.key)).join(",");
+  const head = columns.map((c) => field(c.csvLabel ?? c.label ?? c.key)).join(",");
   const body = (rows || []).map((r) =>
     columns.map((c) => field(typeof c.value === "function" ? c.value(r) : r[c.key])).join(","),
   );

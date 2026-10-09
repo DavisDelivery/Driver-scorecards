@@ -1,4 +1,7 @@
 import React from "react";
+import Icon from "./Icon.jsx";
+import CardMenu from "./CardMenu.jsx";
+import { useMedia } from "./useSize.js";
 import { ATTRIBUTED_BY_TEXT } from "../../data/attemptRecords.js";
 import { OUTCOME_LABEL, searchOrders, sortOrders, recordDate } from "../../data/manualAnalytics.js";
 import { downloadCsv } from "../../data/csv.js";
@@ -15,7 +18,8 @@ import { downloadCsv } from "../../data/csv.js";
 //                 the search and sort, held by the caller when it needs the very rows on
 //                 screen (Print prints exactly these); otherwise kept here
 //   onOpenStop    (record) — opens StopDetailModal for a feed order
-//   onReassign    (record, driverId) — inline reassign; omitted, the table is read-only
+//   onReassign    (record, driverId) — reassign, from the row's ⋯ menu ("Change driver"
+//                 turns the driver cell into a select); omitted, the table is read-only
 //   driverOptions <option>s for the reassign select
 //   patterns      Map(record id → drivers) for the "customer pattern" tag
 //   lateIndex     Map(PRO → Late incidents) for the "also Late" link; onLate(incidents)
@@ -25,10 +29,14 @@ import { downloadCsv } from "../../data/csv.js";
 //   compact       the drawer's narrower set of columns
 //   csv           file name for the export (off when absent)
 
-const fmtMDY = (s) => {
+const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+// "Sep 14, 2026", read from the string so the day can't shift.
+const fmtDay = (s) => {
   const m = String(s || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
-  return m ? `${m[2]}/${m[3]}/${m[1]}` : String(s || "").slice(0, 10);
+  return m ? `${MONTH_ABBR[Number(m[2]) - 1]} ${Number(m[3])}, ${m[1]}` : String(s || "").slice(0, 10);
 };
+// On a phone the orders are cards, shown this many at a time.
+const PHONE_PAGE = 20;
 
 // The rows the table shows for a search and sort — the caller prints these.
 export const visibleOrders = (rows, { query = "", sort } = {}) => sortOrders(searchOrders(rows, query), sort);
@@ -76,6 +84,12 @@ export default function AttemptOrdersTable({
   const [editing, setEditing] = React.useState(null);
 
   const shown = React.useMemo(() => visibleOrders(rows, { query, sort }), [rows, query, sort]);
+  // A phone lists the cards 20 at a time (a 115-order period was a 23,000px page). What
+  // is printed and exported is always every order shown here.
+  const phone = useMedia("(max-width: 640px)");
+  const [cap, setCap] = React.useState(PHONE_PAGE);
+  React.useEffect(() => setCap(PHONE_PAGE), [rows, query, sort]);
+  const listed = phone ? shown.slice(0, cap) : shown;
   const cols = compact ? COLUMNS.filter((c) => !c.wide) : COLUMNS;
 
   const sortBy = (key) =>
@@ -128,7 +142,8 @@ export default function AttemptOrdersTable({
           ])}
         </select>
         {csv && (
-          <button type="button" className="cc-csv" onClick={exportCsv} title="Download these orders as CSV">
+          <button type="button" className="btn ghost sm" onClick={exportCsv} title="Download these orders as CSV">
+            <Icon name="download" />
             CSV
           </button>
         )}
@@ -148,10 +163,11 @@ export default function AttemptOrdersTable({
                     </button>
                   </th>
                 ))}
+                {onReassign && <th aria-label="Actions" />}
               </tr>
             </thead>
             <tbody>
-              {shown.map((r) => {
+              {listed.map((r) => {
                 const o = r.order;
                 const legs = o?.legRows || [];
                 const pattern = patterns?.get(r.id);
@@ -159,7 +175,7 @@ export default function AttemptOrdersTable({
                 const place = [o?.city || r.to_city, o?.zip || r.zip_code].filter(Boolean).join(" ");
                 return (
                   <tr key={r.id}>
-                    <td className="aot-date">{fmtMDY(recordDate(r))}</td>
+                    <td className="aot-date">{fmtDay(recordDate(r))}</td>
                     <td className="aot-ship">
                       {o && onOpenStop ? (
                         <button
@@ -181,7 +197,7 @@ export default function AttemptOrdersTable({
                           {legs.length} stops · 1 attempt
                         </span>
                       )}
-                      {!r.from_feed && <span className="ff-src-chip manual aot-chip">MANUAL</span>}
+                      {!r.from_feed && <span className="ff-src-chip manual aot-chip">Manual</span>}
                     </td>
                     <td className="aot-cust">
                       {onCustomer && r.customerKey ? (
@@ -258,16 +274,6 @@ export default function AttemptOrdersTable({
                           ) : (
                             <span className={r.driver_name ? "" : "aot-unassigned"}>{r.driver_name || "Unassigned"}</span>
                           )}
-                          {onReassign && o && (
-                            <button
-                              type="button"
-                              className="aot-link aot-change"
-                              onClick={() => setEditing(r.id)}
-                              title="Charge this attempt to another driver"
-                            >
-                              change
-                            </button>
-                          )}
                         </>
                       )}
                     </td>
@@ -276,12 +282,41 @@ export default function AttemptOrdersTable({
                         {attributedText(r)}
                       </td>
                     )}
+                    {/* Reassigning is the row's action, behind its ⋯ — not a "change"
+                        link beside every name. */}
+                    {onReassign && (
+                      <td className="row-menu-cell aot-menu">
+                        {o && (
+                          <CardMenu
+                            label={`Actions for ${o.shipmentNbr || o.stopNbr}`}
+                            className="row-menu"
+                            fixed
+                            items={[
+                              {
+                                id: "change",
+                                label: "Change driver",
+                                icon: "pencil",
+                                title: "Charge this attempt to another driver",
+                                onSelect: () => setEditing(r.id),
+                              },
+                            ]}
+                          />
+                        )}
+                      </td>
+                    )}
                   </tr>
                 );
               })}
             </tbody>
           </table>
         </div>
+      )}
+      {listed.length < shown.length && (
+        <button type="button" className="bl-more aot-more" onClick={() => setCap((c) => c + PHONE_PAGE)}>
+          Show {Math.min(PHONE_PAGE, shown.length - listed.length)} more
+          {/* The rest named only when one more page won't show it all. */}
+          {shown.length - listed.length > PHONE_PAGE ? ` · ${shown.length - listed.length} not shown` : ""}
+        </button>
       )}
       <div className="aot-foot">
         {shown.length} order{shown.length === 1 ? "" : "s"}

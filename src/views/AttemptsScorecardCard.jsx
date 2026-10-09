@@ -8,7 +8,7 @@ import {
   FILL_LEFT_REASON,
 } from "../data/attemptLegs.js";
 import { attemptsDayCandidates, attemptsDayBounds, pickedAttemptsDay, noScanText } from "../data/scorecardKpis.js";
-import { weekdayOfYmd } from "../data/period.js";
+import { fmtDate } from "../data/period.js";
 
 // Live "Delivery Attempts" card for the driver scorecard. Reads the dispatch
 // app's automated attempts feed (see attemptsFeed.js) and shows who ORIGINALLY
@@ -19,27 +19,23 @@ import { weekdayOfYmd } from "../data/period.js";
 // It used to open on today, which is empty until the 8 PM scan, behind a date box of
 // its own inside the card. Days come through the shared feed cache, one at a time.
 const AMBER = "#b45309";
-const WEEKDAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-// MM/DD/YYYY for display, parsed from the string to avoid timezone day-shift.
-function fmtMDY(s) {
-  const m = String(s || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
-  return m ? `${m[2]}/${m[3]}/${m[1]}` : String(s || "");
-}
-const fmtDay = (s) => `${WEEKDAY[weekdayOfYmd(s)] || ""} ${fmtMDY(s)}`.trim();
+// A day as people read it — "Oct 7", "Wed, Oct 7" — parsed from the string, so no
+// timezone can shift it (period.js fmtDate).
+const fmtMDY = (s) => fmtDate(s);
+const fmtDay = (s) => fmtDate(s, { weekday: true });
 
+// One chip style for every status, in sentence case ("Delivered", not the feed's
+// "DELIVERED"); an order still unplanned is the one in amber.
+const sentenceCase = (s) => {
+  const t = String(s || "").replace(/_/g, " ").trim();
+  return t ? t.charAt(0).toUpperCase() + t.slice(1).toLowerCase() : "";
+};
 function StatusBadge({ a }) {
   const unplanned = a.currentlyUnplanned;
-  const label = unplanned ? "Unplanned" : a.currentStatus || "—";
+  const label = unplanned ? "Unplanned" : sentenceCase(a.currentStatus) || "—";
   return (
-    <span
-      className="chip"
-      style={
-        unplanned
-          ? { background: "#fef3c7", color: AMBER, border: "1px solid #fcd9a3" }
-          : { background: "var(--bg-3)", color: "var(--text-2)" }
-      }
-    >
+    <span className="chip sc-att-status" style={unplanned ? { color: AMBER } : undefined}>
       {label}
     </span>
   );
@@ -90,7 +86,7 @@ export default function AttemptsScorecardCard({ day: state, monthLabel }) {
   const defaultHint = [
     skipped.length ? "Last business day with attempts" : "Last business day with an evening scan",
     fromMonthBefore ? `none yet in ${monthLabel}` : null,
-    skipped.length ? `${skipped.map((t) => fmtMDY(t.day).slice(0, 5)).join(", ")} scanned none` : null,
+    skipped.length ? `${skipped.map((t) => fmtDate(t.day, { year: false })).join(", ")} scanned none` : null,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -124,12 +120,12 @@ export default function AttemptsScorecardCard({ day: state, monthLabel }) {
   return (
     <>
       <div className="section-head" style={{ marginTop: 26 }}>
-        Delivery Attempts
+        Delivery attempts
       </div>
       <div className="card">
         <div className="card-header">
           <div className="card-title">
-            Original Driver · Live
+            Original driver · live
             {date && (
               <span style={{ color: "var(--text-2)", fontWeight: 400 }}>
                 {"  "}· {fmtDay(date)}
@@ -171,10 +167,10 @@ export default function AttemptsScorecardCard({ day: state, monthLabel }) {
           )}
           {status === "ready" && attempts.length > 0 && (
             <div className="table-wrap">
-              <table className="data">
+              <table className="data cards-on-phone sc-att-table">
                 <thead>
                   <tr>
-                    <th>Original Driver</th>
+                    <th>Original driver</th>
                     <th>Customer</th>
                     <th>Shipment #</th>
                     <th>Stop #</th>
@@ -185,14 +181,14 @@ export default function AttemptsScorecardCard({ day: state, monthLabel }) {
                 <tbody>
                   {attempts.map((a, i) => (
                     <tr key={a.shipmentNbr || a.stopNbr || i}>
-                      <td style={{ fontWeight: 700 }}>
+                      <td className="card-primary" style={{ fontWeight: 600 }}>
                         {a.matched && a.originalDriverName ? (
                           a.originalDriverName
                         ) : (
                           <span style={{ color: AMBER }}>Unknown</span>
                         )}
                       </td>
-                      <td>
+                      <td data-label="Customer" className="sc-att-cust">
                         <div>{a.businessName || "—"}</div>
                         {(a.city || a.state) && (
                           <div className="meta">
@@ -200,10 +196,10 @@ export default function AttemptsScorecardCard({ day: state, monthLabel }) {
                           </div>
                         )}
                       </td>
-                      <td className="pro-num">{a.shipmentNbr || "—"}</td>
-                      <td>{(a.legRows || [a]).map((l) => l.stopNbr).join(" + ") || "—"}</td>
-                      <td>{a.routeName || "—"}</td>
-                      <td>
+                      <td className="pro-num" data-label="Shipment">{a.shipmentNbr || "—"}</td>
+                      <td data-label="Stop">{(a.legRows || [a]).map((l) => l.stopNbr).join(" + ") || "—"}</td>
+                      <td data-label="Route">{a.routeName || "—"}</td>
+                      <td data-label="Status">
                         <StatusBadge a={a} />
                       </td>
                     </tr>

@@ -12,12 +12,15 @@ import {
   VERDICT_TEXT,
 } from "../../data/companyMetrics.js";
 import ChartCard from "../kit/ChartCard.jsx";
+import BarList from "../kit/charts/BarList.jsx";
 import Dumbbell from "../kit/charts/Dumbbell.jsx";
 import YearLines from "../kit/charts/YearLines.jsx";
 import StackedColumns from "../kit/charts/StackedColumns.jsx";
-import { BRAND, PRIOR, DEEMPH, INK_2, axisTick } from "../kit/chartTheme.js";
+import { BRAND, PRIOR, DEEMPH, INK_2 } from "../kit/chartTheme.js";
 import { openDrill } from "../kit/drillNav.js";
 import LeftOut from "./LeftOut.jsx";
+import { openCoverage } from "./nav.js";
+import { yearLinesPlan } from "../kit/shape.js";
 
 // Company History › Compare: the window against its comparison, category by category;
 // one category (or the basket) month by month, a line per year; and the mix of
@@ -42,8 +45,6 @@ const listText = (list) => (list.length < 2 ? list.join("") : `${list.slice(0, -
 // One left-out run of a category in words, the row naming the category: "Jul 2025,
 // Dec 2025 · no data on file this period".
 const exclusionShort = (e) => exclusionText(e, { withCat: false });
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-const monthNames = (ms) => ms.map((ym) => MONTHS[Number(ym.slice(5, 7)) - 1]).join(", ");
 
 // Year colours: the selected year in the brand blue, the year before in the comparison
 // gray, two back lighter still — each line's end carries its year, so none is told
@@ -58,7 +59,6 @@ export default function Compare({ cov, months, label, cmpMonths, cats, measure, 
   );
   return (
     <>
-      {lfl && <LeftOut exclusions={r.exclusions} phone={phone} />}
       <ByCategory
         r={r}
         cov={cov}
@@ -70,6 +70,7 @@ export default function Compare({ cov, months, label, cmpMonths, cats, measure, 
         measure={measure}
         lfl={lfl}
         today={today}
+        exclusions={lfl ? r.exclusions : []}
       />
       <ByYear
         cov={cov}
@@ -89,7 +90,7 @@ export default function Compare({ cov, months, label, cmpMonths, cats, measure, 
 
 // ── This period against the comparison, category by category ──────────────────
 
-function ByCategory({ r, cov, cats, months, cmpMonths, label, cmpLabel, measure, lfl, today }) {
+function ByCategory({ r, cov, cats, months, cmpMonths, label, cmpLabel, measure, lfl, today, exclusions = [] }) {
   const rows = React.useMemo(() => compareByCategory(cov, r, cats, { today, measure }), [cov, r, cats, today, measure]);
   const totals = React.useMemo(() => comparedTotalsDrill(r, cats, how(r, lfl)), [r, cats, lfl]);
   const dec = measure === "workday";
@@ -133,7 +134,7 @@ function ByCategory({ r, cov, cats, months, cmpMonths, label, cmpLabel, measure,
     const end = (value, n, ms, drill) => ({
       value,
       text: fmt(value),
-      title: `${nameOfCat(row.cat)}, ${monthsText(ms)}: ${dec ? `${fmt(value)} a workday (${n} counted)` : n.toLocaleString()} — ${ms.length} month${ms.length === 1 ? "" : "s"}`,
+      title: `${nameOfCat(row.cat)}, ${monthsText(ms)}: ${dec ? `${fmt(value)} a workday (${n} counted)` : n.toLocaleString()} — ${ms.length} month${ms.length === 1 ? "" : "s"}. Click for the entries.`,
       onClick: () => openDrill(drill),
     });
     const delta = dec ? row.value - row.cmpValue : row.delta;
@@ -156,10 +157,12 @@ function ByCategory({ r, cov, cats, months, cmpMonths, label, cmpLabel, measure,
           </span>
         </>
       ),
-      // The months are in the table view; the row says how many, and why the rest aren't.
-      note: row.exclusions.length
-        ? `${row.months.length} of ${months.length} months · left out: ${[...new Set(row.exclusions.map((e) => DROP_TEXT[e.reason]))].join(", ")}`
-        : null,
+      // Which months each row compared, and why the rest weren't, are in the table view
+      // and in one footnote under the chart — not a caveat column on every row.
+      note: null,
+      sideTitle: row.exclusions.length
+        ? `${row.months.length} of ${months.length} months compared · left out: ${[...new Set(row.exclusions.map((e) => DROP_TEXT[e.reason]))].join(", ")}`
+        : `${row.months.length} of ${months.length} months compared`,
     };
   });
 
@@ -217,7 +220,19 @@ function ByCategory({ r, cov, cats, months, cmpMonths, label, cmpLabel, measure,
       note={
         anyCompared || oneSided.length ? (
           <>
-            <span>
+            <span
+              title={[
+                oneSided.length
+                  ? `Includes ${listText(oneSided.map((x) => `${nameOfCat(x.cat)} ${x.n.toLocaleString()} in ${sideWords(x)} only`))}.`
+                  : null,
+                shared.length
+                  ? `${monthsText(shared)} ${shared.length === 1 ? "is" : "are"} in both periods: ${shared.length === 1 ? "its" : "their"} failures count on both sides.`
+                  : null,
+                dec ? "Per Mon–Fri day of the months compared." : null,
+              ]
+                .filter(Boolean)
+                .join(" ") || undefined}
+            >
               {headline}:{" "}
               <button type="button" className="kpi-note-n" onClick={() => openDrill(totals.cmp)}>
                 {r.Cmp.toLocaleString()}
@@ -227,18 +242,8 @@ function ByCategory({ r, cov, cats, months, cmpMonths, label, cmpLabel, measure,
                 {r.X.toLocaleString()}
               </button>
               {r.pct !== null ? ` (${fmtPct(r.pct)})` : ""} · {verdictText(r.verdict)}
+              {oneSided.length ? ` · ${oneSided.length} one-sided` : ""}
             </span>
-            {oneSided.length > 0 && (
-              <span>
-                Includes {listText(oneSided.map((x) => `${nameOfCat(x.cat)} ${x.n.toLocaleString()} in ${sideWords(x)} only`))}
-              </span>
-            )}
-            {shared.length > 0 && (
-              <span>
-                {monthsText(shared)} {shared.length === 1 ? "is" : "are"} in both periods: {shared.length === 1 ? "its" : "their"} failures count on both sides
-              </span>
-            )}
-            <span>{dec ? "Per Mon–Fri day of the months compared. " : ""}Click a dot for its entries</span>
           </>
         ) : (
           <span>Nothing in {label} could be compared {lfl ? "like-for-like " : ""}with {cmpLabel}.</span>
@@ -248,6 +253,7 @@ function ByCategory({ r, cov, cats, months, cmpMonths, label, cmpLabel, measure,
       csv={csvName("Company history by category", label)}
       height="auto"
     >
+      <LeftOut exclusions={exclusions} />
       <Dumbbell rows={drawn} max={max} />
     </ChartCard>
   );
@@ -269,7 +275,10 @@ function ByYear({ cov, cats, through, years, measure, lfl, allowSourceChange, to
   const series = yl.years.map((y, i) => ({ year: y, label: String(y), color: YEAR_COLORS[i] || DEEMPH, runs: yl.runs[y] || 0 }));
   const anyOff = yl.rows.some((row) => yl.years.some((y) => row.off[y]));
   const anyMarked = yl.rows.some((row) => yl.years.some((y) => row.marked[y]));
-  const rows = yl.rows.map((row) => ({
+  // Lines only over two or more comparable months running, and a table instead of a
+  // scatter when no year has three (kit/shape.js yearLinesPlan).
+  const plan = yearLinesPlan(yl.rows, series);
+  const rows = plan.rows.map((row) => ({
     ...row,
     __head: `${row.label}${dec ? " · per workday" : ""}`,
     __notes: [
@@ -292,49 +301,61 @@ function ByYear({ cov, cats, through, years, measure, lfl, allowSourceChange, to
         .join("; "),
     })),
   };
-  const notes = [];
-  if (!one && yl.cats.length) notes.push(`${what} of ${listText(yl.cats.map(nameOfCat))} — the categories tracked in every year drawn`);
-  for (const l of yl.left) if (l.years.length) notes.push(`${nameOfCat(l.cat)} left out: not tracked in ${listText(l.years.map(String))}`);
-  if (yl.dropped.length && yl.years.length) {
-    notes.push(
-      one
-        ? `${what}: not tracked in ${listText(yl.dropped.map(String))} — not drawn`
-        : `${listText(yl.dropped.map(String))} not drawn: no category picked was tracked in every year from ${yl.dropped[yl.dropped.length - 1]} to ${yl.years[0]}`,
-    );
-  }
-  // Every point left off its line, by year and why: "2025 Jun, Aug · spreadsheet vs
-  // 2026's app".
-  const off = yl.notCompared.map((g) => `${g.year} ${monthNames(g.months)} · ${g.why}`);
-  const differ = yl.otherSource.map((g) => `${g.year} ${monthNames(g.months)} · ${g.why}`);
+  // One footnote: what the basket is, what a hollow point means, and where each month's
+  // detail lives. The per-point reasons are in the hover and the table view.
+  const left = yl.left.filter((l) => l.years.length).map((l) => nameOfCat(l.cat));
+  const basket =
+    !one && yl.cats.length
+      ? `${what} of ${listText(yl.cats.map(nameOfCat))}, the categories tracked in every year drawn${left.length ? ` (${listText(left)} left out)` : ""}.`
+      : null;
+  const dropped =
+    yl.dropped.length && yl.years.length ? `${listText(yl.dropped.map(String))} not drawn: ${one ? `${what} wasn't tracked` : "not tracked the same way"}.` : null;
+  const hollow = anyOff ? `Gray rings: not captured the same way as ${yl.years[0]}, so not compared.` : null;
+  const differ = yl.otherSource.length ? `Some points are on their line though captured differently (the hover says which).` : null;
   return (
     <ChartCard
       className="co-years"
       title={`Month by month · ${what}`}
-      count={yl.years.length ? `${dec ? "per workday · " : ""}${yl.years.join(" against ")}` : null}
-      legend={[
-        ...series.map((s) => ({ id: `y${s.year}`, label: s.label, color: s.color, line: true })),
-        ...(anyOff ? [{ id: "off", label: "Not compared", color: INK_2, ring: true }] : []),
-        ...(anyMarked ? [{ id: "marked", label: "Not captured whole", color: INK_2, ring: true }] : []),
-      ]}
+      subtitle={yl.years.length ? `${dec ? "per workday · " : ""}${yl.years.join(" against ")}` : null}
+      legend={
+        plan.form === "table"
+          ? null
+          : [
+              ...series.map((s) => ({ id: `y${s.year}`, label: s.label, color: s.color, line: true })),
+              ...(anyOff ? [{ id: "off", label: "Not compared", color: DEEMPH, ring: true }] : []),
+              ...(anyMarked ? [{ id: "marked", label: "Not captured whole", color: INK_2, ring: true }] : []),
+            ]
+      }
       note={
-        <>
-          {notes.map((n) => (
-            <span key={n}>{n}</span>
-          ))}
-          {off.length > 0 && <span>Not compared like-for-like, drawn hollow off the line: {off.join("; ")}</span>}
-          {differ.length > 0 && <span>Captured differently, on the line all the same: {differ.join("; ")}</span>}
-          <span>
-            {one ? "Pick more categories above for their total" : "Pick one category above to see it alone"} · a line breaks where what was
-            captured changes · click a point for its entries
-          </span>
-        </>
+        <p className="cc-foot">
+          {/* One sentence, then where the detail is: "Shown as a table: too few
+              consecutive months to chart. * not compared — see Data Coverage". */}
+          <span title={[basket, dropped, hollow, differ].filter(Boolean).join(" ") || undefined}>
+            {(() => {
+              const lead =
+                plan.form === "table"
+                  ? `Shown as a table: too few consecutive months to chart.${anyOff ? " * not compared" : ""}`
+                  : basket
+                    ? `Basket: the ${yl.cats.length} categories tracked every year`
+                    : dropped;
+              return lead ? `${lead.replace(/\.$/, "")} — see` : "See";
+            })()}
+          </span>{" "}
+          <button type="button" className="kpi-note-n" onClick={() => openCoverage({})}>
+            Data Coverage
+          </button>
+        </p>
       }
       table={yl.years.length ? table : null}
       csv={csvName("Company history by year", what, through)}
-      height={phone ? 260 : 300}
+      height={yl.years.length && plan.form === "table" ? "auto" : phone ? 260 : 300}
     >
-      {yl.years.length ? (
-        <YearLines data={rows} years={series} decimals={dec} phone={phone} onPoint={(row, y) => row.drill[y] && openDrill(row.drill[y])} />
+      {yl.years.length && plan.form === "table" ? (
+        // No year has three comparable months in a row: a scatter of points says nothing
+        // a table doesn't say better.
+        <YearTable rows={yl.rows} years={yl.years} dec={dec} across={!phone} />
+      ) : yl.years.length ? (
+        <YearLines data={rows} years={series} ends={plan.ends} decimals={dec} onPoint={(row, y) => row.drill[y] && openDrill(row.drill[y])} />
       ) : (
         <div className="empty-state">
           {one
@@ -346,12 +367,103 @@ function ByYear({ cov, cats, through, years, measure, lfl, allowSourceChange, to
   );
 }
 
+// The years chart as a table, when too few months compare for lines. A value captured
+// differently from the newest year is in ink 2 with a "*" (the card's note says what it
+// means); "—" is a month not on file. Each value opens its entries, as a point would.
+// On a wide card the months run across (a row per year), so the table fills the card;
+// on a phone they run down (Month | 2026 | 2025), so it fits the screen.
+function YearTable({ rows, years, dec, across = false }) {
+  const fmt = (v) => (dec ? Number(v).toFixed(2) : Number(v).toLocaleString());
+  // Every month of the year, a month no year has on file included ("—"): a missing
+  // column would read as a gap nobody explained.
+  const shown = rows;
+  const cell = (row, y) => {
+    const v = row[`y${y}`];
+    if (v === null || v === undefined) return <td key={`${row.label}-${y}`} className="num yl-none">—</td>;
+    const off = row.off[y];
+    const text = (
+      <>
+        {fmt(v)}
+        {off && <span className="yl-mark">*</span>}
+      </>
+    );
+    return (
+      <td
+        key={`${row.label}-${y}`}
+        className={`num ${off ? "yl-off" : ""}`.trim()}
+        title={[row.state[y], off ? "not compared" : null].filter(Boolean).join(" · ") || undefined}
+      >
+        {row.drill[y] ? (
+          <button type="button" className="kpi-note-n" onClick={() => openDrill(row.drill[y])}>
+            {text}
+          </button>
+        ) : (
+          text
+        )}
+      </td>
+    );
+  };
+  if (across) {
+    return (
+      <div className="table-wrap cc-table">
+        <table className="data analytics-table yl-table yl-across">
+          <thead>
+            <tr>
+              <th>Year</th>
+              {shown.map((row) => (
+                <th key={row.label} className="num">
+                  {String(row.label).slice(0, 3)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {years.map((y) => (
+              <tr key={y}>
+                <td>{y}</td>
+                {shown.map((row) => cell(row, y))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+  return (
+    <div className="table-wrap cc-table">
+      <table className="data analytics-table yl-table">
+        <thead>
+          <tr>
+            <th>Month</th>
+            {years.map((y) => (
+              <th key={y} className="num">
+                {y}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {shown.map((row) => (
+            <tr key={row.label}>
+              <td>{row.label}</td>
+              {years.map((y) => cell(row, y))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // ── The mix, quarter by quarter ───────────────────────────────────────────────
 
 function ByQuarter({ cov, months, cats, label, phone }) {
   const qm = React.useMemo(() => quarterMix(cov, months, cats), [cov, months, cats]);
   const SERIES = categoriesFor(qm.cats).map((c) => ({ id: c.id, label: nameOfCat(c.id), color: c.color }));
-  const rows = qm.quarters.map((q) => ({
+  // A quarter not captured whole is left out of the chart (the table keeps it, with
+  // why), never drawn as an empty slot; six or fewer left are rows, not columns.
+  const leftOut = qm.quarters.filter((q) => !q.drawn);
+  const rows = qm.quarters.filter((q) => q.drawn).map((q) => ({
     key: q.key,
     label: q.label,
     ...Object.fromEntries(qm.cats.map((c) => [c, q.drawn ? q.shares[c] : null])),
@@ -384,45 +496,105 @@ function ByQuarter({ cov, months, cats, label, phone }) {
     <ChartCard
       className="co-mix"
       title="Category mix by quarter"
-      count={qm.cats.length ? `${qm.quarters.filter((q) => q.drawn).length} of ${qm.quarters.length} quarters` : null}
+      subtitle={qm.cats.length ? `${rows.length} of ${qm.quarters.length} quarters · share of failures` : null}
       legend={SERIES}
       note={
-        <>
-          {qm.cats.length > 0 && (
-            <span>
-              Shares of {listText(qm.cats.map(nameOfCat))} — the categories captured whole in every quarter drawn
-            </span>
-          )}
-          {enough &&
-            qm.left.map((l) => (
-              <span key={l.cat}>
-                {nameOfCat(l.cat)} left out: {l.why}
-              </span>
-            ))}
-          {qm.cats.length > 0 && qm.quarters.some((q) => !q.drawn) && (
-            <span>An incomplete quarter isn&apos;t drawn — hover it for why</span>
-          )}
-        </>
+        qm.cats.length > 0 ? (
+          <p
+            className="cc-foot"
+            title={[
+              `Shares of ${listText(qm.cats.map(nameOfCat))}, the categories captured whole in every quarter drawn.`,
+              enough && qm.left.length ? `Left out: ${qm.left.map((l) => `${nameOfCat(l.cat)} (${l.why})`).join(", ")}.` : null,
+              leftOut.length
+                ? `${leftOut.length} quarter${leftOut.length === 1 ? "" : "s"} not captured whole (${
+                    leftOut.length > 2 ? `${leftOut[0].label} – ${leftOut[leftOut.length - 1].label}` : leftOut.map((q) => q.label).join(", ")
+                  }); the table view says why.`
+                : null,
+              rows.length > 1 && rows.length <= 6 ? "The number after each quarter is its failures." : null,
+            ]
+              .filter(Boolean)
+              .join(" ")}
+          >
+            {[
+              `${qm.cats.length} categories captured whole`,
+              leftOut.length ? `${leftOut.length} quarter${leftOut.length === 1 ? "" : "s"} left out` : null,
+              enough && qm.left.length ? `${qm.left.length} categor${qm.left.length === 1 ? "y" : "ies"} left out` : null,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </p>
+        ) : null
       }
       table={qm.cats.length ? table : null}
       csv={csvName("Company history mix by quarter", label)}
-      height={phone ? 260 : 280}
+      height={rows.length && rows.length <= 6 ? "auto" : phone ? 240 : 320}
     >
       {!enough ? (
         <div className="empty-state">Pick two or more categories above to see how they split.</div>
       ) : !qm.cats.length ? (
         <div className="empty-state">No two of the categories picked were captured whole in any quarter of {label}.</div>
+      ) : !rows.length ? (
+        <div className="empty-state">No quarter of {label} was captured whole for these categories.</div>
+      ) : rows.length === 1 ? (
+        // One comparable quarter is a sentence, not a lone 100% bar: each category's
+        // share and the failures they are a share of. The quarter opens its drawer.
+        (() => {
+          const q = qm.quarters.find((x) => x.key === rows[0].key);
+          return (
+            <p className="co-mix-one">
+              <button type="button" className="text-link" onClick={() => q?.drill && openDrill(q.drill)} title={rows[0].__notes.join("\n")}>
+                {q.label}
+              </button>
+              :{" "}
+              {/* Each part keeps its separator, so a line breaks before a "·", never
+                  after one. */}
+              {qm.cats.map((c, i) => (
+                <React.Fragment key={c}>
+                  {i > 0 ? " " : ""}
+                  <span className="co-mix-part">
+                    {i > 0 && <span className="co-mix-sep">·</span>}
+                    <i className="cc-key-swatch" style={{ background: catColor(c) }} aria-hidden="true" />
+                    {nameOfCat(c)} {q.shares[c]}%
+                  </span>
+                </React.Fragment>
+              ))}{" "}
+              of {q.total.toLocaleString()} failure{q.total === 1 ? "" : "s"}
+            </p>
+          );
+        })()
+      ) : rows.length <= 6 ? (
+        <BarList
+          rows={rows}
+          order="given"
+          value={() => 100}
+          label={(r) => r.label}
+          valueText={(r) => {
+            // The number after a full-share bar is the quarter's count, said as one, so
+            // "100" can't be read as 100%.
+            const n = qm.quarters.find((q) => q.key === r.key)?.total ?? 0;
+            return `${n.toLocaleString()} failure${n === 1 ? "" : "s"}`;
+          }}
+          series={SERIES}
+          scaleTo={100}
+          size="lg"
+          limit={0}
+          rowTitle={(r) => [r.label, ...r.__notes].join("\n")}
+          onMark={(row) => {
+            const q = qm.quarters.find((x) => x.key === row.key);
+            if (q?.drill) openDrill(q.drill);
+          }}
+          ariaLabel="Category mix by quarter"
+        />
       ) : (
         <StackedColumns
           data={rows}
-          xKey="label"
+          xKey="key"
+          grain="quarter"
           keyOf={(row) => row.key}
           series={SERIES}
-          gapKey="gap"
           capLabels={false}
           decimals
           unit="%"
-          yAxis={{ domain: [0, 100], ticks: [0, 25, 50, 75, 100], tickFormatter: (v) => `${v}%` }}
           onSegment={(row, c) => {
             const q = qm.quarters.find((x) => x.key === row.key);
             if (q?.drills?.[c]) openDrill(q.drills[c]);
@@ -431,36 +603,8 @@ function ByQuarter({ cov, months, cats, label, phone }) {
             const q = qm.quarters.find((x) => x.key === row.key);
             if (q?.drill) openDrill(q.drill);
           }}
-          xAxis={{ interval: 0, height: 34, tick: <QuarterTick rows={rows} phone={phone} /> }}
         />
       )}
     </ChartCard>
-  );
-}
-
-// A quarter's tick: "Q1", the year under each Q1 (and the first), and "mixed" under a
-// quarter whose months mix the spreadsheet and the app.
-function QuarterTick({ x, y, payload, rows, phone }) {
-  const i = payload?.index ?? rows.findIndex((r) => r.label === payload?.value);
-  const row = rows[i];
-  if (!row) return null;
-  const [q, yr] = row.label.split(" ");
-  const showYear = q === "Q1" || i === 0;
-  return (
-    <g transform={`translate(${x},${y})`}>
-      <text y={9} textAnchor="middle" {...axisTick}>
-        {q}
-      </text>
-      {showYear && (
-        <text y={20} textAnchor="middle" {...axisTick} fontSize={9}>
-          {phone ? `'${yr.slice(2)}` : yr}
-        </text>
-      )}
-      {row.mixed && (
-        <text y={31} textAnchor="middle" {...axisTick} fontSize={9}>
-          mixed
-        </text>
-      )}
-    </g>
   );
 }

@@ -46,14 +46,14 @@ import {
   ATTRIBUTED_BY_TEXT,
 } from "../data/attemptRecords.js";
 import { reassignAttempt, overridesFor as savedOverridesFor } from "../data/attemptReassign.js";
-import { catColor, COUNTED8 } from "../data/categories.js";
+import { catColor, catPolarity, COUNTED8 } from "../data/categories.js";
 import { csvName } from "../data/csv.js";
 import { useAnalytics } from "../data/AnalyticsProvider.jsx";
 import { useHashState } from "../data/hashState.js";
 import { driverDrill } from "../data/drill.js";
 import { monthsOfYear } from "../data/scorecardDetail.js";
-import { fmtIncidentDate } from "../data/incidentDate.js";
-import { currentYmET, shiftYm, weekdayOfYmd } from "../data/period.js";
+import { fmtIncidentDay, fmtDay } from "../data/incidentDate.js";
+import { currentYmET, shiftYm, weekdayOfYmd, fmtDate, fmtDateRange } from "../data/period.js";
 import { nameOfKey } from "../data/people.js";
 import {
   recordDate,
@@ -84,11 +84,15 @@ import {
   sparkSource,
   liveMonthCounts,
   historyOnlyMonths,
+  uncapturedMonths,
+  priorDelta,
+  MANUAL_SINCE,
   weekSpark,
   dayDiff,
   printPeriodLabel,
   OUTCOME_LABEL,
   WEEKDAY_PLURAL,
+  WEEKDAY_FULL,
   FEED_CHUNK,
 } from "../data/manualAnalytics.js";
 import { openDrill } from "./kit/drillNav.js";
@@ -96,10 +100,13 @@ import { AnalyticsGate, RosterGate } from "./kit/LoadState.jsx";
 import StopDetailModal from "./StopDetailModal.jsx";
 import ManualEntryAnalytics, { useTabPeriod, DriverCard } from "./ManualEntryAnalytics.jsx";
 import ChartCard from "./kit/ChartCard.jsx";
-import EmphasisBars from "./kit/charts/EmphasisBars.jsx";
 import AttemptOrdersTable, { visibleOrders } from "./kit/AttemptOrdersTable.jsx";
 import DriverLink from "./kit/DriverLink.jsx";
-import { chartTable } from "./kit/shape.js";
+import { chartTable, displayName, slotLabel, fmtHead } from "./kit/shape.js";
+import BarList from "./kit/charts/BarList.jsx";
+import Icon from "./kit/Icon.jsx";
+import CardMenu from "./kit/CardMenu.jsx";
+import { useMedia } from "./kit/useSize.js";
 
 // Normalize what's typed into "Pull Order". Uline PROs are numeric and
 // zero-padded to 9 digits, so a purely-numeric entry gets that treatment
@@ -113,21 +120,49 @@ const normalizeOrderId = (raw) => {
   return /^\d+$/.test(cleaned) ? cleaned.padStart(9, "0") : cleaned.toUpperCase();
 };
 
-// Format an ISO date (YYYY-MM-DD…) as US month/day/year (MM/DD/YYYY). Parsed from
-// the string directly so it never shifts a day from new Date() timezone handling.
-const fmtMDY = (s) => {
+// An ISO date (YYYY-MM-DD…) as US month/day/year (MM/DD/YYYY), parsed from the string
+// so it never shifts a day: what the log's search matches and the printout's span
+// reads. Never shown on screen — dates there read "Oct 8" (fmtMDY below).
+const mdyNumeric = (s) => {
   const m = String(s || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
   return m ? `${m[2]}/${m[3]}/${m[1]}` : String(s || "").slice(0, 10);
 };
+// A phrase that mustn't break inside on a narrow screen: a date ("Oct 8"), "all-time".
+const nb = (t) => String(t).replace(/(\b[A-Z][a-z]{2}) (\d)/g, "$1\u00a0$2").replace(/all-time/g, "all\u2011time");
+// A period's label inside a sentence: "3 in last 30 days", "nothing logged this month".
+const inText = (label) => String(label || "").replace(/^(This|Last) /, (m) => m.toLowerCase());
+// A Total tile's change on the period before, led by ▲/▼ in the category's polarity
+// colour (spec §12): up is bad for a failure or an attempt, good for a compliment, and
+// uncoloured for Unable to Track, which is neither. The number is the same signed
+// difference it always was, written without its sign beside the arrow.
+const tileDelta = (n, category) => {
+  if (n === null || n === undefined) return null;
+  const pol = catPolarity(category);
+  const up = pol === "credit" ? "good" : pol === "failure" || pol === "attempt" ? "bad" : null;
+  const down = up === "good" ? "bad" : up === "bad" ? "good" : null;
+  if (n === 0) return { text: "±0", tone: null };
+  return { text: `${n > 0 ? "▲" : "▼"} ${Math.abs(n).toLocaleString()}`, tone: n > 0 ? up : down };
+};
+// The entry log on a phone lists this many at a time ("Show 20 more").
+const LOG_PAGE = 20;
+// A period's label in a sentence: "in the last 30 days", "this month", "last week".
+const periodPhrase = (label) => {
+  const l = inText(label);
+  if (/^last \d/.test(l)) return `in the ${l}`;
+  return /^(this|last) /.test(l) ? l : `in ${l}`;
+};
+// A date on screen: "Oct 8", or "Dec 30, 2025" outside this year (period.js fmtDate).
+const fmtMDY = (s) => (/^\d{4}-\d{2}-\d{2}/.test(String(s || "")) ? fmtDate(s) : String(s || "").slice(0, 10));
 
-// Format a NuVizz local datetime ("YYYY-MM-DDTHH:MM:SS") as MM/DD/YYYY h:mm AM/PM.
+// A NuVizz local datetime ("YYYY-MM-DDTHH:MM:SS") as "Oct 7, 9:41 AM" (the year when
+// it isn't this year), read from the string's parts.
 const fmtDateTime = (s) => {
   const m = String(s || "").match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
   if (!m) return String(s || "");
   let h = +m[4];
   const ap = h >= 12 ? "PM" : "AM";
   h = h % 12 || 12;
-  return `${m[2]}/${m[3]}/${m[1]} ${h}:${m[5]} ${ap}`;
+  return `${fmtDate(`${m[1]}-${m[2]}-${m[3]}`)}, ${h}:${m[5]} ${ap}`;
 };
 
 // No chart click narrowing anything — one object, so it is stable between renders.
@@ -139,8 +174,11 @@ const NO_CHIPS = Object.freeze({});
 // costs no new reads.
 const feedExtraByWindow = new Map();
 
+// The dispatch app's status ("DELIVERED") in sentence case, as every pill is.
+const statusText = (s) => (s && !/[a-z]/.test(s) ? s.charAt(0) + s.slice(1).toLowerCase() : s);
+
 // Status badge for an auto-detected (feed) attempt: amber "Unplanned" when the
-// stop is currently unplanned, else the raw status.
+// stop is currently unplanned, else its status.
 function AttemptStatusBadge({ a }) {
   const unplanned = a.currentlyUnplanned;
   return (
@@ -152,7 +190,7 @@ function AttemptStatusBadge({ a }) {
           : { background: "var(--bg-3)", color: "var(--text-2)" }
       }
     >
-      {unplanned ? "Unplanned" : a.currentStatus || "—"}
+      {unplanned ? "Unplanned" : statusText(a.currentStatus) || "—"}
     </span>
   );
 }
@@ -175,8 +213,8 @@ export const UNABLE_TO_TRACK_CONFIG = {
   // somebody did something wrong.
   fault: "",
   heading: "Unable to Track",
-  logTitle: "Unable-to-Track Log",
-  leaderLabel: "Most unable-to-track",
+  logTitle: "Unable to Track log",
+  leaderLabel: "Most entries",
   addLabel: "Log Unable to Track",
   recordNoun: "unable to track",
   deleteNoun: "unable-to-track",
@@ -200,9 +238,9 @@ export const FF_CONFIG = {
   category: "forgotten_freight",
   ns: "ff",
   heading: "Forgotten Freight",
-  logTitle: "Forgotten Freight Log",
+  logTitle: "Forgotten Freight log",
   // The driver with the most of these is the worst offender, not a top performer.
-  leaderLabel: "Most forgottens",
+  leaderLabel: "Most entries",
   addLabel: "Add Forgotten Freight",
   recordNoun: "forgotten freight", // "…already logged as forgotten freight for…"
   deleteNoun: "forgotten-freight", // "Delete forgotten-freight entry…"
@@ -232,8 +270,8 @@ export const MISDELIVERY_CONFIG = {
   category: "misdelivery",
   ns: "mis",
   heading: "Mis-Deliveries",
-  logTitle: "Mis-Delivery Log",
-  leaderLabel: "Most mis-deliveries",
+  logTitle: "Mis-delivery log",
+  leaderLabel: "Most entries",
   addLabel: "Add Mis-Delivery",
   recordNoun: "a mis-delivery",
   deleteNoun: "mis-delivery",
@@ -253,9 +291,9 @@ export const COMPLIMENTS_CONFIG = {
   // it out of driver-fault counts while still crediting the compliment category.
   fault: "",
   heading: "Compliments",
-  logTitle: "Compliments Log",
+  logTitle: "Compliments log",
   // Compliments are positive, so the most-credited driver really is the top one.
-  leaderLabel: "Top driver",
+  leaderLabel: "Most compliments",
   addLabel: "Add Compliment",
   recordNoun: "a compliment",
   deleteNoun: "compliment",
@@ -267,7 +305,7 @@ export const ATTEMPTS_CONFIG = {
   category: "attempts",
   ns: "att",
   heading: "Attempts",
-  logTitle: "Attempts Log",
+  logTitle: "Attempts log",
   leaderLabel: "Most attempts",
   addLabel: "Add Attempt",
   recordNoun: "an attempt",
@@ -855,6 +893,15 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     () => trendSeries(periodRows, logPeriod.win, { focus, today, statusOf: feedEnabled ? statusOf : null }),
     [periodRows, logPeriod.win, focus, today, feedEnabled, statusOf],
   );
+  // The same period by week: a day axis too narrow to read (a long range on a phone)
+  // steps to weeks (kit/shape.js chooseGrain). Same rows, same counts, coarser slots.
+  const trendWeek = React.useMemo(
+    () =>
+      logPeriod.win.bucket === "day"
+        ? trendSeries(periodRows, { ...logPeriod.win, bucket: "week" }, { focus, today, statusOf: feedEnabled ? statusOf : null })
+        : null,
+    [periodRows, logPeriod.win, focus, today, feedEnabled, statusOf],
+  );
   const classes = React.useMemo(() => classBreakdown(focusRows, classifyField), [focusRows, classifyField]);
   const outcome = React.useMemo(() => (feedEnabled ? outcomeMix(focusRows) : null), [feedEnabled, focusRows]);
   const attTiles = React.useMemo(
@@ -873,6 +920,12 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   }, [config.category, analytics, logPeriod.win]);
 
   const historyMonths = React.useMemo(() => new Map(historyOnly.map((m) => [m.ym, m.n])), [historyOnly]);
+  // Months of the window the tab wasn't capturing, or has nothing on file for: shaded on
+  // the trend, never drawn as a zero (CLAUDE.md: not captured, not zero). Display only.
+  const uncaptured = React.useMemo(() => {
+    if (!COUNTED8.includes(config.category) || analytics.historyLoading || analytics.historyError) return null;
+    return uncapturedMonths(analytics.blend(null), config.category, logPeriod.win);
+  }, [config.category, analytics, logPeriod.win]);
 
   // The order table on the feed tab: the picked driver's orders (or everyone's),
   // narrowed by whatever a chart click set, then searched and sorted — the rows on
@@ -905,11 +958,17 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         i.customer,
         classifyField ? i[classifyField] : "",
         i.notes,
-        fmtMDY(recordDate(i)),
-        fmtMDY(i.created_at),
+        mdyNumeric(recordDate(i)),
+        mdyNumeric(i.created_at),
       ].some((f) => String(f || "").toLowerCase().includes(q));
     });
   }, [manualForView, logSearch, classifyField, focus, keyOf, feedEnabled, chips]);
+
+  // A phone shows the log 20 entries at a time (the FF log on 3M was 102 cards, a
+  // 13,000px page); a new search, pick, chip or period starts from the first 20 again.
+  const phone = useMedia("(max-width: 640px)");
+  const [logCap, setLogCap] = React.useState(LOG_PAGE);
+  React.useEffect(() => setLogCap(LOG_PAGE), [filteredLog, groupByDriver]);
 
   // filteredLog grouped under driver-name headers (only used when groupByDriver).
   const logGroups = React.useMemo(() => {
@@ -963,7 +1022,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     try {
       const { win } = logPeriod;
       const rangeText =
-        win?.start && win?.end ? `${fmtMDY(win.start)} – ${fmtMDY(win.end)}` : "";
+        win?.start && win?.end ? `${mdyNumeric(win.start)} – ${mdyNumeric(win.end)}` : "";
       const of = periodCountOf(focus);
       const periodLabel = printPeriodLabel(logPeriod.label, { narrowing, shown: entries.length, of });
       const doc = await generateDriverReport({
@@ -999,7 +1058,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     try {
       const { win } = logPeriod;
       const rangeText =
-        win?.start && win?.end ? `${fmtMDY(win.start)} – ${fmtMDY(win.end)}` : "";
+        win?.start && win?.end ? `${mdyNumeric(win.start)} – ${mdyNumeric(win.end)}` : "";
       let doc = null;
       for (const [i, t] of targets.entries()) {
         const of = periodCountOf(t.row.key);
@@ -1272,7 +1331,6 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
             type="date"
             value={editDate}
             onChange={(e) => setEditDate(e.target.value)}
-            style={{ fontFamily: "var(--mono)" }}
           />
         </div>
         {config.classify && (
@@ -1310,25 +1368,21 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       </div>
     ) : null;
 
-  // Actions cell (Edit / Delete), shared by both layouts.
+  // Actions cell (Edit / Delete), shared by both layouts: one quiet ⋯ per row, Delete
+  // in red inside it — never a red button on every row.
   const renderRowActions = (inc) => (
     <span className="ff-row-actions" onClick={(e) => e.stopPropagation()}>
-      <button
-        className="btn ghost sm"
-        onClick={() => (editingId === inc.id ? cancelEdit() : startEdit(inc))}
-        title="Edit this entry"
-      >
-        {editingId === inc.id ? "Close" : "Edit"}
-      </button>
-      <button
-        className="btn ghost sm"
-        onClick={() => deleteEntry(inc)}
-        disabled={rowBusy}
-        title="Delete this entry"
-        style={{ color: "var(--accent-red)" }}
-      >
-        Delete
-      </button>
+      <CardMenu
+        label={`Actions for PRO ${inc.pro_number || ""}`.trim()}
+        className="row-menu"
+        fixed
+        items={[
+          editingId === inc.id
+            ? { id: "close", label: "Close the edit", icon: "x", onSelect: cancelEdit }
+            : { id: "edit", label: "Edit entry", icon: "pencil", title: "Edit this entry", onSelect: () => startEdit(inc) },
+          { id: "delete", label: "Delete entry", icon: "trash-2", danger: true, disabled: rowBusy, title: "Delete this entry", onSelect: () => deleteEntry(inc) },
+        ]}
+      />
     </span>
   );
 
@@ -1373,7 +1427,9 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   // way in; a row with no driver id shows its name as plain text.
   const driverCell = (inc) => (
     <DriverLink id={inc.driver_id || null} drill={driverStateFor(inc)} className="ff-cell-link">
-      {inc.driver_name || inc.driver_raw || "—"}
+      {/* An ALL-CAPS feed name reads as the by-driver list writes it ("Seymour Watts");
+          the raw name stays in the cell's hover and the log's search. */}
+      {displayName(inc.driver_name || inc.driver_raw) || "—"}
     </DriverLink>
   );
 
@@ -1382,15 +1438,15 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   const renderManualRow = (inc) => (
     <div key={inc.id} className="ff-log-entry">
       <div className={`${gridClass} ff-log-row`} onClick={() => openDriver(inc)}>
-        <span className="pro-num">{inc.pro_number}</span>
-        <span className="ff-cell-ellipsis" title={driverNameOf(inc)}>
+        <span className="pro-num ff-c-pro">{inc.pro_number}</span>
+        <span className="ff-cell-ellipsis ff-c-driver" title={driverNameOf(inc)}>
           {driverCell(inc)}
         </span>
-        <span className="ff-cell-ellipsis ff-cell-muted" title={inc.customer || ""}>
+        <span className="ff-cell-ellipsis ff-cell-muted ff-c-cust" title={inc.customer || ""}>
           {inc.customer || "—"}
         </span>
         {classifyField && (
-          <span>
+          <span className="ff-c-item">
             {inc[classifyField] ? (
               <span className="ff-item-chip">{inc[classifyField]}</span>
             ) : (
@@ -1398,10 +1454,10 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
             )}
           </span>
         )}
-        <span className="ff-cell-date">{fmtIncidentDate(inc)}</span>
-        <span className="ff-cell-date">{fmtMDY(inc.created_at)}</span>
-        <span className="ff-cell-photo" title={inc.has_photos ? "Has photo" : ""}>
-          {inc.has_photos ? "📸" : ""}
+        <span className="ff-cell-date ff-c-date">{fmtIncidentDay(inc)}</span>
+        <span className="ff-cell-date ff-c-logged">{fmtDay(inc.created_at)}</span>
+        <span className="ff-cell-photo ff-c-photo" title={inc.has_photos ? "Has photo" : ""}>
+          {inc.has_photos ? <Icon name="camera" title="Has photo" /> : ""}
         </span>
         {renderRowActions(inc)}
       </div>
@@ -1446,12 +1502,9 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
   if (attTiles) {
     const t = attTiles;
     const d = t.orders.delta;
-    const sign = (n) => (n > 0 ? `+${n}` : n < 0 ? `−${-n}` : "±0");
-    const deltaText = !d
-      ? null
-      : d.delta === null
-        ? `— vs previous ${d.days} days`
-        : `${sign(d.delta)} vs previous ${d.days} days${d.throughYesterday ? " to yesterday" : ""}`;
+    // Can't be compared: left out (the hover says why), never a line opening on "—".
+    const delta = d && d.delta !== null ? tileDelta(d.delta, config.category) : null;
+    const deltaText = delta ? `vs previous ${d.days} days${d.throughYesterday ? " to yesterday" : ""}` : null;
     const deltaWhy = {
       not_loaded: "The previous days aren't loaded: use “Load earlier days for the comparison” under the period.",
       no_data: "Some of the previous days have no feed data, so the two wouldn't compare like with like.",
@@ -1466,18 +1519,21 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     const inert = (title) => title.replace(/\s*Click[^.\n]*\.|\nNo change shown:[^\n]*/g, "");
     const feedTile = (tile, n) =>
       feedPending
-        ? { ...tile, value: "…", sub: "loading the period", title: "Loading the period from the dispatch feed…", onClick: null }
+        ? { ...tile, value: "…", delta: null, lead: null, sub: "loading the period", title: "Loading the period from the dispatch feed…", onClick: null }
         : feedGap && !n
-          ? { ...tile, value: "—", sub: "no feed data", title: `${feedGap.why}\n${inert(tile.title)}`, onClick: null }
+          ? { ...tile, value: "—", delta: null, lead: null, sub: "no feed data", title: `${feedGap.why}\n${inert(tile.title)}`, onClick: null }
           : feedGap
-            ? { ...tile, sub: "hand-logged only", title: `${feedGap.why}\n${tile.title}` }
+            ? { ...tile, delta: null, sub: "hand-logged only", title: `${feedGap.why}\n${tile.title}` }
             : tile;
     tiles = [
       feedTile(
         {
           label: feedGap ? "Hand-logged only" : "Attempted orders",
           value: t.orders.value,
-          sub: [focus ? `of ${t.orders.fleet} fleet` : null, deltaText].filter(Boolean).join(" · ") || null,
+          delta,
+          // A picked driver's share leads ("4 of 37 · ▲ 3 vs previous 30 days").
+          lead: focus ? `${t.orders.value} of ${t.orders.fleet}` : null,
+          sub: deltaText,
           title:
             "Orders attempted in the period: one per shipment per day, -1/-2 duplicates counted once with the original. Click for the orders." +
             (d && d.delta === null ? `\nNo change shown: ${deltaWhy[d.reason] || ""}` : ""),
@@ -1511,8 +1567,10 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       feedTile(
         {
           label: "Busiest workday",
-          value: t.busiest ? t.busiest.label : "—",
-          sub: t.busiest ? `${t.busiest.count} attempt${t.busiest.count === 1 ? "" : "s"}` : null,
+          value: t.busiest ? WEEKDAY_FULL[t.busiest.wd] : "—",
+          sub: t.busiest
+            ? `${t.busiest.count} attempt${t.busiest.count === 1 ? "" : "s"}${focusRows.length ? ` · ${Math.round((t.busiest.count / focusRows.length) * 100)}%` : ""}`
+            : null,
           title: "The weekday with the most attempts. Click for those orders.",
           onClick: drillTile(t.busiest),
         },
@@ -1577,7 +1635,9 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         : meanText
           ? ` It counts the entries charged to the ${mean.peers} active roster ${group}s.`
           : "";
-    const meanSub = rosterBlocked && !neutral ? "fleet mean needs the roster" : meanText;
+    // "of 85 active on the roster": everyone on the roster who isn't deactivated —
+    // drivers, loaders and the rest, so it isn't called "drivers".
+    const activeCount = rosterBlocked ? null : drivers.filter((d) => d && d.active !== false).length;
     const drillRows = (rows, label) => () =>
       openDrill(
         entriesDrill(rows, focus, {
@@ -1586,33 +1646,68 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
           label: label ? `${logPeriod.label} · ${label}` : logPeriod.label,
         }),
       );
+    // Ties are said as ties: "2 days tied", "2 drivers tied" — never whichever came first.
+    const topDays = top ? weekday.filter((w) => w.count === top.count) : [];
+    const share = (n) => (focusRows.length ? ` · ${Math.round((n / focusRows.length) * 100)}%` : "");
+    const entriesOf = (n) => `${n} entr${n === 1 ? "y" : "ies"}`;
+    const tied = leader?.tied?.length > 1 ? leader.tied : null;
+    // The change against the previous equal period, when there is one to compare with:
+    // both spans inside the time the entry tabs have been capturing (MANUAL_SINCE).
+    // Before it, nothing logged is not none happening, so no change is shown.
+    const since = `${MANUAL_SINCE}-01`;
+    const d = priorDelta(analyticsRecords, logPeriod.win, {
+      focus,
+      today,
+      statusOf: (day) => (day >= since ? "ok" : "before_feed"),
+    });
+    const delta = d && d.delta !== null ? tileDelta(d.delta, config.category) : null;
+    const deltaText = delta ? `vs previous ${d.days} days` : null;
     tiles = [
       {
         label: focus ? "Total" : "Total this period",
         value: focusRows.length,
-        sub: focus ? [`of ${periodRows.length}`, meanText && `fleet ${meanText}`].filter(Boolean).join(" · ") : meanSub,
-        title: `Entries in the period, by the date each is filed under.${meanWhy} Click for the entries.`,
+        delta,
+        // A picked driver's share leads ("4 of 37 · ▲ 3 vs previous 30 days").
+        lead: focus ? `${focusRows.length} of ${periodRows.length}` : null,
+        sub: deltaText,
+        title:
+          `Entries in the period, by the date each is filed under. Click for the entries.` +
+          (d && d.delta !== null ? `\nThe previous ${d.days} days: ${d.previous}.` : "") +
+          (meanText ? `\nFleet ${meanText}.${meanWhy}` : ""),
         onClick: drillRows(periodRows),
       },
       {
         label: "Busiest workday",
-        value: top ? top.label : "—",
-        sub: top ? `${top.count} entr${top.count === 1 ? "y" : "ies"}` : null,
+        value: !top ? "—" : topDays.length > 1 ? `${topDays.length} days tied` : WEEKDAY_FULL[top.wd],
+        sub: !top
+          ? null
+          : topDays.length > 1
+            ? `${top.count} each · ${topDays.map((w) => w.label).join(", ")}`
+            : `${entriesOf(top.count)}${share(top.count)}`,
         title: "The weekday with the most entries. Click for them.",
         onClick: top ? drillRows(periodRows.filter((r) => weekdayOfYmd(recordDate(r)) === top.wd), WEEKDAY_PLURAL[top.wd]) : null,
       },
       {
-        label: "Avg / active day",
+        label: "Avg per active day",
         value: per.days ? per.value.toFixed(1) : "0",
         sub: `${per.days} day${per.days === 1 ? "" : "s"} with entries`,
         title: "Entries per day that had any. Click for the entries.",
         onClick: drillRows(periodRows),
       },
-      rosterTile({
-        label: config.leaderLabel,
-        value: leader ? `${leader.name} (${leader.count})` : "—",
-        title: "The fleet's most, deactivated drivers and entries with no driver aside.",
-      }),
+      {
+        ...rosterTile({
+          label: config.leaderLabel,
+          value: !leader ? "—" : tied ? `${tied.length} drivers tied` : displayName(leader.name),
+          sub: !leader
+            ? null
+            : tied
+              ? `${leader.count} each${tied.length === 2 ? ` · ${tied.map(displayName).join(", ")}` : ""}`
+              : `${entriesOf(leader.count)}${periodRows.length ? ` · ${Math.round((leader.count / periodRows.length) * 100)}% of ${periodRows.length}` : ""}`,
+          title: tied
+            ? `Tied on ${leader.count}: ${tied.join(", ")}. Deactivated drivers and entries with no driver aside.`
+            : "The fleet's most, deactivated drivers and entries with no driver aside.",
+        }),
+      },
       rosterTile(
         neutral
           ? {
@@ -1630,7 +1725,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
             : {
                 label: "Drivers with entries",
                 value: rankInfo.drivers,
-                sub: "on the roster",
+                sub: activeCount ? `of ${activeCount} active on the roster` : null,
               },
       ),
     ];
@@ -1644,16 +1739,16 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
     const onRoster = drivers.find((x) => x.id === focus);
     const sub =
       focus === "unassigned"
-        ? `${feedEnabled ? "ORDERS" : "ENTRIES"} WITH NO DRIVER`
+        ? `${feedEnabled ? "Orders" : "Entries"} with no driver`
         : focus.startsWith("name:")
-          ? `${feedEnabled ? "FEED NAME" : "NAME ON THE ENTRY"} · ${focusChoices.find((o) => o.key === focus)?.linked ? "NOT LINKED TO THE ROSTER" : "NO ROSTER MATCH"}`
+          ? `${feedEnabled ? "Feed name" : "Name on the entry"} · ${focusChoices.find((o) => o.key === focus)?.linked ? "not linked to the roster" : "no roster match"}`
           : !onRoster
-            ? "NOT ON THE ROSTER"
-            : `${(onRoster.role || "driver").toUpperCase()} · ${logPeriod.label}`;
+            ? "Not on the roster"
+            : `${(onRoster.role || "driver").replace(/^./, (c) => c.toUpperCase())} · ${logPeriod.label}`;
     // On Attempts with no feed data to count, a 0 here would be the outage, not the driver.
     const count = feedPending ? "…" : feedGap && !focusRows.length ? "—" : focusRows.length;
-    const stats = [{ label: `${noun} · ${logPeriod.label}`, value: count }];
-    if (!neutral && rankInfo.rank) stats.push({ label: `rank, of ${rankInfo.of}`, value: rankText });
+    const stats = [{ label: `${noun.replace(/^./, (c) => c.toUpperCase())} · ${logPeriod.label}`, value: count }];
+    if (!neutral && rankInfo.rank) stats.push({ label: `Rank of ${rankInfo.of}`, value: rankText });
     if (feedEnabled) {
       const mine = analyticsRecords.filter((r) => keyOf(r) === focus);
       const weeks = loadPlan?.start ? weekSpark(mine, { start: loadPlan.start, end: loadPlan.end, statusOf }) : [];
@@ -1668,10 +1763,12 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         sub,
         stats,
         spark: {
-          title: `Per week · loaded ${fmtMDY(loadPlan?.start)} – ${fmtMDY(loadPlan?.end)}`,
+          // Named by the weeks it draws ("Per week · Sep 7 – Oct 5"); each column's hover
+          // names its whole week.
+          title: weeks.length ? `Per week · ${fmtDateRange(weeks[0].key, weeks[weeks.length - 1].key)}` : "Per week",
           rows: weeks.map((w) => ({
             key: w.key,
-            label: `Week of ${fmtMDY(w.key)}`,
+            label: fmtHead(w.key, "week"),
             short: w.label,
             n: w.n,
             faint: w.partial,
@@ -1742,11 +1839,29 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
           rows: [...focusRows]
             .sort((a, b) => recordDate(b).localeCompare(recordDate(a)))
             .slice(0, 5)
-            .map((r) => ({ key: r.id, date: fmtIncidentDate(r), pro: r.pro_number, item: classifyField ? r[classifyField] : "" })),
+            .map((r) => ({ key: r.id, date: fmtIncidentDay(r), pro: r.pro_number, item: classifyField ? r[classifyField] : "" })),
         },
       };
     }
   }
+
+  // Who the drivers list holds, one count everywhere: "35 drivers + 4 names not on the
+  // roster + Unassigned". The fold's "Show all 35 drivers" counts the same ranked rows.
+  const unmatchedN = byDriver.rows.filter((r) => r.key.startsWith("name:")).length;
+  const unassignedIn = byDriver.rows.some((r) => r.key === "unassigned");
+  const rankedN = byDriver.rows.length - unmatchedN - (unassignedIn ? 1 : 0);
+  const namesText = (n) => `${n} name${n === 1 ? "" : "s"} not on the roster`;
+  const whoText = [
+    `${rankedN} driver${rankedN === 1 ? "" : "s"}`,
+    unmatchedN ? namesText(unmatchedN) : null,
+    unassignedIn ? "Unassigned" : null,
+  ]
+    .filter(Boolean)
+    .join(" + ");
+  const unrankedText = (tail) => {
+    const names = tail.filter((r) => r.key.startsWith("name:")).length;
+    return [tail.some((r) => r.key === "unassigned") ? "Unassigned" : null, names ? namesText(names) : null].filter(Boolean).join(" and ");
+  };
 
   // Chart clicks. A column narrows the order table (or the log) to its day, week or
   // month; on Attempts a day the feed has no data for opens that day in the daily log
@@ -1763,24 +1878,30 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
       showDayInLog(b.start);
       return;
     }
+    // Named by the bucket's own span, not the period's grain: a narrow screen draws a
+    // day period by week (chooseGrain), and a week's chip must say so.
+    const isWeek = /^\d{4}-\d{2}-\d{2}$/.test(String(b.key)) && weekdayOfYmd(b.key) === 1 && b.start !== b.end;
+    const isMonth = /^\d{4}-\d{2}$/.test(String(b.key));
     const label =
       b.start === b.end
-        ? fmtMDY(b.start)
-        : logPeriod.win.bucket === "week"
+        ? fmtDate(b.start, { weekday: true })
+        : isWeek
           ? `Week of ${fmtMDY(b.key)}`
-          : b.label;
+          : isMonth
+            ? slotLabel(b.key, "month", { withYear: true })
+            : b.label;
     toggleChip("bucket", { key: b.key, start: b.start, end: b.end, label, fleet: b.fleet }, { only: true });
   };
   const onWeekday = (w) =>
     toggleChip("weekday", { key: w.key, wd: w.wd, label: WEEKDAY_PLURAL[w.wd], fleet: w.fleet }, { only: true });
   const chipCount = feedEnabled ? tableRows.length : applyChips(focusRows, chips, { classifyField }).length;
   const chipNoun = feedEnabled ? `order${chipCount === 1 ? "" : "s"}` : `entr${chipCount === 1 ? "y" : "ies"}`;
-  // With a driver picked a column is the driver plus the rest of the fleet, and the
-  // number on it is the column's; the list is the driver's part of it, said as such.
+  // With a driver picked a column draws the driver's own count; the fleet's is in its
+  // hover. The list is the driver's, said as such beside the fleet's.
   const chartChip = chips.bucket || chips.weekday;
   const chipCountText =
     focus && chartChip && chartChip.fleet !== undefined
-      ? `${chipCount} ${chipNoun} — ${focusLabel}'s, of the column's ${chartChip.fleet}`
+      ? `${chipCount} ${chipNoun} — ${focusLabel}'s, of the fleet's ${chartChip.fleet}`
       : `${chipCount} ${chipNoun}`;
   const chipBar = (where) => (
     <ChipRow
@@ -1802,24 +1923,34 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         ? `Building PDF… ${printProgress.done}/${printProgress.total}`
         : "Building PDF…"
       : focus
-        ? `Print ${focusLabel}`
+        ? `Print ${displayName(focusLabel)}`
         : `Print all (${printTargets.length})`;
 
   return (
     <div>
-      <div className="page-title">Manual Entry</div>
+      <div className="page-title">Manual entry</div>
       <h1 className="page-heading">
         {config.heading}
         {/* Counts from incidents: none while their read has failed (the gate below says so). */}
-        <span className="meta">
-          {incidentsFailed
-            ? ""
-            : !feedEnabled
-              ? ` · ${manualForView.length} in ${logPeriod.label} · ${allTimeManual} all-time`
+        {/* Its phrases never break inside: a date, "all-time" and each count stay whole
+            (no-break spaces and hyphen), so a phone wraps between them. */}
+        {!incidentsFailed && (
+          <span className="meta">
+            <span className="meta-sep">· </span>
+            {(!feedEnabled
+              ? [`${manualForView.length} ${periodPhrase(logPeriod.label)}`, `${allTimeManual} all-time`]
               : feedDayMissing
-                ? ` · no feed data on ${fmtMDY(feedDate)} (${manualCounted} manual) · ${allTimeManual} logged all-time`
-                : ` · ${totalOnRecord} on ${fmtMDY(feedDate)} (${feedRows.length} auto, ${manualCounted} manual${handOnFeed.size ? `, ${handOnFeed.size} also on the feed` : ""}) · ${allTimeManual} logged all-time`}
-        </span>
+                ? [`no feed data on ${fmtMDY(feedDate)} (${manualCounted} manual)`, `${allTimeManual} logged all-time`]
+                : [
+                    `${totalOnRecord} on ${fmtMDY(feedDate)} (${feedRows.length} auto, ${manualCounted} manual${handOnFeed.size ? `, ${handOnFeed.size} also on the feed` : ""})`,
+                    `${allTimeManual} logged all-time`,
+                  ]
+            )
+              .map((t) => nb(t))
+              // The dot is bound to the phrase after it, so a wrapped line never ends in "·".
+              .join(" \u00b7\u00a0")}
+          </span>
+        )}
       </h1>
 
       <div className="card" style={{ marginBottom: 18 }}>
@@ -1831,11 +1962,12 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
               value={pro}
               onChange={(e) => setPro(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && !pulling && doPull()}
-              style={{ maxWidth: 220, fontFamily: "var(--mono)" }}
+              className="ff-pro-input"
+              style={{ fontFamily: "var(--mono)" }}
               title="Uline PRO (digits) or another carrier's tracking number — same NuVizz account"
             />
             <button className="btn primary" onClick={doPull} disabled={pulling}>
-              {pulling ? "Pulling from NuVizz…" : "Pull Order"}
+              {pulling ? "Pulling from NuVizz…" : "Pull order"}
             </button>
             <div className="ff-date-field">
               <span className="dd-k">Log entries under</span>
@@ -1844,7 +1976,6 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                 value={incidentDate}
                 max={todayET()}
                 onChange={(e) => setIncidentDate(e.target.value)}
-                style={{ fontFamily: "var(--mono)" }}
                 title="Every new entry is logged under this date"
               />
             </div>
@@ -2027,8 +2158,17 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
           color={color}
           ns={config.ns}
           sourceLabel={feedEnabled ? "dispatch feed + hand-logged" : "logged entries"}
+          noun={noun}
           feedGap={feedGap}
+          pending={!!feedPending}
           total={periodRows.length}
+          // The quiet period's "by N drivers" counts whom its tile counts: on Unable to
+          // Track ("Drivers named") every name on an entry, elsewhere roster drivers.
+          driversCount={
+            rosterBlocked
+              ? null
+              : byDriver.rows.filter((r) => r.key !== "unassigned" && (neutral || !r.key.startsWith("name:"))).length
+          }
           statusLine={
             feedEnabled ? (
               <FeedCoverage
@@ -2071,7 +2211,9 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
           tiles={tiles}
           weekday={weekday}
           trend={trend}
+          trendWeek={trendWeek}
           bucket={logPeriod.win.bucket}
+          wide={config.category === "compliment"}
           chips={chips}
           onWeekday={onWeekday}
           onBucket={onBucket}
@@ -2091,18 +2233,23 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
           }
           chipBar={chipBar("panel")}
           historyMonths={historyMonths}
+          uncaptured={uncaptured}
         />
 
         {(byDriver.rows.length > 0 || focus) && (
           <div className="card ff-bydriver-card">
             <div className="card-body">
-              <div className="ff-bydriver-head">
-                Drivers · {logPeriod.label}
-                <span className="meta">
-                  {" "}· {rosterBlocked ? "" : `${byDriver.rows.length} driver${byDriver.rows.length === 1 ? "" : "s"}, `}
-                  {periodRows.length} {feedEnabled ? `order${periodRows.length === 1 ? "" : "s"}` : `entr${periodRows.length === 1 ? "y" : "ies"}`}
-                </span>
-              </div>
+              {/* With a list to show, its card header says all of this; the line stays
+                  for a picked driver with nothing in the period. */}
+              {!(byDriver.rows.length > 0 && !rosterBlocked) && (
+                <div className="ff-bydriver-head">
+                  Drivers <span className="meta"><span className="meta-sep">· </span>{logPeriod.label}</span>
+                  <span className="meta">
+                    {" "}· {rosterBlocked ? "" : `${byDriver.rows.length} driver${byDriver.rows.length === 1 ? "" : "s"}, `}
+                    {periodRows.length} {feedEnabled ? `order${periodRows.length === 1 ? "" : "s"}` : `entr${periodRows.length === 1 ? "y" : "ies"}`}
+                  </span>
+                </div>
+              )}
               {/* Who's on the chart, and who can be picked from it, needs the roster:
                   without it deactivated drivers would be back on it (RosterGate). The
                   duplicate note, the lookup flags and the Unassigned queue below don't. */}
@@ -2111,6 +2258,9 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                 <ChartCard
                   inset
                   title={feedEnabled ? "Attempts by driver" : "Entries by driver"}
+                  subtitle={`${logPeriod.label} · ${whoText} · ${periodRows.length} ${
+                    feedEnabled ? `order${periodRows.length === 1 ? "" : "s"}` : `entr${periodRows.length === 1 ? "y" : "ies"}`
+                  }`}
                   table={chartTable({
                     rows: byDriver.rows,
                     x: { key: "name", label: "Driver" },
@@ -2118,17 +2268,22 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                     source: feedEnabled ? "dispatch feed + hand-logged" : "logged entries",
                   })}
                   csv={csvName(config.heading, "by driver", logPeriod.label)}
-                  height={Math.max(120, byDriver.rows.length * 30 + 16)}
+                  height="auto"
                 >
-                  <EmphasisBars
-                    layout="bars"
-                    data={byDriver.rows}
-                    xKey="name"
-                    valueName={feedEnabled ? "Attempts" : "Entries"}
+                  {/* Unassigned and names the roster doesn't match are gray and last,
+                      outside the top 8: they aren't drivers to rank. */}
+                  <BarList
+                    rows={byDriver.rows.map((r) => ({ ...r, notSet: r.key === "unassigned" || r.key.startsWith("name:") }))}
+                    value={(r) => r.count}
+                    label={(r) => displayName(r.name) || "Unassigned"}
+                    rowTitle={(r) => `${r.name || "Unassigned"}: ${r.count} ${noun}`}
                     color={color}
                     highlightKey={focus}
                     onMark={(d) => setFocus(focus === d.key ? null : d.key)}
-                    labelAll
+                    noun="drivers"
+                    plain={periodRows.length < 10}
+                    tailLabel={(tail) => `Not ranked · ${unrankedText(tail)}`}
+                    ariaLabel={feedEnabled ? "Attempts by driver" : "Entries by driver"}
                   />
                 </ChartCard>
               )}
@@ -2139,7 +2294,8 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                     inactive drivers — counted in every total, not listed.{" "}
                   </>
                 )}
-                {!focus && "Click a bar, or pick a driver above, and the whole page follows that driver."}
+                {!focus &&
+                  `Click ${periodRows.length < 10 ? "a name" : "a bar"}, or pick a driver above, and the whole page follows that driver.`}
               </div>
               {card && (
                 <DriverCard
@@ -2259,6 +2415,9 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
         </div>
         <div className="card">
           <div className="card-body" style={{ padding: "4px 14px" }}>
+            {/* An entry tab's empty period: one line, no search box or grouping over
+                nothing (the panel above already offers to widen the period). */}
+            {!feedEnabled && totalOnRecord === 0 ? null : (
             <div className="ff-log-search-wrap">
               {feedEnabled && (
                 <div className="ff-feed-date">
@@ -2273,7 +2432,6 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                       setFeedScan(false);
                       setFeedDate(e.target.value || todayET());
                     }}
-                    style={{ fontFamily: "var(--mono)" }}
                     title="Show the attempts log (auto + manual) for this day"
                   />
                   {/* Yesterday is the day worth jumping to: its 8 PM scan has run, so
@@ -2301,7 +2459,8 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                     title="Detect this day's attempts from the live dispatch board now, without waiting for the 8 PM scan"
                     style={{ marginLeft: 8 }}
                   >
-                    {feed.status === "loading" ? "Scanning…" : "↻ Run scan"}
+                    <Icon name="refresh-cw" />
+                    {feed.status === "loading" ? "Scanning…" : "Run scan"}
                   </button>
                 </div>
               )}
@@ -2333,6 +2492,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                 </button>
               )}
             </div>
+            )}
             {!feedEnabled && chipBar("log")}
             {feedEnabled && feed.status === "loading" && (
               <div className="empty-state">Loading attempts for {fmtMDY(feedDate)}…</div>
@@ -2358,22 +2518,22 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
               </div>
             )}
             {feedEnabled && feed.status === "ready" && feed.deriveError && (
-              <div className="empty-state" style={{ color: "var(--accent-amber, #b45309)" }}>
+              <div className="ff-log-note warn">
                 Showing the settled list only — couldn't reach the live dispatch board
                 ({feed.deriveError}).
               </div>
             )}
             {feedEnabled && feed.status === "ready" && feed.carriedOver > 0 && (
-              <div className="empty-state">
+              <div className="ff-log-note">
                 {feed.carriedOver} earlier failure{feed.carriedOver === 1 ? " is" : "s are"} still
                 on the board awaiting redelivery, marked ATT but due before {fmtMDY(feedDate)}.
                 They belong to the day they were attempted and aren't counted here.
               </div>
             )}
             {feedEnabled && feed.status === "ready" && feed.provisionalCount > 0 && (
-              <div className="empty-state">
+              <div className="ff-log-note">
                 {feed.provisionalCount} attempt{feed.provisionalCount === 1 ? "" : "s"} detected
-                live on the dispatch board and marked <strong>LIVE</strong>. Once a stop is
+                live on the dispatch board and marked <strong>Live</strong>. Once a stop is
                 re-routed, dispatch no longer shows who attempted it — the 8 PM scan recovers
                 that from the morning plan. Attribute one now with its driver dropdown, or
                 leave it for the scan.
@@ -2387,7 +2547,7 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                 <div className="empty-state">
                   {feedEnabled
                     ? `No attempts (auto or manual) for ${fmtMDY(feedDate)}.`
-                    : `Nothing logged in ${logPeriod.label}.`}
+                    : `Nothing logged ${periodPhrase(logPeriod.label)}.`}
                 </div>
               )}
             {totalOnRecord > 0 &&
@@ -2400,7 +2560,19 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                 </div>
               )}
 
-            {/* Auto-detected attempts from the dispatch feed (selected date). */}
+            {/* Auto-detected attempts from the dispatch feed (selected date), under one
+                header row on the columns every row shares. */}
+            {feedEnabled && filteredFeed.length + filteredLog.length > 0 && (
+              <div className="att-feed-row att-feed-head" aria-hidden="true">
+                <span className="att-f-src">Source</span>
+                <span className="att-f-pro">PRO</span>
+                <span className="att-f-driver">Driver</span>
+                <span className="att-f-cust">Customer</span>
+                <span className="att-f-where">Stop · route</span>
+                <span className="att-f-status">Status</span>
+                <span className="att-f-menu" />
+              </div>
+            )}
             {filteredFeed.map((a) => {
               const ov = overrideFor(a);
               const why = ov ? null : unassignedReason(a);
@@ -2408,112 +2580,145 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
               const lead = leadName ? matchDriver(leadName, drivers) : null;
               return (
               <div key={`auto-${a.shipmentNbr || a.stopNbr}`} className="ff-log-entry">
-                <div className="dd-incident-head" style={{ cursor: "default" }}>
-                  <span
-                    className="ff-src-chip auto"
-                    title={
-                      a.provisional
-                        ? "Detected from the live dispatch board — the 8 PM scan hasn't attributed it to a driver yet"
-                        : "Attributed by the dispatch app's evening scan"
-                    }
-                  >
-                    {a.provisional ? "LIVE" : "AUTO"}
+                {/* One row of the day's attempts, on the same columns as every other log:
+                    source, PRO, driver, customer and city, stop and route, status, ⋯. On a
+                    phone it stacks as a card (PRO and date, the customer, then labelled
+                    lines), so nothing is cut off at the card's edge. */}
+                <div className="att-feed-row">
+                  <span className="att-f-src">
+                    <span
+                      className="ff-src-chip auto"
+                      title={
+                        a.provisional
+                          ? "Detected from the live dispatch board — the 8 PM scan hasn't attributed it to a driver yet"
+                          : "Attributed by the dispatch app's evening scan"
+                      }
+                    >
+                      {a.provisional ? "Live" : "Auto"}
+                    </span>
                   </span>
                   {/* Every stop on this order goes with it, so a split can be inspected
                       leg by leg — the driver events usually sit on the ORIGINAL stop
                       while the "-1" copy has none. */}
-                  <button
-                    type="button"
-                    className="pro-num pro-num-link"
-                    onClick={() => openAttempt(a)}
-                    title="Open this order — details and, if you want it, the activity history showing who had it"
-                  >
-                    {a.shipmentNbr || "—"}
-                  </button>
-                  {a.legs > 1 && (
-                    <span
-                      className="ff-item-chip"
-                      title={`This order has ${a.legs - 1} duplicate order${a.legs === 2 ? "" : "s"} on the list (${a.legRows.map((l) => l.stopNbr).join(", ")}). A -1/-2 is a duplicate: it's counted once with the original here and never charged to the original's driver. Dispatch's own totals count each stop.`}
+                  <span className="att-f-pro">
+                    <button
+                      type="button"
+                      className="pro-num pro-num-link"
+                      onClick={() => openAttempt(a)}
+                      title="Open this order — details and, if you want it, the activity history showing who had it"
                     >
-                      {a.legs} stops · 1 attempt
-                    </span>
-                  )}
-                  <span
-                    className="ff-auto-driver"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <select
-                      value={ov?.driver_id || ""}
-                      onChange={(e) => reassignAuto(a, e.target.value)}
-                      title={
-                        a.provisional
-                          ? "Attribute this attempt now, or leave it for the 8 PM scan"
-                          : "Attribute this attempt to a driver"
-                      }
-                    >
-                      <option value="">
-                        {a.originalDriverName
-                          ? `${a.originalDriverName} · ${ATTRIBUTED_BY_TEXT[feedAttribution(a)]}`
-                          : a.provisional
-                            ? `Not yet attributed${a.currentDriverName ? ` · now on ${a.currentDriverName}` : ""}`
-                            : "Unassigned — pick a driver"}
-                      </option>
-                      {driverOptions}
-                    </select>
-                    {lead && (
-                      <button
-                        type="button"
-                        className="btn ghost sm ff-lead-btn"
-                        onClick={() => reassignAuto(a, lead.id)}
-                        title={`${leadName} closed this stop out. On attempts that did have a morning driver, the driver who closed the stop was that driver 24 times in 26 — a strong lead, but check it.`}
+                      {a.shipmentNbr || "—"}
+                    </button>
+                    {a.legs > 1 && (
+                      <span
+                        className="ff-item-chip att-f-legs"
+                        title={`This order has ${a.legs - 1} duplicate order${a.legs === 2 ? "" : "s"} on the list (${a.legRows.map((l) => l.stopNbr).join(", ")}). A -1/-2 is a duplicate: it's counted once with the original here and never charged to the original's driver. Dispatch's own totals count each stop.`}
                       >
-                        → {lead.name}
-                      </button>
-                    )}
-                    {ov && (
-                      <span className="ff-reassigned" title={`Feed said ${a.originalDriverName || "Unknown"}`}>
-                        reassigned
+                        {a.legs} stops · 1 attempt
                       </span>
                     )}
                   </span>
-                  <span className="meta">
-                    {a.businessName || "—"}
-                    {a.city || a.state
-                      ? ` · ${[a.city, a.state].filter(Boolean).join(", ")}`
-                      : ""}
+                  <span className="att-f-date">{fmtMDY(feedDate)}</span>
+                  <span className="att-f-driver" data-label="Driver" onClick={(e) => e.stopPropagation()}>
+                    <span className="att-f-driver-v">
+                      <select
+                        value={ov?.driver_id || ""}
+                        onChange={(e) => reassignAuto(a, e.target.value)}
+                        aria-label={`Driver for ${a.shipmentNbr || a.stopNbr}`}
+                        title={
+                          a.provisional
+                            ? "Attribute this attempt now, or leave it for the 8 PM scan"
+                            : "Attribute this attempt to a driver"
+                        }
+                      >
+                        <option value="">
+                          {a.originalDriverName
+                            ? a.originalDriverName
+                            : a.provisional
+                              ? "Not yet attributed"
+                              : "Unassigned — pick a driver"}
+                        </option>
+                        {driverOptions}
+                      </select>
+                      {/* Where the name came from, under the select rather than in it, so
+                          the name itself is never cut off. */}
+                      <span className="att-f-by">
+                        {ov ? (
+                          <span className="ff-reassigned" title={`Feed said ${a.originalDriverName || "Unknown"}`}>
+                            reassigned
+                          </span>
+                        ) : a.originalDriverName ? (
+                          ATTRIBUTED_BY_TEXT[feedAttribution(a)]
+                        ) : a.provisional && a.currentDriverName ? (
+                          `now on ${a.currentDriverName}`
+                        ) : null}
+                        {lead && (
+                          <button
+                            type="button"
+                            className="btn ghost sm ff-lead-btn"
+                            onClick={() => reassignAuto(a, lead.id)}
+                            title={`${leadName} closed this stop out. On attempts that did have a morning driver, the driver who closed the stop was that driver 24 times in 26 — a strong lead, but check it.`}
+                          >
+                            → {lead.name}
+                          </button>
+                        )}
+                      </span>
+                    </span>
                   </span>
-                  <span className="meta">
-                    Stop {(a.legRows || [a]).map((l) => l.stopNbr).join(" + ") || "—"}
-                    {a.routeName ? ` · ${a.routeName}` : ""}
+                  <span className="att-f-cust">
+                    <span className="att-f-name">{a.businessName || "—"}</span>
+                    {(a.city || a.state) && <span className="att-f-city">{[a.city, a.state].filter(Boolean).join(", ")}</span>}
                   </span>
-                  <span style={{ marginLeft: "auto" }}>
-                    <AttemptStatusBadge a={a} />
+                  <span className="att-f-where">
+                    <span className="att-f-stop" data-label="Stop">
+                      <span className="att-f-stop-v">{(a.legRows || [a]).map((l) => l.stopNbr).join(" + ") || "—"}</span>
+                    </span>
+                    <span className="att-f-route" data-label="Route">
+                      <span>{a.routeName || "—"}</span>
+                    </span>
+                  </span>
+                  <span className="att-f-status" data-label="Status">
+                    <span>
+                      <AttemptStatusBadge a={a} />
+                    </span>
                   </span>
                   {/* Delete removes a row from the dispatch app's stored attempts list.
                       A LIVE row isn't in that list yet, so "deleting" it would report
                       success and change nothing — it would reappear on the next scan.
                       Withheld until the evening scan has actually recorded it. */}
-                  {config.feedDeletable && !a.provisional && (
-                    <span className="ff-row-actions">
-                      <button
-                        className="btn ghost sm"
-                        onClick={() => deleteAuto(a)}
-                        disabled={feedDeletingId === a.stopNbr}
-                        title="Remove this auto-detected attempt from the feed"
-                        style={{ color: "var(--accent-red)" }}
-                      >
-                        {feedDeletingId === a.stopNbr ? "…" : "Delete"}
-                      </button>
-                    </span>
+                  <span className="att-f-menu">
+                    {config.feedDeletable && !a.provisional && (
+                      // The row's action behind its ⋯, as on every log — never a red
+                      // button on each row. Delete still asks before it removes anything.
+                      feedDeletingId === a.stopNbr ? (
+                        <span className="meta">Removing…</span>
+                      ) : (
+                        <CardMenu
+                          label={`Actions for ${a.shipmentNbr || a.stopNbr}`}
+                          className="row-menu"
+                          fixed
+                          items={[
+                            {
+                              id: "delete",
+                              label: "Delete attempt",
+                              icon: "trash-2",
+                              danger: true,
+                              title: "Remove this auto-detected attempt from the feed",
+                              onSelect: () => deleteAuto(a),
+                            },
+                          ]}
+                        />
+                      )
+                    )}
+                  </span>
+                  {why && why !== "provisional" && (
+                    <div className="att-f-why">
+                      No driver: {UNASSIGNED_REASON_TEXT[why]}.
+                      {leadName ? ` Closed out by ${leadName}.` : ""}
+                    </div>
                   )}
+                  {a.note && <div className="att-f-note">{a.note}</div>}
                 </div>
-                {why && why !== "provisional" && (
-                  <div className="ff-att-why">
-                    No driver: {UNASSIGNED_REASON_TEXT[why]}.
-                    {leadName ? ` Closed out by ${leadName}.` : ""}
-                  </div>
-                )}
-                {a.note && <div className="ff-att-note">{a.note}</div>}
               </div>
               );
             })}
@@ -2525,27 +2730,46 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                   const onFeed = handOnFeed.get(inc.id);
                   return (
                   <div key={inc.id} className="ff-log-entry">
-                    <div className="dd-incident-head" onClick={() => openDriver(inc)}>
-                      <span className="ff-src-chip manual">MANUAL</span>
-                      <span className="pro-num">{inc.pro_number}</span>
-                      {onFeed && (
-                        <span
-                          className="ff-item-chip"
-                          title={`The dispatch feed has this order on the same day, so it is counted once, as the feed's order — under ${overrideFor(onFeed)?.driver_name || onFeed.originalDriverName || "nobody yet"}. To charge someone else, reassign the feed's row above.`}
-                        >
-                          counted with feed order {onFeed.shipmentNbr || onFeed.stopNbr}
-                        </span>
-                      )}
-                      <span className="lb-name" style={{ width: "auto" }}>{driverCell(inc)}</span>
-                      <span className="meta">{inc.customer || ""}</span>
-                      {classifyField && inc[classifyField] && (
-                        <span className="ff-item-chip">{inc[classifyField]}</span>
-                      )}
-                      <span className="meta" style={{ marginLeft: "auto" }}>
-                        {fmtIncidentDate(inc)}
-                        {inc.has_photos ? " · 📸" : ""}
+                    {/* A hand-logged attempt, on the feed rows' columns. */}
+                    <div className="att-feed-row is-manual" onClick={() => openDriver(inc)}>
+                      <span className="att-f-src">
+                        <span className="ff-src-chip manual">Manual</span>
                       </span>
-                      {renderRowActions(inc)}
+                      <span className="att-f-pro">
+                        <span className="pro-num">{inc.pro_number}</span>
+                        {onFeed && (
+                          <span
+                            className="ff-item-chip att-f-legs"
+                            title={`The dispatch feed has this order on the same day, so it is counted once, as the feed's order — under ${overrideFor(onFeed)?.driver_name || onFeed.originalDriverName || "nobody yet"}. To charge someone else, reassign the feed's row above.`}
+                          >
+                            counted with feed order {onFeed.shipmentNbr || onFeed.stopNbr}
+                          </span>
+                        )}
+                      </span>
+                      <span className="att-f-date">{fmtIncidentDay(inc)}</span>
+                      <span className="att-f-driver" data-label="Driver">
+                        <span className="att-f-driver-v att-f-text">{driverCell(inc)}</span>
+                      </span>
+                      <span className="att-f-cust">
+                        <span className="att-f-name">{inc.customer || "—"}</span>
+                      </span>
+                      <span className="att-f-where">
+                        {classifyField && inc[classifyField] ? (
+                          <span className="att-f-route" data-label="Reason">
+                            <span>
+                              <span className="ff-item-chip">{inc[classifyField]}</span>
+                            </span>
+                          </span>
+                        ) : null}
+                      </span>
+                      <span className="att-f-status" data-label="Photo">
+                        {inc.has_photos ? (
+                          <span>
+                            <Icon name="camera" title="Has photo" />
+                          </span>
+                        ) : null}
+                      </span>
+                      <span className="att-f-menu">{renderRowActions(inc)}</span>
                     </div>
                     {renderEditRow(inc)}
                   </div>
@@ -2563,17 +2787,35 @@ export default function ManualEntry({ drivers, incidents, onSaved, config }) {
                       <span />
                       <span />
                     </div>
-                    {groupByDriver
-                      ? logGroups.map((g) => (
-                          <React.Fragment key={g.name}>
-                            <div className="ff-log-group">
-                              {g.name}
-                              <span className="meta"> · {g.rows.length}</span>
-                            </div>
-                            {g.rows.map(renderManualRow)}
-                          </React.Fragment>
-                        ))
-                      : filteredLog.map(renderManualRow)}
+                    {(() => {
+                      // A phone lists the log 20 entries at a time, as the Attempted
+                      // orders cards do; a group past the cap waits for "Show 20 more".
+                      // Every count, the CSV and Print still cover the whole log.
+                      let left = phone ? logCap : Infinity;
+                      return groupByDriver
+                        ? logGroups.map((g) => {
+                            if (left <= 0) return null;
+                            const rows = g.rows.slice(0, left);
+                            left -= rows.length;
+                            return (
+                              <React.Fragment key={g.name}>
+                                <div className="ff-log-group">
+                                  {g.name}
+                                  <span className="meta"> · {g.rows.length}</span>
+                                </div>
+                                {rows.map(renderManualRow)}
+                              </React.Fragment>
+                            );
+                          })
+                        : filteredLog.slice(0, left).map(renderManualRow);
+                    })()}
+                    {phone && filteredLog.length > logCap && (
+                      <button type="button" className="bl-more aot-more" onClick={() => setLogCap((c) => c + LOG_PAGE)}>
+                        Show {Math.min(LOG_PAGE, filteredLog.length - logCap)} more
+                        {/* The rest named only when one more page won't show it all. */}
+                        {filteredLog.length - logCap > LOG_PAGE ? ` · ${filteredLog.length - logCap} not shown` : ""}
+                      </button>
+                    )}
                     <div className="aot-foot">
                       {filteredLog.length} entr{filteredLog.length === 1 ? "y" : "ies"}
                       {focus ? ` · ${focusLabel}` : ""}
@@ -2639,7 +2881,7 @@ function FeedCoverage({ periodFeed, coverage, plan, wantEarlier, onRetry, onEarl
         <span className="ff-feed-coverage-gap">
           couldn&apos;t load the period — only hand-logged attempts are counted below
         </span>
-        {retry}
+        <span className="ff-feed-btn">{retry}</span>
       </>
     );
   } else {
@@ -2684,25 +2926,27 @@ function FeedCoverage({ periodFeed, coverage, plan, wantEarlier, onRetry, onEarl
         {beforeFeed > 0 && (
           <span>before {fmtMDY(FEED_EPOCH)}: hand-logged attempts only</span>
         )}
-        {(todayFailed || noData.some((d) => d.status === "failed")) && retry}
-        {earlier}
+        {(todayFailed || noData.some((d) => d.status === "failed")) && <span className="ff-feed-btn">{retry}</span>}
+        {earlier && <span className="ff-feed-btn">{earlier}</span>}
       </>
     );
   }
   return (
     <div className="ff-feed-coverage" role="status">
-      <span className="ff-feed-coverage-k">Dispatch feed</span>
-      {body}
+      <div className="ff-feed-coverage-in">
+        <span className="ff-feed-coverage-k">Dispatch feed</span>
+        {body}
+      </div>
     </div>
   );
 }
 
-// "09/02/2026, 09/08–10/07/2026": a single day in full, a run as MM/DD–MM/DD/YYYY.
+// "Sep 2, Sep 8 – Oct 7": a single day, or a run of them (period.js fmtDateRange).
 // Past three runs the rest are counted; every date is in the line's tooltip. Each run
 // opens its first day in the daily log, the one place that says what that day holds.
 function Runs({ runs, onDay }) {
   const one = (r) =>
-    r.from === r.to ? fmtMDY(r.from) : `${fmtMDY(r.from).slice(0, 5)}–${fmtMDY(r.to)}`;
+    r.from === r.to ? fmtMDY(r.from) : fmtDateRange(r.from, r.to);
   const rest = runs.slice(3).reduce((n, r) => n + r.days, 0);
   return (
     <>
@@ -2852,7 +3096,7 @@ function ChipRow({ chips, onClear, lead = "Showing", count = null, children }) {
           {c.label} <span aria-hidden="true">✕</span>
         </button>
       ))}
-      {count && <span className="meta">· {count}</span>}
+      {count && <span className="meta"><span className="meta-sep">· </span>{count}</span>}
       {children}
     </div>
   );

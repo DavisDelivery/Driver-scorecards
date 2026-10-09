@@ -33,3 +33,12 @@ export function fmtIncidentDate(inc) {
   const m = incidentDateStr(inc).match(/^(\d{4})-(\d{2})-(\d{2})/);
   return m ? `${m[2]}/${m[3]}/${m[1]}` : "—";
 }
+
+const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+// "Sep 14, 2026" for display in a log or table, parsed from the string like
+// fmtIncidentDate; a date string (or timestamp) of any other row works the same way.
+export function fmtDay(s) {
+  const m = String(s || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${MONTH_ABBR[Number(m[2]) - 1]} ${Number(m[3])}, ${m[1]}` : "—";
+}
+export const fmtIncidentDay = (inc) => fmtDay(incidentDateStr(inc));

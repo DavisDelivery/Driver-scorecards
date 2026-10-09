@@ -20,7 +20,7 @@
 // The period also follows the month picker now. It counted back from this month
 // whatever month was picked, so "Mar 2025 · This Mo" showed October 2026.
 import { FAILURES, ATTEMPTS } from "./categories.js";
-import { monthWindow, addDays, weekdayOfYmd, shiftYm } from "./period.js";
+import { monthWindow, addDays, weekdayOfYmd, shiftYm, fmtDate } from "./period.js";
 import { tally, tallyTotal } from "./blend.js";
 import { incidentYm } from "./incidentDate.js";
 import { faultSplit, FAULT_GROUP_LABEL } from "./faultGroups.js";
@@ -28,7 +28,8 @@ import { buildAttemptRecords } from "./attemptRecords.js";
 import { FEED_EPOCH, NO_DATA_STATUSES, daysInRange, todayET } from "./attemptsFeed.js";
 
 const pad2 = (n) => String(n).padStart(2, "0");
-const fmtMDY = (ymd) => `${ymd.slice(5, 7)}/${ymd.slice(8, 10)}/${ymd.slice(0, 4)}`;
+// A day in a sentence: "Jun 25, 2026" — never MM/DD (period.js fmtDate).
+const fmtMDY = (ymd) => fmtDate(ymd, { year: true });
 const monthEnd = (ym) => {
   const [y, m] = ym.split("-").map(Number);
   return `${ym}-${pad2(new Date(Date.UTC(y, m, 0)).getUTCDate())}`;
@@ -266,20 +267,21 @@ export function nextFeedChunk({ start, end }, { isCached, chunk = 45 } = {}) {
   return [s < start ? start : s, e];
 }
 
-// The line under "Attempts (logged)": what dispatch saw, with how much of the period
-// it is from. null when nothing is loaded yet (the tile offers to count instead). A
-// loaded day with no scan to read says nothing, so days that are all like that are
-// never drawn as "saw 0 orders".
+// The line under "Attempts (logged)": what the dispatch feed saw, with how much of the
+// period it is from — short enough for a tile's two lines ("feed: 4 orders on 1 of 105
+// days"; "feed from Jun 25: …" when the period starts before the feed). null when
+// nothing is loaded yet (the tile offers to count instead). A loaded day with no scan
+// to read says nothing, so days that are all like that are never drawn as "0 orders".
 export function dispatchText(d) {
   if (!d) return null;
-  if (!d.of) return d.beforeFeed ? `dispatch feed starts ${fmtMDY(FEED_EPOCH)}` : "dispatch: no evening scan yet";
+  if (!d.of) return d.beforeFeed ? `dispatch feed starts ${fmtMDY(FEED_EPOCH)}` : "feed: no evening scan yet";
   if (!d.loaded) return null;
   const days = (n) => `${n} day${n === 1 ? "" : "s"}`;
-  if (!d.withData) return `dispatch: no evening scan on the ${d.loaded === 1 ? "day" : days(d.loaded)} loaded`;
+  if (!d.withData) return `feed: no evening scan on the ${d.loaded === 1 ? "day" : days(d.loaded)} loaded`;
   const orders = `${d.orders} order${d.orders === 1 ? "" : "s"}`;
-  const since = d.sinceFeed ? ` since ${fmtMDY(FEED_EPOCH).slice(0, 5)} (feed start)` : "";
-  if (d.loaded === d.of && d.withData === d.of) return `dispatch saw ${orders}${since}`;
-  return `dispatch saw ${orders} in ${d.withData} of ${days(d.of)}${since}`;
+  const lead = d.sinceFeed ? `feed from ${fmtDate(FEED_EPOCH, { year: false })}` : "feed";
+  if (d.loaded === d.of && d.withData === d.of) return `${lead}: ${orders}`;
+  return `${lead}: ${orders} on ${d.withData} of ${days(d.of)}`;
 }
 
 // ── The Attempts card's day ───────────────────────────────────────────────────

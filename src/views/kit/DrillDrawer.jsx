@@ -13,15 +13,20 @@ import {
   spanMonths,
   drillVerdict,
 } from "../../data/drill.js";
-import { CATEGORIES, catLabel, catTitle, catColor } from "../../data/categories.js";
+import { CATEGORIES, catLabel, catColor } from "../../data/categories.js";
 import { nameOf, nameOfKey } from "../../data/people.js";
 import { rankable } from "../../data/manualAnalytics.js";
 import { incidentDateStr } from "../../data/incidentDate.js";
-import { currentYmET } from "../../data/period.js";
+import { currentYmET, fmtDate, fmtDateRange } from "../../data/period.js";
 import { downloadCsv, csvName } from "../../data/csv.js";
-import { BRAND } from "./chartTheme.js";
+import { BRAND, WASH, GRID, PARTIAL_OPACITY } from "./chartTheme.js";
+import { fmtHead } from "./shape.js";
 import EntryList, { fmtMonth } from "./EntryList.jsx";
-import { DataTable } from "./ChartCard.jsx";
+import ChartCard from "./ChartCard.jsx";
+import StackedColumns from "./charts/StackedColumns.jsx";
+import BarList from "./charts/BarList.jsx";
+import StatTile, { TileStrip } from "./StatTile.jsx";
+import Icon from "./Icon.jsx";
 import DriverLink from "./DriverLink.jsx";
 import AttemptOrdersTable from "./AttemptOrdersTable.jsx";
 import StopDetailModal from "../StopDetailModal.jsx";
@@ -50,10 +55,10 @@ const ORDER = new Map(CATEGORIES.map((c) => [c.id, c.order]));
 // dispatch feed (AnalyticsProvider publishAttempts); until they're in, it waits.
 const attemptsPending = (spec, a) => spec?.kind === "attempts" && !a.drillCtx.attemptRecords;
 
-const fmtDay = (s) => {
-  const m = String(s || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
-  return m ? `${m[2]}/${m[3]}/${m[1]}` : "";
-};
+// A day in the drawer's heading: "Sep 18", or "Sep 18, 2025" outside this year.
+const fmtDay = (s) => (/^\d{4}-\d{2}-\d{2}/.test(String(s || "")) ? fmtDate(s) : "");
+
+const cap = (t) => (t ? t.charAt(0).toUpperCase() + t.slice(1) : t);
 
 // Rendered once, by App: shows whatever drill the hash holds.
 export function DrillHost() {
@@ -70,7 +75,6 @@ export function DrillHost() {
   return <DrillDrawer state={state} onChange={openDrill} onClose={closeDrill} />;
 }
 
-const SOURCE_GLYPH = { live: "●", mixed: "◐", history: "○", not_tracked: "⊘", none: "–", left_out: "×" };
 const SOURCE_TEXT = {
   live: "live entries",
   mixed: "part live, part history",
@@ -90,10 +94,6 @@ const cellsText = (cells) =>
   ]
     .filter(Boolean)
     .join(" · ");
-
-// A month that is part live, part history is named with its split; past this many the
-// rest are counted in one chip.
-const MIXED_CHIPS = 3;
 
 export default function DrillDrawer({ state, onChange, onClose }) {
   const a = useAnalytics();
@@ -207,7 +207,11 @@ export default function DrillDrawer({ state, onChange, onClose }) {
             : root.roleGroup === "driver"
               ? "Drivers"
               : "Company";
-  const crumbs = [
+  // A drawer opened on a step (a driver opened from a leaderboard row, on that row's
+  // category: drill.js driverDrill marks it `o`) is one level: "Steven Adjetey · Forgotten
+  // Freight", with no breadcrumb until a step is taken from it (spec §15).
+  const opened = state.path?.[0]?.o ? 1 : 0;
+  const allCrumbs = [
     {
       label: root.categoryIds?.length === 1 && root.kind !== "attempts" ? `${who} › ${catLabel(root.categoryIds[0])}` : who,
     },
@@ -223,15 +227,22 @@ export default function DrillDrawer({ state, onChange, onClose }) {
               : fmtMonth(op.month),
     })),
   ];
+  // Crumb j pops to path length j + opened; the opened step folds into the root's crumb.
+  const crumbs = opened
+    ? [{ label: `${allCrumbs[0].label} · ${allCrumbs[1].label}` }, ...allCrumbs.slice(2)]
+    : allCrumbs;
   const cats = level.spec.categoryIds || [];
+  const onOpened = opened > 0 && path.length === opened;
   const title = level.spec.driverId
-    ? person(level.spec.driverId)
+    ? onOpened && cats.length === 1
+      ? `${person(level.spec.driverId)} · ${catLabel(cats[0])}`
+      : person(level.spec.driverId)
     : level.spec.driverKey
       ? nameOfKey(a.people, level.spec.driverKey)
       : level.spec.who
         ? level.spec.who
         : cats.length === 1
-          ? catTitle(cats[0])
+          ? catLabel(cats[0]) // the category's one name, as on every chart and legend
           : level.spec.title
             ? level.spec.title
             : level.spec.kind === "attempts"
@@ -241,16 +252,18 @@ export default function DrillDrawer({ state, onChange, onClose }) {
   const scopeLabel = monthOp
     ? fmtMonth(monthOp.month)
     : state.scopes?.[scope]?.label ||
-      (level.spec.start ? `${fmtDay(level.spec.start)} – ${fmtDay(level.spec.end)}` : "");
+      (level.spec.start ? fmtDateRange(level.spec.start, level.spec.end) : "");
   const sub = [
-    level.spec.driverId ? (a.people.get(level.spec.driverId)?.role || "driver").toUpperCase() : null,
-    inactive ? "INACTIVE" : null,
-    root.roleGroup && !level.spec.driverId ? (root.roleGroup === "loader" ? "LOADERS" : "DRIVERS") : null,
-    level.spec.fault === "driver" ? "DRIVER FAULT ONLY" : null,
-    level.spec.kind === "attempts" && (level.spec.driverId || level.spec.driverKey) ? "ATTEMPTED ORDERS" : null,
+    level.spec.driverId ? cap((a.people.get(level.spec.driverId)?.role || "driver").toLowerCase()) : null,
+    inactive ? "inactive" : null,
+    root.roleGroup && !level.spec.driverId ? (root.roleGroup === "loader" ? "Loaders" : "Drivers") : null,
+    level.spec.fault === "driver" ? "driver fault only" : null,
+    level.spec.kind === "attempts" && (level.spec.driverId || level.spec.driverKey) ? "attempted orders" : null,
     scopeLabel,
     level.spec.label || null,
   ].filter(Boolean);
+  // Sentence case: the first word capitalised, the rest as written (spec §2.2).
+  if (sub.length) sub[0] = cap(String(sub[0]));
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -265,11 +278,12 @@ export default function DrillDrawer({ state, onChange, onClose }) {
       >
         <div className="modal-header">
           <div className="dr-head">
-            <nav className="dr-crumbs" aria-label="Drill-down path">
+            {/* The path only once there is one: at the first level it would repeat the title. */}
+            {crumbs.length > 1 && <nav className="dr-crumbs" aria-label="Drill-down path">
               {crumbs.map((c, i) =>
                 i < crumbs.length - 1 ? (
                   <React.Fragment key={i}>
-                    <button type="button" className="dr-crumb" onClick={() => go(popTo(state, i))}>
+                    <button type="button" className="dr-crumb" onClick={() => go(popTo(state, i + opened))}>
                       {c.label}
                     </button>
                     <span className="dr-sep" aria-hidden="true">›</span>
@@ -280,14 +294,25 @@ export default function DrillDrawer({ state, onChange, onClose }) {
                   </span>
                 ),
               )}
-            </nav>
+            </nav>}
             <div className="modal-title cd-title">
               {cats.length === 1 && !level.spec.driverId && (
-                <span className="cc-dot" style={{ background: catColor(cats[0]) }} />
+                <span className="lb-swatch" style={{ background: catColor(cats[0]) }} />
               )}
               {title}
             </div>
-            <div className="dm-sub">{sub.join(" · ")}</div>
+            <div className="dm-sub">
+              {sub.join(" · ")}
+              {/* Opened on one category: the way back out to all of the driver's. */}
+              {onOpened && (root.categoryIds || []).length > 1 && (
+                <>
+                  {sub.length ? " · " : ""}
+                  <button type="button" className="text-link dr-allcats" onClick={() => go(popTo(state, 0))}>
+                    Every category
+                  </button>
+                </>
+              )}
+            </div>
           </div>
           <button className="close-x" onClick={onClose} aria-label="Close">×</button>
         </div>
@@ -415,16 +440,7 @@ function DrawerBody({
   const byCategory = [...detail.byCategory]
     .filter(([, n]) => n > 0)
     .sort((x, y) => (ORDER.get(x[0]) ?? 99) - (ORDER.get(y[0]) ?? 99));
-  const maxCat = Math.max(1, ...byCategory.map(([, n]) => n));
 
-  // A long strip (all time) opens scrolled to its latest months, where the scope is.
-  const stripRef = React.useRef(null);
-  const [stripView, setStripView] = React.useState("chart");
-  const [peek, setPeek] = React.useState(null);
-  React.useLayoutEffect(() => {
-    const el = stripRef.current;
-    if (el) el.scrollLeft = el.scrollWidth;
-  }, [strip.months.length, stripView]);
 
   const narrow = (op) => go(pushStep(state, op));
   const pickMonth = (ym, n) => {
@@ -481,11 +497,8 @@ function DrawerBody({
     );
 
   const color = attempts ? catColor("attempts") : cats.length === 1 ? catColor(cats[0]) : BRAND;
-  const stripMax = Math.max(1, ...strip.months.map((ym) => strip.byMonth.get(ym) || 0));
-  const stripSources = new Set(strip.months.map((ym) => strip.sourceOf(ym)));
   const conflictMonths = new Set(coverage.all.map((c) => c.ym));
   const { counts } = coverage;
-  const moreMixed = coverage.mixed.length - MIXED_CHIPS;
   const unsplittable = detail.unsplittable || [];
   const scopeSuffix = scopeLabel ? ` · ${scopeLabel}` : "";
   // Where a month's number comes from, for the table view, the hover or focus readout
@@ -499,8 +512,46 @@ function DrawerBody({
     const text = split ? cellsText(strip.cellsOf(ym)) : SOURCE_TEXT[src] || src;
     return `${text}${conflictMonths.has(ym) ? " · live and history disagree" : ""}`;
   };
-  const readout = (ym, opts) =>
-    `${fmtMonth(ym)}: ${(strip.byMonth.get(ym) || 0).toLocaleString()} · ${sourceText(ym, opts)}`;
+
+  // The strip's months as the rest of the app draws them: a month with nothing on
+  // record (no data) or not tracked under this scope is drawn shaded with no label, and
+  // the month in progress is faded. Display only: the shading is drawn from a key of its
+  // own (__draw); the table, the hover and a click read the month's count (n), which
+  // stays what it counted — "0 · no data", as it always read.
+  const nowYm = currentYmET();
+  const stripRows = strip.months.map((ym) => {
+    const n = strip.byMonth.get(ym) || 0;
+    const src = strip.sourceOf ? strip.sourceOf(ym) : "live";
+    const noNumber = n === 0 && (src === "none" || src === "not_tracked");
+    const toDate = ym === nowYm;
+    return {
+      ym,
+      n,
+      __draw: noNumber ? null : n,
+      // Months outside the drawer's period stay in view, quieter.
+      __dim: !monthOp && !strip.inScope.has(ym),
+      __partial: toDate && n > 0,
+      __head: `${fmtHead(ym, "month")}${toDate ? " · to date" : ""}`,
+      __notes: [sourceText(ym)],
+    };
+  });
+  const stripNote = [];
+  if (stripRows.some((r) => r.__draw === null)) {
+    stripNote.push(
+      <span key="band">
+        <i className="cc-note-swatch" style={{ background: WASH, boxShadow: `inset 0 0 0 1px ${GRID}` }} />
+        Shaded: {[...new Set(stripRows.filter((r) => r.__draw === null).map((r) => SOURCE_TEXT[strip.sourceOf(r.ym)] || "no data"))].join(", ")}
+      </span>,
+    );
+  }
+  if (stripRows.some((r) => r.__partial)) {
+    stripNote.push(
+      <span key="faded">
+        <i className="cc-note-swatch" style={{ background: color, opacity: PARTIAL_OPACITY }} />
+        Faded: {fmtMonth(nowYm)} to date
+      </span>,
+    );
+  }
 
   return (
     <>
@@ -523,178 +574,133 @@ function DrawerBody({
         </div>
       )}
 
-      <div className="dm-stats">
-        {scopeTotals.length > 1 ? (
-          state.scopes.map((s, i) => (
-            <button
-              key={s.label}
-              type="button"
-              className={`dm-stat dm-stat-btn ${i === scope ? "active" : ""}`}
-              aria-pressed={i === scope}
-              onClick={() => go({ ...state, scope: i })}
-            >
-              <div className="dm-stat-num">{scopeTotals[i].toLocaleString()}</div>
-              <div className="dm-stat-lbl">{s.label}</div>
-            </button>
-          ))
-        ) : (
-          <div className="dm-stat active">
-            <div className="dm-stat-num">{detail.total.toLocaleString()}</div>
-            <div className="dm-stat-lbl">{scopeLabel || "Total"}</div>
-          </div>
-        )}
+      {/* The drawer's numbers in the app's one tile strip (label, value, sub): each scope
+          a tile that picks it, the one shown marked. Written out whole ("12,345", never
+          "12.3K"), so the drawer shows exactly the number that was clicked. */}
+      <TileStrip className="card-strip dr-tiles">
+        {scopeTotals.length > 1
+          ? state.scopes.map((s, i) => (
+              <StatTile
+                key={s.label}
+                label={s.label}
+                value={scopeTotals[i].toLocaleString()}
+                selected={i === scope}
+                title={i === scope ? "Shown below" : `Show ${s.label}`}
+                onClick={() => go({ ...state, scope: i })}
+              />
+            ))
+          : [<StatTile key="total" label={scopeLabel || "Total"} value={detail.total.toLocaleString()} />]}
         {!oneDriver && (
-          <div className="dm-stat">
-            {/* Attempts count roster drivers only, as the Attempts tab's tile does:
-                Unassigned and a feed name the roster doesn't match are listed, not counted. */}
-            <div className="dm-stat-num">
-              {[...detail.byDriver.keys()].filter((k) => (attempts ? rankable(k, a.hidden) : k)).length}
-            </div>
-            <div className="dm-stat-lbl">
-              {attempts ? "Roster drivers" : "Drivers"} · {scopeLabel || "total"}
-            </div>
-          </div>
+          // Attempts count roster drivers only, as the Attempts tab's tile does:
+          // Unassigned and a feed name the roster doesn't match are listed, not counted.
+          <StatTile
+            label={attempts ? "Roster drivers" : "Drivers"}
+            value={[...detail.byDriver.keys()].filter((k) => (attempts ? rankable(k, a.hidden) : k)).length.toLocaleString()}
+            sub={scopeLabel || "total"}
+          />
         )}
-        {spec.kind !== "attempts" && (
-          <div className="dm-stat">
-            <div className="dm-stat-num">{withPhotos}</div>
-            <div className="dm-stat-lbl">With photos{q ? " · matching" : ""}</div>
-          </div>
-        )}
-      </div>
+        {spec.kind !== "attempts" && <StatTile label="With photos" value={Number(withPhotos).toLocaleString()} sub={q ? "matching the search" : null} />}
+      </TileStrip>
 
-      <div className="dr-chips">
-        {detail.liveOnly && <span className="dr-chip">live entries only</span>}
-        {!detail.liveOnly && counts.live > 0 && (
-          <span className="dr-chip">● {counts.live} live month{counts.live === 1 ? "" : "s"}</span>
-        )}
-        {coverage.mixed.slice(0, MIXED_CHIPS).map((m) => (
-          <span key={m.ym} className="dr-chip">
-            ◐ {fmtMonth(m.ym)}: {m.text}
-          </span>
-        ))}
-        {moreMixed > 0 && (
-          <span className="dr-chip">
-            ◐ {moreMixed} more month{moreMixed === 1 ? "" : "s"} part live, part history
-          </span>
-        )}
-        {counts.history > 0 && (
-          <span className="dr-chip">
-            ○ {counts.history} history month{counts.history === 1 ? "" : "s"} · monthly totals only
-          </span>
-        )}
-        {counts.not_tracked > 0 && (
-          <span className="dr-chip">
-            ⊘ {counts.not_tracked} history month{counts.not_tracked === 1 ? "" : "s"} not tracked by fault
-          </span>
-        )}
-        {counts.none > 0 && !detail.liveOnly && (
-          <span className="dr-chip">– {counts.none} month{counts.none === 1 ? "" : "s"} with no data</span>
-        )}
-        {counts.left_out > 0 && (
-          <span className="dr-chip">
-            × {counts.left_out} month{counts.left_out === 1 ? "" : "s"} not compared — nothing counted
-          </span>
-        )}
-        {coverage.conflicts.map((c) => (
-          <span key={`${c.ym}-${c.category}`} className="dr-chip warn" title="A category with live entries in a month is counted from them; the history that month also holds for it is not added.">
-            ⚠ {fmtMonth(c.ym)} {catLabel(c.category)}: live {c.live}, history {c.history} — live shown
-          </span>
-        ))}
-        {unsplittable.map((u) => (
-          <span key={u.ym} className="dr-chip warn">
-            {fmtMonth(u.ym)}: {u.count} in history, only part of the month is in range — not counted
-          </span>
-        ))}
-      </div>
+      {(() => {
+        // What the numbers are made of and what they leave out: the warnings (live and
+        // history disagree, a month only partly in range) in the open, the rest behind
+        // one quiet "N notes" disclosure.
+        const notes = [
+          ...coverage.conflicts.map((c) => ({
+            key: `c-${c.ym}-${c.category}`,
+            warn: true,
+            text: `${fmtMonth(c.ym)} ${catLabel(c.category)}: live ${c.live}, history ${c.history} — live shown`,
+          })),
+          ...unsplittable.map((u) => ({
+            key: `u-${u.ym}`,
+            warn: true,
+            text: `${fmtMonth(u.ym)}: ${u.count} in history, only part of the month is in range — not counted`,
+          })),
+          detail.liveOnly ? { key: "live-only", text: "Live entries only" } : null,
+          !detail.liveOnly && counts.live > 0 ? { key: "live", text: `${counts.live} live month${counts.live === 1 ? "" : "s"}` } : null,
+          ...coverage.mixed.map((m) => ({ key: `m-${m.ym}`, text: `${fmtMonth(m.ym)}: ${m.text}` })),
+          counts.history > 0
+            ? { key: "history", text: `${counts.history} history month${counts.history === 1 ? "" : "s"} · monthly totals only` }
+            : null,
+          counts.not_tracked > 0
+            ? { key: "nt", text: `${counts.not_tracked} history month${counts.not_tracked === 1 ? "" : "s"} not tracked by fault` }
+            : null,
+          counts.none > 0 && !detail.liveOnly ? { key: "none", text: `${counts.none} month${counts.none === 1 ? "" : "s"} with no data` } : null,
+          counts.left_out > 0
+            ? { key: "lo", text: `${counts.left_out} month${counts.left_out === 1 ? "" : "s"} not compared — nothing counted` }
+            : null,
+        ].filter(Boolean);
+        if (!notes.length) return null;
+        // What to check — live and history disagree, a month only partly in range — is
+        // listed in the open, next to the numbers it explains, as it always was; the
+        // rest of the notes wait behind one quiet disclosure.
+        const warns = notes.filter((n) => n.warn);
+        const info = notes.filter((n) => !n.warn);
+        return (
+          <>
+            {warns.length > 0 && (
+              <ul className="dr-warns" role="note" aria-label="To check">
+                {warns.map((n) => (
+                  <li key={n.key}>
+                    <Icon name="alert-triangle" className="dr-warn-icon" />
+                    <span>{n.text}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {info.length > 0 && (
+              <details className="dr-notes">
+                <summary>
+                  <Icon name="chevron-right" className="dr-notes-chev" />
+                  {info.length} note{info.length === 1 ? "" : "s"}
+                </summary>
+                <ul>
+                  {info.map((n) => (
+                    <li key={n.key}>{n.text}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </>
+        );
+      })()}
 
-      {strip.months.length > 0 && stripView === "table" && (
-        <DataTable
-          columns={[
-            { key: "month", label: "Month" },
-            { key: "n", label: "Count", num: true },
-            { key: "source", label: "Source" },
-          ]}
-          rows={strip.months.map((ym) => ({
-            month: fmtMonth(ym),
-            n: strip.byMonth.get(ym) || 0,
-            source: sourceText(ym),
-          }))}
-        />
-      )}
-      {strip.months.length > 0 && stripView === "chart" && (
-        <div className="dr-strip-wrap" ref={stripRef}>
-          <div
-            className="cd-strip dr-strip"
-            style={{ "--n": strip.months.length }}
-            aria-label="By month"
+      {/* One month: no strip — the heading names the month (spec §15). Several: plain
+          columns, the drawer's months in colour and the rest of the strip quieter. */}
+      {strip.months.length > 1 && strip.inScope.size > 1 && (
+        <div className="dr-strip">
+          <ChartCard
+            inset
+            title="By month"
+            subtitle="Click a month for its entries"
+            table={{
+              columns: [
+                { key: "month", label: "Month" },
+                { key: "n", label: "Count", num: true },
+                { key: "source", label: "Source" },
+              ],
+              rows: stripRows.map((r) => ({
+                month: fmtMonth(r.ym),
+                n: r.n,
+                source: sourceText(r.ym),
+              })),
+            }}
+            note={stripNote.length ? stripNote : null}
+            height={160}
           >
-            {strip.months.map((ym, i) => {
-              const n = strip.byMonth.get(ym) || 0;
-              const src = strip.sourceOf(ym);
-              const active = monthOp?.month === ym;
-              const inScope = strip.inScope.has(ym);
-              const glyph = conflictMonths.has(ym) ? "⚠" : SOURCE_GLYPH[src] || "";
-              return (
-                <button
-                  key={ym}
-                  type="button"
-                  className={`cd-month ${active ? "active" : ""} ${inScope ? "in-period" : ""}`}
-                  onClick={() => pickMonth(ym, n)}
-                  onMouseEnter={() => setPeek(ym)}
-                  onMouseLeave={() => setPeek(null)}
-                  onFocus={() => setPeek(ym)}
-                  onBlur={() => setPeek(null)}
-                  aria-label={readout(ym)}
-                  aria-pressed={active}
-                  disabled={n === 0 && !active}
-                >
-                  <span className="cd-month-n">{n || ""}</span>
-                  <span className="cd-month-bar">
-                    <span
-                      style={{
-                        height: `${(n / stripMax) * 100}%`,
-                        background: color,
-                        opacity: active || (!monthOp && inScope) ? 1 : 0.35,
-                      }}
-                    />
-                  </span>
-                  <span className="cd-month-lbl">
-                    {fmtMonth(ym).slice(0, 3)}
-                    {ym.endsWith("-01") || i === 0 ? <i>{ym.slice(2, 4)}</i> : null}
-                  </span>
-                  <span className={`dr-src src-${src}`} aria-hidden="true">{glyph}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-      {strip.months.length > 0 && (
-        <div className="dr-strip-key">
-          {stripView === "chart" &&
-            [...stripSources].filter((s) => SOURCE_GLYPH[s]).map((s) => (
-              <span key={s}>
-                {SOURCE_GLYPH[s]} {SOURCE_TEXT[s]}
-              </span>
-            ))}
-          {stripView === "chart" && conflictMonths.size > 0 && <span>⚠ live and history disagree</span>}
-          <span className="dr-peek" aria-live="polite">
-            {stripView === "chart" && peek ? readout(peek, { brief: true }) : ""}
-          </span>
-          <span className="cc-view" role="group" aria-label="Months as">
-            {["chart", "table"].map((v) => (
-              <button
-                key={v}
-                type="button"
-                className={stripView === v ? "active" : ""}
-                aria-pressed={stripView === v}
-                onClick={() => setStripView(v)}
-              >
-                {v === "chart" ? "Chart" : "Table"}
-              </button>
-            ))}
-          </span>
+            <StackedColumns
+              data={stripRows}
+              xKey="ym"
+              grain="month"
+              keyOf={(r) => r.ym}
+              series={[{ id: "__draw", tip: "n", label: "Counted", color }]}
+              selectedKey={monthOp?.month ?? null}
+              onMark={(r) => {
+                if (r.n > 0 || monthOp?.month === r.ym) pickMonth(r.ym, r.n);
+              }}
+            />
+          </ChartCard>
         </div>
       )}
 
@@ -703,54 +709,61 @@ function DrawerBody({
           <section className="cd-drivers">
             {cats.length > 1 && byCategory.length > 0 && (
               <>
-                <div className="cd-h">By category{scopeSuffix}</div>
-                <div className="dr-cats">
-                  {byCategory.map(([cat, n]) => (
-                    <button key={cat} type="button" className="dr-cat" onClick={() => narrow({ category: cat, x: n })}>
-                      <span className="dr-cat-name">
-                        <i style={{ background: catColor(cat) }} aria-hidden="true" />
-                        {catLabel(cat)}
-                      </span>
-                      <span className="dr-cat-track">
-                        <span style={{ width: `${(n / maxCat) * 100}%`, background: catColor(cat) }} />
-                      </span>
-                      <span className="cd-driver-n">{n}</span>
-                    </button>
-                  ))}
+                <div className="cd-h">
+                  <span>
+                    By category<span className="cd-h-sub">{scopeSuffix}</span>
+                  </span>
                 </div>
+                <BarList
+                  rows={byCategory.map(([cat, n]) => ({ key: cat, label: catLabel(cat), value: n }))}
+                  order="given"
+                  limit={0}
+                  colorOf={(r) => catColor(r.key)}
+                  onMark={(r) => narrow({ category: r.key, x: r.value })}
+                  rowTitle={(r) => `Only ${r.label}: ${r.value}`}
+                  ariaLabel="By category"
+                />
               </>
             )}
             {!oneDriver && (
               <>
-                <div className="cd-h" style={cats.length > 1 ? { marginTop: 14 } : undefined}>
-                  By driver{scopeSuffix}
+                <div className="cd-h" style={cats.length > 1 && byCategory.length > 0 ? { marginTop: 16 } : undefined}>
+                  <span>
+                    By driver<span className="cd-h-sub">{scopeSuffix}</span>
+                  </span>
                 </div>
-                {drivers.rows.length === 0 && <div className="empty-state">No drivers counted.</div>}
-                {drivers.rows.map((r, i) => (
-                  <div key={r.id || "unattributed"} className="cd-driver dr-driver">
-                    <span className="lb-rank">{i + 1}</span>
-                    <span className="cd-driver-name">
-                      {/* An attempts list stays on attempts: a name narrows it, like the count. */}
-                      {r.linkable && !attempts ? (
-                        <DriverLink id={r.id} name={r.name} drill={driverState(r.id, r.count)} />
+                {drivers.rows.length === 0 ? (
+                  <div className="empty-state">No drivers counted.</div>
+                ) : (
+                  // The app's bar list: a name opens the driver, the count narrows this
+                  // drawer to them — two actions, so the row itself isn't a button.
+                  <BarList
+                    rows={drivers.rows.map((r) => ({ ...r, key: r.id || "unattributed", label: r.name, value: r.count, notSet: !r.id }))}
+                    order="given"
+                    color={color}
+                    noun="drivers"
+                    labelNode={(r) =>
+                      /* An attempts list stays on attempts: a name narrows it, like the count. */
+                      r.linkable && !attempts ? <DriverLink id={r.id} name={r.name} drill={driverState(r.id, r.count)} /> : r.name
+                    }
+                    valueNode={(r) =>
+                      r.id ? (
+                        <button
+                          type="button"
+                          className="dr-count"
+                          onClick={() => narrow(attempts ? { driverKey: r.id, x: r.count } : { driverId: r.id, x: r.count })}
+                          title={`Only ${r.name}`}
+                        >
+                          {r.count}
+                        </button>
                       ) : (
-                        r.name
-                      )}
-                    </span>
-                    {r.id ? (
-                      <button
-                        type="button"
-                        className="dr-count"
-                        onClick={() => narrow(attempts ? { driverKey: r.id, x: r.count } : { driverId: r.id, x: r.count })}
-                        title={`Only ${r.name}`}
-                      >
-                        {r.count}
-                      </button>
-                    ) : (
-                      <span className="cd-driver-n">{r.count}</span>
-                    )}
-                  </div>
-                ))}
+                        r.count
+                      )
+                    }
+                    rowTitle={(r) => `${r.name}: ${r.count}`}
+                    ariaLabel="By driver"
+                  />
+                )}
                 {drivers.hiddenCount > 0 && (
                   <div className="cd-note">
                     +{drivers.hiddenCount} from inactive drivers — counted in the totals, not listed.
@@ -764,7 +777,10 @@ function DrawerBody({
         <section className="cd-incidents">
           <div className="cd-h cd-h-row">
             <span>
-              {attempts ? "Orders" : "Entries"}{scopeSuffix} · {detail.total}
+              {attempts ? "Orders" : "Entries"}
+              <span className="cd-h-sub">
+                {scopeSuffix} · {detail.total}
+              </span>
             </span>
             {!attempts && (
               <span className="dr-row-tools">
@@ -776,7 +792,8 @@ function DrawerBody({
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                 />
-                <button type="button" className="cc-csv" onClick={csv} title="Download these rows as CSV">
+                <button type="button" className="btn ghost sm" onClick={csv} title="Download these rows as CSV">
+                  <Icon name="download" />
                   CSV
                 </button>
               </span>

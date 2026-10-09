@@ -134,6 +134,35 @@ export function monthlySeries(cov, months, cats, { measure = "count", today } = 
   return rows.slice(lead.length);
 }
 
+// Whether a year's change on the year before compares like with like (likeForLike over
+// the twelve aligned months): every category captured the same way both years — or
+// tracked in neither, which leaves both totals alike. A year that tracked Lost/Missing
+// only (2023) against one that tracked everything is not compared, and the change is
+// shown in ink with "not compared", never as a coloured arrow.
+//   → { compared, left: [exclusion] }   (exclusionText words each one)
+export function yearCompared(cov, year, cats, { allowSourceChange = false } = {}) {
+  const months = (y) => Array.from({ length: 12 }, (_, i) => `${y}-${String(i + 1).padStart(2, "0")}`);
+  const { exclusions } = likeForLike(months(year), months(year - 1), cats, cov, { allowSourceChange });
+  const left = exclusions.filter((e) => !(e.side === "both" && (e.reason === "not_tracked" || e.reason === "no_data")));
+  return { compared: left.length === 0, left };
+}
+
+// What a year's total holds, category by category, through `lastYm`: the categories with
+// no month captured ("not tracked"), and those captured for part of the year only — so
+// a short year bar is never read as a quiet year.
+//   → { none: [cat], part: [cat] }
+export function yearCapture(cov, year, cats, { lastYm = null } = {}) {
+  const months = Array.from({ length: 12 }, (_, i) => `${year}-${String(i + 1).padStart(2, "0")}`).filter((ym) => !lastYm || ym <= lastYm);
+  const none = [];
+  const part = [];
+  for (const c of cats) {
+    const held = months.filter((ym) => cov.cell(ym, c).value !== null).length;
+    if (!held) none.push(c);
+    else if (held < months.length) part.push(c);
+  }
+  return { none, part };
+}
+
 // The 3-month rolling mean of a series: the mean of a value and the two before it, or
 // null unless all three are there and were captured the same way (sigs). It never
 // bridges a gap or a change in what was captured.

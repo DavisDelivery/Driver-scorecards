@@ -69,8 +69,22 @@ export function reportSpanLabel(report) {
     }
     return `${MONTH_NAMES[s.m - 1]} ${s.d}, ${s.y} – ${MONTH_NAMES[e.m - 1]} ${e.d}, ${e.y}`;
   }
-  if (report?.week_ending) return `Week ending ${report.week_ending}`;
+  if (report?.week_ending) {
+    const w = String(report.week_ending).slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(w)) return `Week ending ${report.week_ending}`;
+    const p = parts(w);
+    return `Week ending ${MONTH_NAMES[p.m - 1]} ${p.d}, ${p.y}`;
+  }
   return report?.range_label || "—";
+}
+
+// The span label a new report is saved with (its stored range_label). It keeps the stored
+// format it always had — a report with no start/end span is "Week ending 2026-04-17" —
+// so a visual change never alters what is written to Firestore; reportSpanLabel above
+// is the on-screen reading of the same span.
+export function storedRangeLabel(report) {
+  if (!(report?.starts_at || report?.ends_at) && report?.week_ending) return `Week ending ${report.week_ending}`;
+  return reportSpanLabel(report);
 }
 
 // The first day of a report's span, short ("Jun 30"), or its week ending for a report
@@ -81,4 +95,42 @@ export function reportStartLabel(report) {
   if (!/^\d{4}-\d{2}-\d{2}/.test(String(start || ""))) return reportSpanLabel(report);
   const s = parts(String(start).slice(0, 10));
   return `${MONTH_NAMES[s.m - 1]} ${s.d}`;
+}
+
+// A Uline report's own label: "9/14/2026 THRU 9/18/2026".
+const ULINE_LABEL = /^\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\s+thru\s+\d{1,2}\/\d{1,2}\/\d{4}\s*$/i;
+
+// The Monday of the week a report covers (YYYY-MM-DD): the week its Uline label starts
+// in when its name is one, otherwise the week of the first day of its span (or of its
+// week ending, for a report that predates spans). null when it has no date. Worked out
+// from the date's parts in UTC arithmetic, so no timezone can move it a day.
+export function reportWeekOf(report) {
+  const m = ULINE_LABEL.exec(String(report?.name || ""));
+  let d;
+  if (m && +m[1] >= 1 && +m[1] <= 12) d = `${m[3]}-${String(m[1]).padStart(2, "0")}-${String(m[2]).padStart(2, "0")}`;
+  else d = String(report?.starts_at || report?.ends_at || report?.week_ending || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return null;
+  const { y, m: mo, d: day } = parts(d);
+  const t = Date.UTC(y, mo - 1, day);
+  const back = (new Date(t).getUTCDay() + 6) % 7; // days since Monday
+  return new Date(t - back * 86400000).toISOString().slice(0, 10);
+}
+
+// A report's name as a person reads it, in the reports table: a Uline label reads "Week
+// of Sep 14, 2026" (its Monday); a name someone typed is shown as typed.
+export function reportWeekName(report) {
+  const name = report?.name || "";
+  const week = ULINE_LABEL.test(name) ? reportWeekOf(report) : null;
+  if (!week) return name || "Untitled report";
+  const p = parts(week);
+  return `Week of ${MONTH_NAMES[p.m - 1]} ${p.d}, ${p.y}`;
+}
+
+// The weekly chart's tick for a report: its week's Monday, short ("Sep 14") — the same
+// Monday the table's "Week of" names, so the ticks fall on a weekly grid.
+export function reportWeekTick(report) {
+  const week = reportWeekOf(report);
+  if (!week) return reportStartLabel(report);
+  const p = parts(week);
+  return `${MONTH_NAMES[p.m - 1]} ${p.d}`;
 }
